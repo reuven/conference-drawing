@@ -76,3 +76,46 @@ def test_non_html_responses_keep_their_own_headers(client: Client) -> None:
 def test_version_context_exposes_version(rf: RequestFactory) -> None:
     ctx = version_context(rf.get("/"))
     assert ctx["cd_version"]["version"] == __version__
+
+
+def _footer(html: str) -> str:
+    return html.split("<footer>", 1)[1].split("</footer>", 1)[0]
+
+
+def test_footer_shows_the_running_version_and_commit(
+    client: Client, db: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    f = tmp_path / "version.json"
+    f.write_text(json.dumps({"commit": "abcdef1234567"}))
+    monkeypatch.setenv("CD_VERSION_FILE", str(f))
+    footer = _footer(client.get("/privacy/").content.decode())
+    assert 'href="/privacy/"' in footer
+    assert f"v{__version__} (abcdef1)" in footer
+
+
+def test_footer_without_a_deploy_file_shows_the_package_version(
+    client: Client, db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CD_VERSION_FILE", raising=False)
+    footer = _footer(client.get("/privacy/").content.decode())
+    assert f"v{__version__}</span>" in footer
+    assert "()" not in footer
+
+
+def test_every_page_template_gets_the_footer() -> None:
+    """Every full page extends base.html; partials (leading `_`) are fragments.
+
+    The display and the printed flyer hide the footer with CSS (a clean
+    monitor; one printed page), but it is still in their markup.
+    """
+    root = Path(version_context.__code__.co_filename).parent / "raffle" / "templates"
+    pages = [p for p in root.rglob("*.html") if not p.name.startswith("_")]
+    assert len(pages) > 10
+    bases = (
+        '{% extends "raffle/base.html" %}',
+        '{% extends "raffle/booth/base.html" %}',
+    )
+    for page in pages:
+        if page.relative_to(root).as_posix() == "raffle/base.html":
+            continue
+        assert page.read_text().startswith(bases), page

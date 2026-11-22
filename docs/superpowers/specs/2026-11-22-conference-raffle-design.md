@@ -417,8 +417,10 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
     recovery commands in the install log (drop and recreate the database,
     then `pg_restore` the snapshot); with no snapshot (an empty database) it
     says there is nothing to put back.
-  - Every page footer shows the running version; `GET`/`HEAD /health`
-    (no DB) and `GET /version` exist.
+  - Every page footer shows the running version (and short commit); the
+    booth display and the printed flyer hide their footer, so the monitor
+    stays clean and the flyer stays one page. `GET`/`HEAD /health` (no DB)
+    and `GET /version` exist.
 - **License**: MIT. Package/distribution name `conference-drawing`.
 - **Drip is optional per install** (see "Without Drip" above).
 - **Privacy note**: a page whose text the owner edits; linked from the form.
