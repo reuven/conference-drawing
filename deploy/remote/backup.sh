@@ -17,8 +17,21 @@ no_symlink "$DATA_DIR"
 umask 077
 out=$(mktemp -d "$ROOT/tmp/conference-drawing-backup.XXXXXXXX")
 copy="$DATA_DIR/snapshots/backup"
+locked=0
+# The dump holds personal data and snapshot rotation never looks at it, so it
+# goes whatever happens; a failed run leaves no partial tarball either. The
+# copy is ours only once we hold the lock (another backup may be using it).
+on_exit() {
+	local status=$?
+	set +e
+	[ "$locked" -eq 0 ] || as_app rm -rf -- "$copy" 2>/dev/null
+	[ "$status" -eq 0 ] || rm -rf -- "$out"
+	return 0
+}
+trap on_exit EXIT
 
 take_lock 300
+locked=1
 as_app rm -rf -- "$copy"
 as_app mkdir -m 0700 "$copy"
 as_app pg_dump -Fc --file "$copy/db.dump" --dbname="$DB_NAME"

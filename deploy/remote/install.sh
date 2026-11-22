@@ -101,11 +101,14 @@ migrating=0
 pre_migrate=""
 stopped=()
 work=""
+restore_dump=""
 on_exit() {
 	local status=$? started=""
 	# The ssh session may be gone: no signal or failed write may stop this.
 	trap '' PIPE HUP
 	set +e
+	# A restore's db.dump holds personal data: it never stays behind.
+	[ -z "$restore_dump" ] || as_app rm -f -- "$restore_dump" 2>/dev/null
 	if [ "$status" -ne 0 ] && [ "${#stopped[@]}" -gt 0 ]; then
 		if systemctl start "${stopped[@]}" >/dev/null 2>&1; then
 			started="restarted ${stopped[*]}"
@@ -379,18 +382,17 @@ if [ -n "$restore" ]; then
 	check_restore_tarball "$restore"
 	[ "$(app_table_count)" = 0 ] ||
 		die "refusing to restore: the database $DB_NAME already has tables"
+	# db.dump holds personal data: the EXIT trap removes it on any failure,
+	# a half-finished extraction included.
+	restore_dump="$DATA_DIR/db.dump"
 	as_app tar -xzf - -C "$DATA_DIR" <"$restore"
-	# db.dump holds personal data: it never stays behind, whatever happens.
-	if ! as_app pg_restore -f /dev/null "$DATA_DIR/db.dump"; then
-		as_app rm -f -- "$DATA_DIR/db.dump"
+	as_app pg_restore -f /dev/null "$restore_dump" ||
 		die "the restore dump failed verification (pg_restore could not read it)"
-	fi
-	if ! as_app pg_restore --clean --if-exists --no-owner --role="$DB_ROLE" \
-		--exit-on-error --single-transaction --dbname="$DB_NAME" "$DATA_DIR/db.dump"; then
-		as_app rm -f -- "$DATA_DIR/db.dump"
+	as_app pg_restore --clean --if-exists --no-owner --role="$DB_ROLE" \
+		--exit-on-error --single-transaction --dbname="$DB_NAME" "$restore_dump" ||
 		die "the restore failed; the database is left empty (one transaction)"
-	fi
-	as_app rm -f -- "$DATA_DIR/db.dump"
+	as_app rm -f -- "$restore_dump"
+	restore_dump=""
 	prepare_data_dir
 	say "restored $(basename "$restore")"
 fi

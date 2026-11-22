@@ -785,6 +785,22 @@ def test_remote_backup_refuses_a_dump_that_does_not_read_back(
     assert result.returncode != 0
     assert "verification" in result.stderr
     assert not any("tar -czf" in line for line in upgrade.log())
+    _assert_no_backup_left(upgrade)
+
+
+def _assert_no_backup_left(server: Server) -> None:
+    """A failed backup leaves no dump (personal data) and no partial tarball."""
+    assert list((server.data / "snapshots").iterdir()) == []
+    leftovers = list((server.root / "tmp").glob("conference-drawing-backup.*"))
+    assert leftovers == []
+
+
+def test_remote_backup_removes_its_dump_when_tar_fails(upgrade: Server) -> None:
+    (upgrade.data / "snapshots").mkdir()
+    upgrade.fakes.prepend("runuser", {"match": "tar -czf", "exit": 2})
+    result = upgrade.fakes.run([str(upgrade.release / "remote" / "backup.sh")])
+    assert result.returncode != 0
+    _assert_no_backup_left(upgrade)
 
 
 def test_install_does_not_chmod_through_a_symlink_inside_media(server: Server) -> None:
@@ -945,6 +961,19 @@ def test_install_restore_removes_the_dump_when_loading_fails(server: Server) -> 
     assert "the restore failed" in result.stderr
     assert not (server.data / "db.dump").exists()
     assert not any("conference-drawing init" in line for line in server.log())
+
+
+def test_install_restore_removes_the_dump_when_extracting_fails(
+    server: Server,
+) -> None:
+    """tar writes db.dump first, then fails on a later member."""
+    blocker = server.data / "media" / "covers" / "c.png"
+    (blocker / "inside").mkdir(parents=True)  # a directory where a file goes
+    backup = make_backup_tarball(server.fakes.root / "canned" / "backup.tar.gz")
+    result = server.install("--restore", str(backup))
+    assert result.returncode != 0
+    assert not (server.data / "db.dump").exists()
+    assert not any("pg_restore" in line for line in server.log())
 
 
 # --- uninstall -----------------------------------------------------------------
