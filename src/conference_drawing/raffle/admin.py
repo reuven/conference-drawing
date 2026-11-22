@@ -72,12 +72,17 @@ class ConferenceAdmin(admin.ModelAdmin[Conference]):
             create_default_questions(obj)
 
 
-def _has_picks(drawing: Drawing | None) -> bool:
-    return (
-        drawing is not None
-        and Drawing.objects.filter(
-            pk=drawing.pk, prizeline__pick__isnull=False
-        ).exists()
+def _frozen(drawing: Drawing | None) -> bool:
+    """Whether the drawing has started (or somehow has picks) and so is history.
+
+    Its prize lines are then read-only, with no adds or deletes, and the drawing
+    itself can't be deleted: changing a line after picks could crash the booth
+    (a physical line turned digital) or make the CSV disagree with the emails
+    already sent (a new shared code or URL template).
+    """
+    return drawing is not None and (
+        drawing.status != Drawing.Status.SCHEDULED
+        or Drawing.objects.filter(pk=drawing.pk, prizeline__pick__isnull=False).exists()
     )
 
 
@@ -164,15 +169,30 @@ class PrizeLineInline(admin.StackedInline[PrizeLine, Drawing]):
         )
         return f"{counts['unused']} unused / {counts['total']} total"
 
+    # Inlines take the parent object; django-stubs ignores this override too.
+    def has_add_permission(  # type: ignore[override]
+        self, request: HttpRequest, obj: Drawing | None
+    ) -> bool:
+        return not _frozen(obj) and super().has_add_permission(request, obj)
+
+    def has_change_permission(
+        self, request: HttpRequest, obj: Drawing | None = None
+    ) -> bool:
+        return not _frozen(obj) and super().has_change_permission(request, obj)
+
     def has_delete_permission(
         self, request: HttpRequest, obj: Drawing | None = None
     ) -> bool:
         # Deleting a line cascades to its picks and assigned codes.
-        return not _has_picks(obj) and super().has_delete_permission(request, obj)
+        return not _frozen(obj) and super().has_delete_permission(request, obj)
 
 
 class DrawingAdminForm(forms.ModelForm[Drawing]):
-    """Takes `scheduled_at` as local wall-clock time in the conference's zone."""
+    """Takes `scheduled_at` as local wall-clock time in the conference's zone.
+
+    `status` is not a field: only the booth's drawing service moves a drawing
+    through scheduled, open and finished, setting the cutoff and picks as it goes.
+    """
 
     scheduled_at = forms.SplitDateTimeField(
         widget=AdminSplitDateTime,
@@ -181,7 +201,7 @@ class DrawingAdminForm(forms.ModelForm[Drawing]):
 
     class Meta:
         model = Drawing
-        fields = ("conference", "scheduled_at", "status")
+        fields = ("conference", "scheduled_at")
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -228,7 +248,7 @@ class DrawingAdmin(admin.ModelAdmin[Drawing]):
     ) -> tuple[str, ...]:
         # Moving a drawing to another conference would silently change its
         # time zone, and with it the entry cutoff.
-        return ("conference",) if obj else ()
+        return ("conference", "status") if obj else ("status",)
 
     @admin.display(description="Scheduled (local)", ordering="scheduled_at")
     def local_time(self, obj: Drawing) -> str:
@@ -241,7 +261,7 @@ class DrawingAdmin(admin.ModelAdmin[Drawing]):
     def has_delete_permission(
         self, request: HttpRequest, obj: Drawing | None = None
     ) -> bool:
-        return not _has_picks(obj) and super().has_delete_permission(request, obj)
+        return not _frozen(obj) and super().has_delete_permission(request, obj)
 
 
 class _ReadOnlyAdmin[M: Any](admin.ModelAdmin[M]):

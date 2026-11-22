@@ -582,3 +582,143 @@ def test_codes_text_rejected_for_physical_line(
     assert resp.status_code == 200
     assert not Drawing.objects.exists()
     assert not CouponCode.objects.exists()
+
+
+# --- the drawing state machine is the booth's, never the admin's ---------------
+
+
+@pytest.mark.parametrize(
+    ("status", "posted"),
+    [
+        (Drawing.Status.FINISHED, "scheduled"),  # restart: would award twice
+        (Drawing.Status.SCHEDULED, "open"),  # open with no cutoff: 500 on Not here
+    ],
+)
+def test_drawing_status_is_read_only(
+    admin_client: Client,
+    conference_factory: Factory,
+    drawing_factory: Factory,
+    status: Drawing.Status,
+    posted: str,
+) -> None:
+    drawing = drawing_factory(conference_factory(), status=status)
+    url = reverse("admin:raffle_drawing_change", args=[drawing.pk])
+    assert 'name="status"' not in admin_client.get(url).content.decode()
+    data = {
+        "status": posted,
+        "scheduled_at_0": "2027-05-11",
+        "scheduled_at_1": "14:00:00",
+        **_formset("prizeline_set", []),
+    }
+    assert admin_client.post(url, data).status_code == 302
+    drawing.refresh_from_db()
+    assert drawing.status == status
+
+
+def test_new_drawing_ignores_posted_status(
+    admin_client: Client, conference_factory: Factory, book_factory: Factory
+) -> None:
+    conf = conference_factory()
+    physical = _line_row(kind="physical", url_template="", code_mode="")
+    data = _drawing_post(conf, book_factory().pk, [physical], status="open")
+    resp = admin_client.post(reverse("admin:raffle_drawing_add"), data)
+    assert resp.status_code == 302
+    assert Drawing.objects.get().status == Drawing.Status.SCHEDULED
+
+
+@pytest.mark.parametrize("status", [Drawing.Status.OPEN, Drawing.Status.FINISHED])
+def test_prize_lines_are_frozen_once_the_drawing_starts(
+    admin_client: Client,
+    conference_factory: Factory,
+    drawing_factory: Factory,
+    prize_line_factory: Factory,
+    book_factory: Factory,
+    status: Drawing.Status,
+) -> None:
+    """No edits, adds or deletes: the picks, emails and CSV must keep agreeing."""
+    conf = conference_factory()
+    drawing = drawing_factory(conf, status=status)
+    line = prize_line_factory(
+        drawing,
+        kind=PrizeLine.Kind.DIGITAL,
+        url_template="https://example.com/r?c={code}",
+        code_mode=PrizeLine.CodeMode.SHARED,
+        shared_code="SHARED1",
+        quantity=2,
+    )
+    url = reverse("admin:raffle_drawing_change", args=[drawing.pk])
+    html = admin_client.get(url).content.decode()
+    for name in ("kind", "quantity", "shared_code", "url_template", "DELETE"):
+        assert f'name="prizeline_set-0-{name}"' not in html
+    changed = _line_row(
+        id=line.pk,
+        drawing=drawing.pk,
+        book=line.book_id,
+        kind="physical",
+        quantity=5,
+        url_template="https://evil.example/{code}",
+        code_mode="shared",
+        shared_code="CHANGED",
+        DELETE="on",
+    )
+    added = _line_row(book=book_factory().pk, kind="physical", code_mode="")
+    data = {
+        "scheduled_at_0": "2027-05-11",
+        "scheduled_at_1": "14:00:00",
+        **_formset("prizeline_set", [changed, added], 1),
+    }
+    admin_client.post(url, data)
+    line.refresh_from_db()
+    assert (line.kind, line.quantity, line.shared_code, line.url_template) == (
+        PrizeLine.Kind.DIGITAL,
+        2,
+        "SHARED1",
+        "https://example.com/r?c={code}",
+    )
+    assert list(PrizeLine.objects.filter(drawing=drawing)) == [line]
+
+
+def test_prize_lines_stay_editable_while_scheduled(
+    admin_client: Client,
+    conference_factory: Factory,
+    drawing_factory: Factory,
+    prize_line_factory: Factory,
+) -> None:
+    drawing = drawing_factory(conference_factory())
+    prize_line_factory(drawing)
+    html = admin_client.get(
+        reverse("admin:raffle_drawing_change", args=[drawing.pk])
+    ).content.decode()
+    for name in ("kind", "quantity", "DELETE"):
+        assert f'name="prizeline_set-0-{name}"' in html
+
+
+@pytest.mark.parametrize("status", [Drawing.Status.OPEN, Drawing.Status.FINISHED])
+def test_started_drawing_cannot_be_deleted_even_without_picks(
+    admin_client: Client,
+    conference_factory: Factory,
+    drawing_factory: Factory,
+    prize_line_factory: Factory,
+    status: Drawing.Status,
+) -> None:
+    drawing = drawing_factory(conference_factory(), status=status)
+    prize_line_factory(drawing)  # an empty pool: started, but nobody picked
+    delete = reverse("admin:raffle_drawing_delete", args=[drawing.pk])
+    assert admin_client.post(delete, {"post": "yes"}).status_code == 403
+    bulk = {
+        "action": "delete_selected",
+        "_selected_action": [drawing.pk],
+        "post": "yes",
+    }
+    admin_client.post(reverse("admin:raffle_drawing_changelist"), bulk)
+    assert Drawing.objects.filter(pk=drawing.pk).exists()
+    assert PrizeLine.objects.filter(drawing=drawing).exists()
+
+
+def test_scheduled_drawing_can_still_be_deleted(
+    admin_client: Client, conference_factory: Factory, drawing_factory: Factory
+) -> None:
+    drawing = drawing_factory(conference_factory())
+    delete = reverse("admin:raffle_drawing_delete", args=[drawing.pk])
+    assert admin_client.post(delete, {"post": "yes"}).status_code == 302
+    assert not Drawing.objects.exists()
