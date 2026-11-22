@@ -86,21 +86,49 @@ PG_MARKER = "srv/conference-drawing/.installed-postgresql"
 PG_DROPIN = "etc/postgresql/16/main/conf.d/conference-drawing.conf"
 
 
-def _canned(active: bool, dump: Path) -> dict[str, list[Entry]]:
-    """Responses for a server whose PostgreSQL exists only if `active`."""
+APT_INSTALL = (
+    "apt-get install -y -q --no-install-recommends -o DPkg::Lock::Timeout=300 "
+    "postgresql"
+)
+PURGE = "apt-get purge -y -q postgresql postgresql-16"
+CLUSTER_16 = (
+    "16  main    5432 online postgres /var/lib/postgresql/16/main "
+    "/var/log/postgresql/postgresql-16-main.log\n"
+)
+
+
+def _dpkg(*packages: str) -> list[Entry]:
+    """dpkg-query's answer for the versioned server packages installed."""
+    if not packages:
+        return [{"match": "postgresql-[0-9]*", "exit": 1}]
+    lines = "".join(f"{p} install ok installed\n" for p in packages)
+    return [{"match": "postgresql-[0-9]*", "stdout": lines}]
+
+
+def _canned(active: bool, dump: Path, root: Path) -> dict[str, list[Entry]]:
+    """Responses for a server whose PostgreSQL 16 exists only if `active`."""
     return {
-        "dpkg-query": [
-            {"match": "postgresql", "stdout": "install ok installed"}
-            if active
-            else {"match": "postgresql", "exit": 1}
-        ],
+        "dpkg-query": _dpkg("postgresql-16") if active else _dpkg(),
         "apt-get": [
-            {"match": "install -y -q postgresql"},
-            {"match": "purge -y -q postgresql postgresql-16"},
+            {"match": "update -q"},
+            {
+                "match": APT_INSTALL.removeprefix("apt-get "),
+                "exact": True,
+                # What Ubuntu's package leaves: one cluster, 16/main.
+                "mkdirs": [str(root / "etc/postgresql/16/main/conf.d")],
+            },
+            {"match": PURGE.removeprefix("apt-get "), "exact": True},
         ],
+        "pg_lsclusters": [{"match": "--no-header", "stdout": CLUSTER_16}],
         "psql": [
+            {"match": "SHOW server_version_num", "stdout": "160004\n"},
+            {"match": "SHOW listen_addresses", "stdout": "localhost\n"},
             {"match": "pg_tables", "stdout": "14\n" if active else "0\n"},
+            {"match": "-f -", "stdin_match": "datdba", "stdout": ""},
             {"match": "FROM pg_database WHERE", "stdout": ""},
+            {"match": "--dbname=postgres", "stdout": "0\n"},
+            {"match": "--dbname=template1", "stdout": "0\n"},
+            {"match": "FROM pg_roles", "stdout": ""},
             {"match": "-v ON_ERROR_STOP=1"},
         ],
         "pg_dump": [{"match": "-Fc", "copy_to_flag": "--file", "file": str(dump)}],
@@ -134,6 +162,9 @@ def _canned(active: bool, dump: Path) -> dict[str, list[Entry]]:
             {
                 "match": "/bin/conference-drawing init",
                 "ensure_env_line": "DJANGO_SECRET_KEY='fake'",
+                # The app must use the distribution's socket, not libpq's
+                # compiled-in default (the binary wheel's may differ).
+                "require_env": {"CD_DB_HOST": "/var/run/postgresql"},
             },
             {
                 "match": "/bin/conference-drawing collectstatic",
@@ -166,11 +197,9 @@ def server(fakes: Fakes) -> Server:
     (root / "etc" / "systemd" / "system").mkdir(parents=True)
     (root / "usr" / "local" / "bin").mkdir(parents=True)
     (root / "usr" / "local" / "bin" / "uv").symlink_to(FAKES / "uv")
-    # What Ubuntu's postgresql package leaves (the fake apt-get installs nothing).
-    (root / "etc" / "postgresql" / "16" / "main" / "conf.d").mkdir(parents=True)
     fakes.extra_env["CD_ROOT"] = str(root)
     make_dump(fakes.root / "canned" / "db.dump")
-    fakes.responses.update(_canned(active=False, dump=_canned_dump(fakes)))
+    fakes.responses.update(_canned(active=False, dump=_canned_dump(fakes), root=root))
     return Server(fakes, root, release)
 
 
@@ -191,7 +220,10 @@ def upgrade(server: Server) -> Server:
         (server.app / name / "bin").mkdir(parents=True)
     (server.app / "venv").symlink_to("venv-20261115T000000Z-bbbbbbbbbbbb")
     (server.root / PG_MARKER).write_text("16\n")
-    server.fakes.responses.update(_canned(active=True, dump=_canned_dump(server.fakes)))
+    (server.root / "etc/postgresql/16/main/conf.d").mkdir(parents=True)
+    server.fakes.responses.update(
+        _canned(active=True, dump=_canned_dump(server.fakes), root=server.root)
+    )
     return server
 
 
@@ -290,7 +322,9 @@ def test_fresh_install_installs_postgresql_and_records_that_it_did(
     result = server.install()
     assert result.returncode == 0, result.stderr
     log = server.log()
-    assert "apt-get install -y -q postgresql" in log
+    assert log.index("apt-get update -q -o DPkg::Lock::Timeout=300") < log.index(
+        APT_INSTALL
+    )
     assert (server.root / PG_MARKER).read_text() == "16\n"
     dropin = (server.root / PG_DROPIN).read_text()
     for setting in (
@@ -303,13 +337,18 @@ def test_fresh_install_installs_postgresql_and_records_that_it_did(
     restart = server.index("systemctl restart postgresql")
     assert server.index("flock --wait") < server.index("apt-get install")
     assert restart < server.index("runuser -u postgres -- psql")
+    assert "listens on" not in result.stderr  # our own server: no warning
 
 
 def test_install_creates_the_role_and_database_through_psql_variables(
     server: Server,
 ) -> None:
     assert server.install().returncode == 0
-    (admin,) = _psql_calls(server, "postgres")
+    admin = next(
+        " ".join(c.argv)
+        for c in server.fakes.calls("runuser")
+        if c.argv[:2] == ["-u", "postgres"] and "-f" in c.argv
+    )
     assert admin.startswith("-u postgres -- psql -X ")
     assert "-v ON_ERROR_STOP=1" in admin
     assert "-v role=conference-drawing" in admin
@@ -329,17 +368,57 @@ def test_install_creates_the_role_and_database_through_psql_variables(
     assert "PASSWORD '" not in sql
 
 
-def test_install_leaves_an_existing_postgresql_alone(server: Server) -> None:
-    server.fakes.set(
-        "dpkg-query", [{"match": "postgresql", "stdout": "install ok installed"}]
+def _existing_server(server: Server, major: str) -> None:
+    """Someone else's PostgreSQL `major` is already on the server."""
+    (server.root / f"etc/postgresql/{major}/main/conf.d").mkdir(parents=True)
+    server.fakes.set("dpkg-query", _dpkg(f"postgresql-{major}"))
+    server.fakes.prepend(
+        "psql", {"match": "SHOW server_version_num", "stdout": f"{major}0004\n"}
     )
-    assert server.install().returncode == 0
+    server.fakes.prepend(
+        "psql", {"match": "SHOW listen_addresses", "stdout": "localhost, 10.0.0.5\n"}
+    )
+
+
+@pytest.mark.parametrize("major", ["16", "17"])
+def test_install_never_claims_an_existing_postgresql(
+    server: Server, major: str
+) -> None:
+    """postgresql-16 without the metapackage, or PGDG's postgresql-17: either way
+    the server is someone else's. No apt, no marker, no drop-in, no restart."""
+    _existing_server(server, major)
+    result = server.install()
+    assert result.returncode == 0, result.stderr
     log = server.log()
     assert not any(line.startswith("apt-get") for line in log)
     assert not (server.root / PG_MARKER).exists()
-    assert not (server.root / PG_DROPIN).exists()
-    assert "systemctl restart postgresql" not in log
-    assert len(_psql_calls(server, "postgres")) == 1  # the role and database
+    assert list((server.root / f"etc/postgresql/{major}/main/conf.d").iterdir()) == []
+    assert not any("restart postgresql" in line for line in log)
+    # It still gets our role and database, and a warning, nothing changed.
+    assert 'CREATE DATABASE :"db"' in _admin_sql(server)
+    assert "warning" in result.stderr
+    assert "listens on 'localhost, 10.0.0.5'" in result.stderr
+
+
+def test_install_refuses_a_postgresql_older_than_15(server: Server) -> None:
+    _existing_server(server, "14")
+    result = server.install()
+    assert result.returncode != 0
+    assert "15 or later" in result.stderr
+    assert "PostgreSQL 14" in result.stderr
+    assert 'CREATE ROLE :"role"' not in _admin_sql(server)
+    assert not any("conference-drawing init" in line for line in server.log())
+
+
+def test_install_refuses_a_database_owned_by_another_role(server: Server) -> None:
+    server.fakes.prepend(
+        "psql", {"match": "-f -", "stdin_match": "datdba", "stdout": "wordpress\n"}
+    )
+    result = server.install()
+    assert result.returncode != 0
+    assert "owned by role wordpress" in result.stderr
+    sql = _admin_sql(server)
+    assert "CREATE ROLE" not in sql and "ALTER" not in sql and "REVOKE" not in sql
 
 
 def test_install_restarts_postgresql_only_when_its_dropin_changes(
@@ -347,9 +426,7 @@ def test_install_restarts_postgresql_only_when_its_dropin_changes(
 ) -> None:
     assert server.install().returncode == 0
     server.fakes.log.unlink()
-    server.fakes.set(
-        "dpkg-query", [{"match": "postgresql", "stdout": "install ok installed"}]
-    )
+    server.fakes.set("dpkg-query", _dpkg("postgresql-16"))
     assert server.install().returncode == 0
     log = server.log()
     assert "systemctl restart postgresql" not in log
@@ -358,6 +435,10 @@ def test_install_restarts_postgresql_only_when_its_dropin_changes(
 
 
 def test_install_refuses_a_symlinked_postgresql_dropin(server: Server) -> None:
+    # A server this install set up earlier (the marker), whose drop-in is a link.
+    _existing_server(server, "16")
+    server.app.mkdir(parents=True)
+    (server.root / PG_MARKER).write_text("16\n")
     sentinel = server.fakes.root / "sentinel"
     sentinel.write_text("untouched\n")
     (server.root / PG_DROPIN).symlink_to(sentinel)
@@ -368,7 +449,9 @@ def test_install_refuses_a_symlinked_postgresql_dropin(server: Server) -> None:
 
 
 def test_install_fails_when_the_role_cannot_be_created(server: Server) -> None:
-    server.fakes.prepend("psql", {"match": "-v role=", "exit": 3})
+    server.fakes.prepend(
+        "psql", {"match": "-f -", "stdin_match": "CREATE ROLE", "exit": 3}
+    )
     result = server.install()
     assert result.returncode != 0
     assert not any("conference-drawing init" in line for line in server.log())
@@ -387,6 +470,8 @@ def test_units_need_postgresql(unit: str) -> None:
     after = [line for line in lines if line.startswith("After=")]
     assert any("postgresql.service" in line.split("=", 1)[1].split() for line in after)
     assert "Requires=postgresql.service" in lines
+    # The distribution's socket, not libpq's compiled-in default.
+    assert "Environment=CD_DB_HOST=/var/run/postgresql" in lines
 
 
 # --- upgrades ------------------------------------------------------------------
@@ -731,6 +816,18 @@ HOSTILE = {
 }
 
 
+def test_check_restore_tarball_explains_an_old_sqlite_backup(fakes: Fakes) -> None:
+    entries = [_file("db.sqlite3"), _file("media/covers/c.png")]
+    path = _tarball(fakes.root / "old.tar.gz", entries)
+    script = 'source "$1"; check_restore_tarball "$2"'
+    result = fakes.run(["-c", script, "_", COMMON, str(path)])
+    assert result.returncode != 0
+    assert (
+        "from the SQLite version of conference-drawing and cannot be restored "
+        "into PostgreSQL" in result.stderr
+    )
+
+
 @pytest.mark.parametrize("case", HOSTILE)
 def test_check_restore_tarball_refuses_hostile_archives(
     fakes: Fakes, case: str
@@ -791,7 +888,19 @@ def test_install_restore_refuses_a_dump_that_does_not_read_back(
         tar.add(work / "db.dump", arcname="db.dump")
     result = server.install("--restore", str(bad))
     assert result.returncode != 0
+    assert "failed verification" in result.stderr
     assert not any("pg_restore --clean" in line for line in server.log())
+    assert not (server.data / "db.dump").exists()  # personal data, cleaned up
+
+
+def test_install_restore_removes_the_dump_when_loading_fails(server: Server) -> None:
+    server.fakes.prepend("pg_restore", {"match": "--clean", "exit": 1})
+    backup = make_backup_tarball(server.fakes.root / "canned" / "backup.tar.gz")
+    result = server.install("--restore", str(backup))
+    assert result.returncode != 0
+    assert "the restore failed" in result.stderr
+    assert not (server.data / "db.dump").exists()
+    assert not any("conference-drawing init" in line for line in server.log())
 
 
 # --- uninstall -----------------------------------------------------------------
@@ -801,6 +910,7 @@ def test_uninstall_stops_units_then_removes_everything(upgrade: Server) -> None:
     for unit in [*APP_UNITS, "conference-drawing-snapshot.service"]:
         (upgrade.root / "etc/systemd/system" / unit).write_text("")
     (upgrade.root / "etc/caddy/sites/conference-drawing.caddy").write_text("x\n")
+    (upgrade.root / PG_DROPIN).write_text("listen_addresses = ''\n")
     upgrade.fakes.prepend("systemctl", {"match": "is-active", "exit": 3})
     result = upgrade.uninstall()
     assert result.returncode == 0, result.stderr
@@ -815,24 +925,69 @@ def test_uninstall_stops_units_then_removes_everything(upgrade: Server) -> None:
     assert upgrade.index("runuser -u postgres -- psql") > upgrade.index(
         "systemctl disable --now"
     )
-    # This install put PostgreSQL there and nothing else uses it: it goes too.
-    assert upgrade.index("apt-get purge -y -q postgresql postgresql-16") < (
-        upgrade.index("userdel")
-    )
+    # This install put PostgreSQL there and nothing else uses it: it goes too,
+    # after every check (one cluster, no other database, relation or role).
+    purge = upgrade.index(PURGE)
+    for check in (
+        "pg_lsclusters",
+        "FROM pg_database WHERE",
+        "--dbname=postgres",
+        "--dbname=template1",
+        "FROM pg_roles",
+    ):
+        assert upgrade.index(check) < purge, check
+    assert purge < upgrade.index("userdel")
+    assert not (upgrade.root / PG_DROPIN).exists()
 
 
-def test_uninstall_keeps_postgresql_when_other_databases_exist(
-    upgrade: Server,
-) -> None:
+def _stopped(upgrade: Server) -> Server:
     upgrade.fakes.prepend("systemctl", {"match": "is-active", "exit": 3})
-    upgrade.fakes.prepend(
-        "psql", {"match": "FROM pg_database WHERE", "stdout": "someone_else\n"}
-    )
+    return upgrade
+
+
+TWO_CLUSTERS = CLUSTER_16 + CLUSTER_16.replace(" main ", " other ")
+
+PURGE_BLOCKERS: dict[str, tuple[str, Entry]] = {
+    "two clusters": ("pg_lsclusters", {"match": "--no-header", "stdout": TWO_CLUSTERS}),
+    "not main": (
+        "pg_lsclusters",
+        {"match": "--no-header", "stdout": CLUSTER_16.replace(" main ", " web ")},
+    ),
+    "other major": (
+        "pg_lsclusters",
+        {"match": "--no-header", "stdout": CLUSTER_16.replace("16 ", "17 ", 1)},
+    ),
+    "no clusters listed": ("pg_lsclusters", {"match": "--no-header", "stdout": ""}),
+    "pg_lsclusters fails": ("pg_lsclusters", {"match": "--no-header", "exit": 1}),
+    "other database": (
+        "psql",
+        {"match": "FROM pg_database WHERE", "stdout": "someone_else\n"},
+    ),
+    "tables in postgres": ("psql", {"match": "--dbname=postgres", "stdout": "3\n"}),
+    "tables in template1": ("psql", {"match": "--dbname=template1", "stdout": "1\n"}),
+    "other role": ("psql", {"match": "FROM pg_roles", "stdout": "wordpress\n"}),
+    "a query fails": ("psql", {"match": "FROM pg_roles", "exit": 2}),
+    "a count is not a number": (
+        "psql",
+        {"match": "--dbname=postgres", "stdout": "\n"},
+    ),
+}
+
+
+@pytest.mark.parametrize("blocker", PURGE_BLOCKERS)
+def test_uninstall_keeps_postgresql_unless_it_is_provably_ours_alone(
+    upgrade: Server, blocker: str
+) -> None:
+    tool, entry = PURGE_BLOCKERS[blocker]
+    _stopped(upgrade).fakes.prepend(tool, entry)
     result = upgrade.uninstall()
     assert result.returncode == 0, result.stderr
     assert not any(line.startswith("apt-get") for line in upgrade.log())
-    assert "other databases" in result.stderr
-    assert 'DROP DATABASE IF EXISTS :"db"' in _admin_sql(upgrade)
+    assert 'DROP DATABASE IF EXISTS :"db"' in _admin_sql(upgrade)  # ours still goes
+    # The operator gets the command and is told the drop-in stayed.
+    assert f"{PURGE}" in result.stderr
+    assert f"/{PG_DROPIN}" in result.stderr
+    assert not upgrade.app.exists()
 
 
 def test_uninstall_keeps_a_postgresql_it_did_not_install(upgrade: Server) -> None:
@@ -846,7 +1001,8 @@ def test_uninstall_keeps_a_postgresql_it_did_not_install(upgrade: Server) -> Non
 
 def test_uninstall_without_postgresql_skips_the_database(upgrade: Server) -> None:
     upgrade.fakes.prepend("systemctl", {"match": "is-active", "exit": 3})
-    upgrade.fakes.set("dpkg-query", [{"match": "postgresql", "exit": 1}])
+    upgrade.fakes.set("dpkg-query", _dpkg())
+    shutil.rmtree(upgrade.root / "etc/postgresql")
     result = upgrade.uninstall()
     assert result.returncode == 0, result.stderr
     assert upgrade.fakes.calls("psql") == []

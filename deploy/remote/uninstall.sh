@@ -37,10 +37,44 @@ systemctl daemon-reload
 # Forget any failed state so the next preflight sees a clean server.
 systemctl reset-failed "${units[@]}" 2>/dev/null || true
 
+# Is it provably safe to purge PostgreSQL $1? Only if this PostgreSQL is a
+# single cluster, "<major> main", and nothing but the stock databases, the
+# stock roles and empty postgres/template1 databases is left in it. Purging
+# postgresql-<major> deletes every cluster of that version, so anything else
+# means someone else's data. Every check fails closed: a failed or odd answer
+# means "no". Prints the reason when it says no.
+safe_to_purge() {
+	local major=$1 clusters out db
+	if ! clusters=$(pg_lsclusters --no-header 2>/dev/null) ||
+		! printf '%s\n' "$clusters" | awk -v m="$major" '
+			NF { n++; if ($1 != m || $2 != "main") bad = 1 }
+			END { exit !(n == 1 && !bad) }'; then
+		say "not removing PostgreSQL: it is not exactly one cluster, $major main"
+		return 1
+	fi
+	if ! out=$(pg_admin -At -c "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres', 'template0', 'template1')") ||
+		[ -n "$out" ]; then
+		say "not removing PostgreSQL: other databases exist (or the check failed)"
+		return 1
+	fi
+	for db in postgres template1; do
+		if ! out=$(pg_admin -At --dbname="$db" -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\_%'") ||
+			[ "$out" != 0 ]; then
+			say "not removing PostgreSQL: the $db database holds relations of its own (or the check failed)"
+			return 1
+		fi
+	done
+	if ! out=$(pg_admin -At -c "SELECT rolname FROM pg_roles WHERE rolname <> 'postgres' AND rolname NOT LIKE 'pg\_%'") ||
+		[ -n "$out" ]; then
+		say "not removing PostgreSQL: other roles exist (or the check failed)"
+		return 1
+	fi
+}
+
 # The database and role go once nothing can use them. PostgreSQL itself goes
-# only if install.sh installed it (the marker) and no other database exists;
-# its dependencies (postgresql-common, the client) stay for apt autoremove.
-if postgresql_installed; then
+# only if install.sh installed it (the marker) and safe_to_purge agrees; its
+# dependencies (postgresql-common, the client) stay for apt autoremove.
+if [ -n "$(pg_server_majors)" ]; then
 	say "dropping the $DB_NAME database and the $DB_ROLE role"
 	pg_admin -f - <<'SQL'
 DROP DATABASE IF EXISTS :"db" WITH (FORCE);
@@ -50,14 +84,18 @@ SQL
 	if [ -f "$PG_MARKER" ]; then
 		major=$(cat "$PG_MARKER")
 		[[ $major =~ ^[0-9]+$ ]] || die "$PG_MARKER does not hold a PostgreSQL major version"
-		others=$(pg_admin -At -c "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres', 'template0', 'template1')")
-		if [ -n "$others" ]; then
-			say "left PostgreSQL installed: other databases exist ($(printf '%s\n' "$others" | wc -l | tr -d ' '))"
-		else
+		dropin="$ROOT/etc/postgresql/$major/main/conf.d/$PG_DROPIN_NAME"
+		if safe_to_purge "$major"; then
 			say "removing PostgreSQL $major, which install.sh installed"
-			rm -f "$ROOT/etc/postgresql/$major/main/conf.d/$PG_DROPIN_NAME"
+			rm -f "$dropin"
 			DEBIAN_FRONTEND=noninteractive apt-get purge -y -q postgresql "postgresql-$major"
+		else
+			say "left PostgreSQL $major installed, and its drop-in $dropin with it." \
+				"Once nothing else needs it, remove it by hand with:" \
+				"apt-get purge -y -q postgresql postgresql-$major"
 		fi
+	else
+		say "left PostgreSQL alone: install.sh did not install it"
 	fi
 else
 	say "PostgreSQL is not installed; no database to drop"

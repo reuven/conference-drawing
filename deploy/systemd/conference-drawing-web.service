@@ -12,6 +12,7 @@ Group=conference-drawing
 Environment=CD_ENV_FILE=/srv/conference-drawing/data/.env
 Environment=CD_DATA_DIR=/srv/conference-drawing/data
 Environment=CD_VERSION_FILE=/srv/conference-drawing/version.json
+Environment=CD_DB_HOST=/var/run/postgresql
 # /run/conference-drawing holds the socket. The directory is 0750 and handed
 # to group caddy ("+": as root) before gunicorn starts, so only gunicorn's
 # user and Caddy can reach the socket (gunicorn binds it with its own umask,

@@ -8,12 +8,22 @@
 # DJANGO_SUPERUSER_USERNAME/EMAIL/PASSWORD), never in argv. Safe to run again:
 # init only fills in what is missing, then migrates and runs createcachetable.
 #
-# The database is PostgreSQL on the local unix socket. A first run installs
-# Ubuntu's postgresql package if it is missing (recording that it did, in
-# /srv/conference-drawing/.installed-postgresql, and only then giving it a
-# small-footprint conf.d drop-in), and creates the role conference-drawing
-# (LOGIN, no password: the app user's OS name maps to it by peer auth) and the
-# database conference_drawing it owns. Every run repeats that idempotently.
+# The database is PostgreSQL on the local unix socket. If the server has no
+# PostgreSQL at all (no cluster under /etc/postgresql, no postgresql-<major>
+# package), a first run installs Ubuntu's, records that it did in
+# /srv/conference-drawing/.installed-postgresql, and gives it a
+# small-footprint conf.d drop-in. A PostgreSQL that was already there belongs
+# to someone else: no apt, no marker, no drop-in, no restart, only a warning
+# showing its listen_addresses. Either way it must be version 15 or later
+# (Django 6.1), and the run creates the role conference-drawing (LOGIN, no
+# password: the app user's OS name maps to it by peer auth) and the database
+# conference_drawing it owns, idempotently; a conference_drawing database that
+# another role owns is refused, never taken over.
+#
+# The units have Requires=postgresql.service, so restarting PostgreSQL also
+# restarts the web app and the Drip worker for a moment. That happens only
+# when the drop-in's content changed (cmp), which on a server this script set
+# up means the first install or a release that changes the drop-in.
 #
 # Upgrades keep the old release serving for as long as possible:
 #   1. a new venv, venv-<UTC time>-<commit>, is built beside the live one
@@ -214,26 +224,37 @@ write_env_keys() {
 	' _ "$ENV_FILE"
 }
 
-# Install Ubuntu's postgresql package if it is missing, and record that this
-# script did, so uninstall.sh may purge it again. Only a PostgreSQL this script
-# installed gets the small-footprint drop-in: one that was already there may
-# serve others, so its configuration is left alone. Restarts PostgreSQL only
-# when the drop-in changed (its settings need a restart, not a reload).
+# Install Ubuntu's postgresql package only if the server has no PostgreSQL,
+# and record that this script did (the marker), so uninstall.sh may purge it
+# again. Only a PostgreSQL this script installed (the marker, naming the one
+# server there is) gets the small-footprint drop-in: one that was already
+# there may serve others, so its configuration is left alone. Restarts
+# PostgreSQL only when the drop-in's content changed (its settings need a
+# restart, not a reload). Sets pg_ours.
+pg_ours=0
 ensure_postgresql() {
-	local confs major dropin new
+	local majors major dropin new
 	no_symlink "$PG_MARKER"
-	if ! postgresql_installed; then
+	majors=$(pg_server_majors)
+	if [ -z "$majors" ]; then
 		say "installing PostgreSQL"
-		DEBIAN_FRONTEND=noninteractive apt-get install -y -q postgresql
-		confs=("$ROOT"/etc/postgresql/*/main/conf.d)
-		[ "${#confs[@]}" -eq 1 ] && [ -d "${confs[0]}" ] ||
-			die "expected exactly one PostgreSQL cluster under /etc/postgresql"
-		major=$(basename "$(dirname "$(dirname "${confs[0]}")")")
-		printf '%s\n' "$major" >"$PG_MARKER"
+		DEBIAN_FRONTEND=noninteractive apt-get update -q -o DPkg::Lock::Timeout=300
+		DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+			-o DPkg::Lock::Timeout=300 postgresql
+		majors=$(pg_server_majors)
+		[[ $majors =~ ^[0-9]+$ ]] ||
+			die "expected exactly one PostgreSQL version after installing it, found: ${majors:-none}"
+		printf '%s\n' "$majors" >"$PG_MARKER"
 	fi
-	[ -f "$PG_MARKER" ] || return 0
-	major=$(cat "$PG_MARKER")
-	[[ $major =~ ^[0-9]+$ ]] || die "$PG_MARKER does not hold a PostgreSQL major version"
+	if [ -f "$PG_MARKER" ]; then
+		major=$(cat "$PG_MARKER")
+		[[ $major =~ ^[0-9]+$ ]] || die "$PG_MARKER does not hold a PostgreSQL major version"
+		[ "$majors" != "$major" ] || pg_ours=1
+	fi
+	if [ "$pg_ours" -eq 0 ]; then
+		say "using the PostgreSQL already on this server (version ${majors//$'\n'/, }); its configuration is left alone"
+		return 0
+	fi
 	dropin="$ROOT/etc/postgresql/$major/main/conf.d/$PG_DROPIN_NAME"
 	no_symlink "$dropin"
 	new="$work/$PG_DROPIN_NAME"
@@ -249,10 +270,33 @@ ensure_postgresql() {
 	fi
 }
 
+# Refuse a server older than 15 (Django 6.1's minimum). On someone else's
+# server, warn where it listens besides the socket; change nothing.
+check_postgresql() {
+	local version listen
+	version=$(pg_admin -At -c "SHOW server_version_num") ||
+		die "cannot reach PostgreSQL as postgres on the local socket"
+	[[ $version =~ ^[0-9]+$ ]] || die "unexpected server_version_num from PostgreSQL: $version"
+	[ "$version" -ge 150000 ] ||
+		die "PostgreSQL $((version / 10000)) is too old: conference-drawing (Django 6.1) needs 15 or later"
+	if [ "$pg_ours" -eq 0 ]; then
+		listen=$(pg_admin -At -c "SHOW listen_addresses") || listen="(unknown)"
+		say "warning: this server's PostgreSQL listens on '$listen' besides its socket; install.sh leaves that alone"
+	fi
+}
+
 # Create the role and its database if missing, idempotently, as postgres.
 # The role logs in by peer auth only: it never gets a password. Nobody else
 # may connect to the database.
 provision_database() {
+	local owner
+	owner=$(pg_admin -At -f - <<'SQL'
+SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = :'db';
+SQL
+	) || die "cannot read the database list from PostgreSQL"
+	if [ -n "$owner" ] && [ "$owner" != "$DB_ROLE" ]; then
+		die "the database $DB_NAME already exists, owned by role $owner; refusing to use or change it"
+	fi
 	pg_admin -f - <<'SQL'
 SELECT NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'role') AS need_role \gset
 \if :need_role
@@ -294,6 +338,7 @@ chmod 0640 "$LOCK_FILE"
 take_lock 600
 say "PostgreSQL"
 ensure_postgresql
+check_postgresql
 provision_database
 prepare_data_dir
 if [ -n "$restore" ]; then
@@ -302,10 +347,16 @@ if [ -n "$restore" ]; then
 	[ "$(app_table_count)" = 0 ] ||
 		die "refusing to restore: the database $DB_NAME already has tables"
 	as_app tar -xzf - -C "$DATA_DIR" <"$restore"
-	as_app pg_restore -f /dev/null "$DATA_DIR/db.dump" ||
+	# db.dump holds personal data: it never stays behind, whatever happens.
+	if ! as_app pg_restore -f /dev/null "$DATA_DIR/db.dump"; then
+		as_app rm -f -- "$DATA_DIR/db.dump"
 		die "the restore dump failed verification (pg_restore could not read it)"
-	as_app pg_restore --clean --if-exists --no-owner --role="$DB_ROLE" \
-		--exit-on-error --single-transaction --dbname="$DB_NAME" "$DATA_DIR/db.dump"
+	fi
+	if ! as_app pg_restore --clean --if-exists --no-owner --role="$DB_ROLE" \
+		--exit-on-error --single-transaction --dbname="$DB_NAME" "$DATA_DIR/db.dump"; then
+		as_app rm -f -- "$DATA_DIR/db.dump"
+		die "the restore failed; the database is left empty (one transaction)"
+	fi
 	as_app rm -f -- "$DATA_DIR/db.dump"
 	prepare_data_dir
 	say "restored $(basename "$restore")"

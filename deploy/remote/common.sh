@@ -42,6 +42,10 @@ DB_ROLE=$APP_USER
 # major version); uninstall.sh then may purge it again.
 PG_MARKER="$APP_DIR/.installed-postgresql"
 PG_DROPIN_NAME=conference-drawing.conf
+# The distribution's socket directory. The app is told it explicitly: the
+# psycopg binary wheel bundles its own libpq, whose compiled-in default may
+# differ.
+DB_SOCKET_DIR=/var/run/postgresql
 
 say() { printf '==> %s\n' "$*" >&2; }
 die() {
@@ -79,11 +83,20 @@ pg_admin() {
 	)
 }
 
-# Is Ubuntu's postgresql package installed?
-postgresql_installed() {
-	local status
-	status=$(dpkg-query -W -f='${Status}' postgresql 2>/dev/null) || status=""
-	[ "$status" = "install ok installed" ]
+# Print the major version of every PostgreSQL server on this machine, one per
+# line, sorted: from the cluster directories under /etc/postgresql and from
+# installed postgresql-<major> packages (with or without the "postgresql"
+# metapackage, Ubuntu's or PGDG's). Prints nothing when there is none.
+pg_server_majors() {
+	local dir
+	{
+		for dir in "$ROOT"/etc/postgresql/*/*/; do
+			[ -d "$dir" ] || continue
+			basename "$(dirname "$dir")"
+		done
+		{ dpkg-query -W -f='${Package} ${Status}\n' 'postgresql-[0-9]*' 2>/dev/null || true; } |
+			awk '$1 ~ /^postgresql-[0-9]+$/ && $NF == "installed" { sub(/^postgresql-/, "", $1); print $1 }'
+	} | { grep -E '^[0-9]+$' || true; } | sort -un
 }
 
 # Run a conference-drawing management command as the app user, with the same
@@ -91,7 +104,7 @@ postgresql_installed() {
 # runs the new release before switching to it).
 run_app() {
 	CD_ENV_FILE="$ENV_FILE" CD_DATA_DIR="$DATA_DIR" \
-		CD_VERSION_FILE="$APP_DIR/version.json" \
+		CD_VERSION_FILE="$APP_DIR/version.json" CD_DB_HOST="$DB_SOCKET_DIR" \
 		as_app "${APP_VENV:-$VENV}/bin/conference-drawing" "$@"
 }
 
@@ -107,6 +120,9 @@ check_restore_tarball() {
 	local names types
 	names=$(tar -tzf "$1") || die "cannot read the restore tarball"
 	types=$(tar -tvzf "$1" | cut -c1) || die "cannot read the restore tarball"
+	if printf '%s\n' "$names" | grep -x 'db.sqlite3' >/dev/null; then
+		die "this backup is from the SQLite version of conference-drawing and cannot be restored into PostgreSQL"
+	fi
 	printf '%s\n' "$names" | grep -x 'db.dump' >/dev/null ||
 		die "the restore tarball has no db.dump"
 	if printf '%s\n' "$names" | grep -Ev '^(db\.dump|media/?|media/[A-Za-z0-9._/-]+)$' >/dev/null ||

@@ -275,7 +275,9 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
   `VACUUM (FULL, ANALYZE)` on the entrant, pick, outbox-job, coupon-code and
   admin-log tables, outside any transaction (from `on_commit`), which writes
   each table to a new file. The app role owns these tables (it ran migrate),
-  as VACUUM FULL requires. A failure is logged by exception class only.
+  as VACUUM FULL requires. It waits at most `lock_timeout = 5s` for each
+  table (a running pg_dump holds a read lock), so it never stalls the request;
+  a failure, a lock timeout included, is logged by exception class only.
   **What VACUUM FULL cannot guarantee:** WAL segments keep the deleted rows
   until PostgreSQL recycles them, an old snapshot (a long transaction) can
   keep them alive until it ends, and the hourly pg_dump snapshots hold them
@@ -330,8 +332,16 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
     `/srv/conference-drawing/.installed-postgresql`; only then does it write a
     `conf.d` drop-in (`listen_addresses = ''` — socket only —
     `shared_buffers = 64MB`, `max_connections = 20`), restarting PostgreSQL
-    when the drop-in changes. An already-installed PostgreSQL may serve
-    others, so its configuration is left alone. It creates role
+    when the drop-in changes (the units' `Requires=` then restarts web and
+    Drip for a moment). "Missing" means no PostgreSQL of any kind: no cluster
+    under `/etc/postgresql` and no `postgresql-<major>` package (Ubuntu's or
+    PGDG's, with or without the metapackage). An existing PostgreSQL may serve
+    others: no apt, no marker, no drop-in, no restart, only a warning with its
+    `listen_addresses`. Any server must be version 15 or later (Django 6.1),
+    and a `conference_drawing` database owned by another role is refused,
+    never taken over. The app is pointed at `/var/run/postgresql` explicitly
+    (`CD_DB_HOST` in the units and in install.sh), not at the binary wheel's
+    compiled-in socket default. It creates role
     `conference-drawing` (LOGIN, no password: the app's OS user maps to it by
     peer auth, so no database password exists anywhere) and database
     `conference_drawing` owned by it, idempotently, via
@@ -354,9 +364,14 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
     - `deploy/down.sh <host>` — **refuses** while Drip outbox jobs are pending
       or if no backup newer than the last write exists; then removes the units,
       the Caddy site file (validate + reload), the database and role, and
-      `/srv/conference-drawing`. It purges the `postgresql` package only if
-      `install.sh` installed it (the marker) and no other database exists;
-      otherwise PostgreSQL stays.
+      `/srv/conference-drawing`. It purges `postgresql` and
+      `postgresql-<major>` only when all of these hold: the marker exists;
+      `pg_lsclusters` shows exactly one cluster, `<major> main`; no database
+      but `postgres`, `template0` and `template1` remains; `postgres` and
+      `template1` hold no relations outside the system schemas; and no role
+      but `postgres` and `pg_*` remains. Every check fails closed. Otherwise
+      PostgreSQL and the drop-in stay, and the purge command is printed for
+      the operator.
   - **No server?** The README shows creating a $6 DigitalOcean Droplet,
     installing Caddy from its official apt repo, then running `up.sh`.
   - **Init**: `conference-drawing init` (run by `up.sh` on first install)

@@ -1,6 +1,7 @@
 """Shared body of the fake ``ssh``, ``scp``, ``dig``, ``curl``, ``uv``, ``git``,
 ``caddy``, ``systemctl``, ``flock``, ``apt-get``, ``dpkg-query``, ``psql``,
-``pg_dump`` and ``pg_restore`` used by the deploy-script tests.
+``pg_dump``, ``pg_restore`` and ``pg_lsclusters`` used by the deploy-script
+tests.
 
 Each fake appends one JSON line to ``$FAKE_LOG`` (tool, argv, stdin) and replays
 the first canned response in ``$FAKE_RESPONSES`` whose ``match`` is a substring
@@ -16,7 +17,10 @@ fake ``runuser`` runs shell helpers this way, as the current user).
 ``ssh`` and ``psql`` also log what they read on stdin (the remote command's
 input; the SQL a script feeds psql). An entry with ``"require_magic"`` fails
 like ``pg_restore`` on a file that is not a custom-format dump: the last
-argument must be a file starting with those bytes.
+argument must be a file starting with those bytes. ``"stdin_match"`` makes an
+entry apply only when that text is in the call's stdin (psql reads its SQL
+there). ``"mkdirs"`` creates directories (what apt-get install leaves behind).
+``"require_env"`` fails unless each named variable has exactly that value.
 """
 
 import json
@@ -133,6 +137,14 @@ def _require_magic(entry: dict[str, Any], args: list[str]) -> None:
         sys.exit(1)
 
 
+def _require_env(entry: dict[str, Any]) -> None:
+    """Fail unless the environment carries each required value."""
+    for name, value in entry.get("require_env", {}).items():
+        if os.environ.get(name) != value:
+            print(f"fake: {name} is not {value!r}", file=sys.stderr)
+            sys.exit(1)
+
+
 def main() -> None:
     tool = Path(sys.argv[0]).name
     args = sys.argv[1:]
@@ -168,8 +180,13 @@ def main() -> None:
     for entry in table.get(tool, []):
         if entry.get("exact") and entry["match"] != key:
             continue
+        if entry.get("stdin_match") and entry["stdin_match"] not in stdin:
+            continue
         if entry["match"] in key:
             _env_file_rules(entry)
+            _require_env(entry)
+            for directory in entry.get("mkdirs", []):
+                Path(directory).mkdir(parents=True, exist_ok=True)
             _require_magic(entry, args)
             if entry.get("passthrough"):
                 sys.exit(_passthrough(args))
