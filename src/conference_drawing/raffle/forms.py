@@ -18,6 +18,10 @@ from .text import (
 FREE_TEXT_MAX_LEN = 1000
 
 
+class EntriesClosed(Exception):
+    """The conference was wrapped up after the view checked; show the closed page."""
+
+
 def clean_free_text(value: str) -> str:
     """Return a free-text answer tidied, or raise ValidationError if it is unsafe.
 
@@ -119,10 +123,25 @@ class EntryForm(forms.Form):
     def save(self, now: datetime.datetime) -> Entrant | None:
         """Create the entrant, or return None (changing nothing) for a repeat email.
 
-        Call only after `is_valid()`. Two simultaneous submits of one address
-        can both pass the existence check; the unique constraint then rejects
-        the loser, which is treated as the repeat it is.
+        Call only after `is_valid()`. Raises `EntriesClosed` if the conference
+        was wrapped up after the view checked: the conference row is locked
+        (FOR NO KEY UPDATE, which waits for a wrap-up's FOR UPDATE) and
+        rechecked in the same transaction as the insert, so no entry can land
+        after wrap-up has counted and queued everyone. (Django has no FOR KEY
+        SHARE; NO KEY UPDATE also makes entries queue briefly behind each
+        other, which a booth's traffic never notices.) The unique constraint
+        still backs up the existence check, treating a loser as the repeat it
+        is.
         """
+        with transaction.atomic():
+            locked = Conference.objects.select_for_update(no_key=True).get(
+                pk=self.conference.pk
+            )
+            if locked.wrapped_up_at is not None:
+                raise EntriesClosed
+            return self._create(now)
+
+    def _create(self, now: datetime.datetime) -> Entrant | None:
         email: str = self.cleaned_data["email"]
         if self._already_entered(email):
             return None

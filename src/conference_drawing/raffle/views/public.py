@@ -17,7 +17,7 @@ from django.views.decorators.http import require_GET, require_http_methods
 from django_ratelimit.decorators import ratelimit
 from django_ratelimit.exceptions import Ratelimited
 
-from ..forms import EntryForm
+from ..forms import EntriesClosed, EntryForm
 from ..models import Conference, InstallSettings
 from ..schedule import schedule_context
 
@@ -102,7 +102,10 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
         if form.honeypot_filled():
             return thanks_redirect
         if form.is_valid():
-            entrant = form.save(timezone.now())
+            try:
+                entrant = form.save(timezone.now())
+            except EntriesClosed:
+                return render(request, "raffle/closed.html", {"conference": conference})
             if entrant is not None:
                 logger.info(
                     "entry created conference=%s entrant=%s", conference.pk, entrant.pk

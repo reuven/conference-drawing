@@ -1,11 +1,12 @@
 import datetime
+import threading
 from collections.abc import Callable
 from typing import Any
 
 import pytest
-from django.db import IntegrityError
+from django.db import IntegrityError, connection, transaction
 
-from conference_drawing.raffle.forms import EntryForm
+from conference_drawing.raffle.forms import EntriesClosed, EntryForm
 from conference_drawing.raffle.models import (
     Conference,
     Entrant,
@@ -182,6 +183,60 @@ def test_race_on_unique_constraint_is_treated_as_repeat(
     monkeypatch.setattr(EntryForm, "_already_entered", stale_then_real)
     assert form.save(NOW) is None
     assert Entrant.objects.count() == 1
+
+
+def test_save_refuses_once_the_conference_is_wrapped_up(
+    conference: Conference,
+) -> None:
+    """The view checked before wrap-up committed; save rechecks under a lock."""
+    form = EntryForm(conference, _data())
+    assert form.is_valid()
+    Conference.objects.filter(pk=conference.pk).update(wrapped_up_at=NOW)
+    with pytest.raises(EntriesClosed):
+        form.save(NOW)
+    assert not Entrant.objects.exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_save_waits_for_a_wrap_up_in_progress_and_then_refuses(
+    conference: Conference,
+) -> None:
+    locked, release = threading.Event(), threading.Event()
+    outcomes: list[object] = []
+
+    def wrap_up_in_progress() -> None:
+        try:
+            with transaction.atomic():
+                Conference.objects.select_for_update().get(pk=conference.pk)
+                Conference.objects.filter(pk=conference.pk).update(wrapped_up_at=NOW)
+                locked.set()
+                release.wait(timeout=5)
+        finally:
+            connection.close()
+
+    def enter() -> None:
+        try:
+            outcomes.append(_enter(conference))
+        except Exception as exc:  # recorded for the assertion below
+            outcomes.append(exc)
+        finally:
+            connection.close()
+
+    holder = threading.Thread(target=wrap_up_in_progress)
+    holder.start()
+    worker = threading.Thread(target=enter)
+    try:
+        assert locked.wait(timeout=5)
+        worker.start()
+        worker.join(timeout=0.5)
+        waited = worker.is_alive()
+    finally:
+        release.set()
+        holder.join()
+        worker.join()
+    assert waited
+    assert [type(o) for o in outcomes] == [EntriesClosed]
+    assert not Entrant.objects.exists()
 
 
 def test_unrelated_integrity_error_is_not_swallowed(

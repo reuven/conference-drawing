@@ -9,6 +9,7 @@ from django.urls import reverse
 from hypothesis import given
 from hypothesis import strategies as st
 
+from conference_drawing.raffle.forms import EntryForm
 from conference_drawing.raffle.models import (
     Conference,
     Drawing,
@@ -163,6 +164,23 @@ def test_wrapped_up_conference_shows_closed(
     assert CLOSED in got.content.decode()
     assert "<form" not in got.content.decode()
     posted = _post(client, conference)
+    assert CLOSED in posted.content.decode()
+    assert Entrant.objects.count() == 0
+
+
+def test_wrap_up_landing_mid_submit_shows_closed(
+    client: Client, conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The view's early check passed; the form's locked recheck catches it."""
+    real = EntryForm.is_valid
+
+    def wrap_up_then_validate(self: EntryForm) -> bool:
+        Conference.objects.filter(pk=conference.pk).update(wrapped_up_at=DRAW_AT)
+        return real(self)
+
+    monkeypatch.setattr(EntryForm, "is_valid", wrap_up_then_validate)
+    posted = _post(client, conference)
+    assert posted.status_code == 200
     assert CLOSED in posted.content.decode()
     assert Entrant.objects.count() == 0
 
