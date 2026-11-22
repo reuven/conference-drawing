@@ -1,0 +1,18 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}Book drawing{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'raffle/site.css' %}">
+</head>
+<body>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    <a href="{% url 'privacy' %}">Privacy</a>
+  </footer>
+</body>
+</html>

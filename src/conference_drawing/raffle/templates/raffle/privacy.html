@@ -1,0 +1,11 @@
+{% extends "raffle/base.html" %}
+{% block title %}Privacy{% endblock %}
+{% block content %}
+<h1>Privacy</h1>
+{% if install.owner_name %}<p>Run by {{ install.owner_name }}.</p>{% endif %}
+{% if install.privacy_note %}
+<p>{{ install.privacy_note|linebreaksbr }}</p>
+{% else %}
+<p>No privacy note has been added yet.</p>
+{% endif %}
+{% endblock %}

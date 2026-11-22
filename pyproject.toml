@@ -66,6 +66,10 @@ show_missing = true
 strict = true
 plugins = ["mypy_django_plugin.main"]
 
+[[tool.mypy.overrides]]
+module = ["django_ratelimit", "django_ratelimit.*"]
+ignore_missing_imports = true  # no stubs or py.typed
+
 [tool.django-stubs]
 django_settings_module = "conference_drawing.settings"
 

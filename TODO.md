@@ -10,7 +10,7 @@ Spec: `docs/superpowers/specs/2026-11-22-conference-raffle-design.md`
 - [x] 3. Eligibility
 - [x] 4. Drawing service (start, claim, not-here redraw, undo, close)
 - [x] 5. Coupon codes and prize URLs
-- [ ] 6. Public entry flow
+- [x] 6. Public entry flow
 - [ ] 7. Booth drawing screen (phone-first, HTMX)
 - [ ] 8. Display view
 - [ ] 9. Flyer

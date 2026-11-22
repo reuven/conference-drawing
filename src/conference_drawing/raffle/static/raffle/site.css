@@ -1,0 +1,165 @@
+/* Mobile-first styles for the public pages. No inline styles anywhere (CSP). */
+:root {
+  --fg: #1b1b1f;
+  --bg: #ffffff;
+  --muted: #55555e;
+  --accent: #0b5cad;
+  --error: #b00020;
+  --border: #8a8a94;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #ececf0;
+    --bg: #17171b;
+    --muted: #b0b0ba;
+    --accent: #7ab7ff;
+    --error: #ff8a9b;
+    --border: #6c6c78;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 1rem;
+  font: 1.125rem/1.5 system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+main,
+footer {
+  max-width: 34rem;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 1.6rem;
+  line-height: 1.2;
+}
+
+h2 {
+  font-size: 1.2rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+.schedule {
+  font-weight: 600;
+}
+
+.field {
+  margin: 0 0 1.25rem;
+  padding: 0;
+  border: 0;
+}
+
+label,
+legend {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+
+input[type="text"],
+input[type="email"],
+textarea {
+  width: 100%;
+  padding: 0.75rem;
+  font: inherit; /* 16px+ keeps iOS from zooming on focus */
+  color: inherit;
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+fieldset .field label,
+fieldset label {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  min-height: 2.75rem;
+  font-weight: 400;
+}
+
+input[type="radio"],
+input[type="checkbox"] {
+  flex: none;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: 0.15rem 0 0;
+}
+
+.check {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  margin: 0 0 1rem;
+}
+
+.check label {
+  font-weight: 400;
+  margin: 0;
+}
+
+.errorlist {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--error);
+  font-weight: 600;
+}
+
+button {
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.75rem 1rem;
+  font: inherit;
+  font-weight: 700;
+  color: #ffffff;
+  background: var(--accent);
+  border: 0;
+  border-radius: 0.5rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  button {
+    color: #0b0b0e;
+  }
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.note,
+footer {
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+footer {
+  margin-top: 2rem;
+}
+
+/* Honeypot: off-screen for people and screen readers, present for bots. */
+.hp {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+@media (min-width: 40rem) {
+  button {
+    width: auto;
+  }
+}

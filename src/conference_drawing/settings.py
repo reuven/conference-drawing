@@ -61,6 +61,8 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "conference_drawing.middleware.DefaultHeadersMiddleware",
+    # Turns a blocked @ratelimit view into RATELIMIT_VIEW's response (a 429).
+    "django_ratelimit.middleware.RatelimitMiddleware",
 ]
 
 ROOT_URLCONF = "conference_drawing.urls"
@@ -101,6 +103,7 @@ CACHES = {
         "LOCATION": "cd_cache",
     }
 }
+RATELIMIT_VIEW = "conference_drawing.raffle.views.public.rate_limited"
 SILENCED_SYSTEM_CHECKS = ["django_ratelimit.E003", "django_ratelimit.W001"]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
