@@ -18,9 +18,11 @@ DATA_DIR="$APP_DIR/data"
 VENV="$APP_DIR/venv"
 ENV_FILE="$DATA_DIR/.env"
 # One lock for every job that copies or rewrites the database from a shell:
-# install.sh, uninstall.sh, backup.sh and the hourly snapshot. (Entrant deletion's VACUUM runs inside
-# the app and relies on SQLite's own locking instead.)
-LOCK_FILE="$DATA_DIR/.maintenance.lock"
+# install.sh, uninstall.sh, backup.sh and the hourly snapshot. (Entrant
+# deletion's VACUUM runs inside the app and relies on SQLite's own locking
+# instead.) It lives in root's directory, root:conference-drawing 0640: the
+# app user can open and flock it but never replace it with a link.
+LOCK_FILE="$APP_DIR/.maintenance.lock"
 CADDY_MAIN="$ROOT/etc/caddy/Caddyfile"
 CADDY_SITE="$ROOT/etc/caddy/sites/conference-drawing.caddy"
 CADDY_LOG_DIR="$ROOT/var/log/caddy"
@@ -47,11 +49,12 @@ valid_domain() {
 	[[ ${#1} -le 253 && $1 =~ ^($label\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
 
-# Run a command as the app user, from / (never a directory root is changing).
+# Run a command as the app user, from / (never a directory root is changing),
+# without the maintenance lock's descriptor (fd 9).
 as_app() {
 	(
 		cd /
-		runuser -u "$APP_USER" -- "$@"
+		runuser -u "$APP_USER" -- "$@" 9<&-
 	)
 }
 

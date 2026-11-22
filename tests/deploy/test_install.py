@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 import tarfile
+import time
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,8 +108,14 @@ def _canned(active: bool) -> dict[str, list[Entry]]:
             {"match": "reload caddy"},
         ],
         "runuser": [
-            {"match": "/bin/conference-drawing init"},
-            {"match": "/bin/conference-drawing collectstatic"},
+            {
+                "match": "/bin/conference-drawing init",
+                "ensure_env_line": "DJANGO_SECRET_KEY='fake'",
+            },
+            {
+                "match": "/bin/conference-drawing collectstatic",
+                "require_env_key": "DJANGO_SECRET_KEY",
+            },
             {"match": "", "passthrough": True},
         ],
     }
@@ -146,7 +153,7 @@ def upgrade(server: Server) -> Server:
     """A running install: data, two old venvs, units active."""
     server.data.mkdir(parents=True)
     (server.data / ".env").write_text("DJANGO_SECRET_KEY='x'\n")
-    (server.data / ".maintenance.lock").touch()
+    (server.app / ".maintenance.lock").touch()
     with closing(sqlite3.connect(server.data / "db.sqlite3")) as db, db:
         db.execute("create table books (title text)")
     for name in (
@@ -174,8 +181,13 @@ def test_install_fresh_lays_out_the_server(server: Server) -> None:
     for sub in ("static", "media", "media/covers"):
         assert os_mode(server.data / sub) == 0o755, sub
     env = server.data / ".env"
-    assert env.read_text() == "DRIP_API_KEY='key-1='\nDRIP_ACCOUNT_ID='42'\n"
+    assert env.read_text() == (
+        "DRIP_API_KEY='key-1='\nDRIP_ACCOUNT_ID='42'\nDJANGO_SECRET_KEY='fake'\n"
+    )
     assert os_mode(env) == 0o600
+    lock = server.app / ".maintenance.lock"
+    assert os_mode(lock) == 0o640
+    assert f"chown -h root:conference-drawing {lock}" in server.log()
     (new,) = _venvs(server)
     assert (server.app / "venv").readlink() == Path(new)
     assert re.fullmatch(r"venv-\d{8}T\d{6}Z-0123456789ab", new)
@@ -189,7 +201,19 @@ def test_install_fresh_lays_out_the_server(server: Server) -> None:
     assert (server.app / "bin" / "snapshot.sh").exists()
 
 
-def test_install_takes_the_maintenance_lock_before_changing_anything(
+def test_fresh_install_with_drip_keys_runs_init_before_collectstatic(
+    server: Server,
+) -> None:
+    # .env exists (Drip keys) but has no secret key yet: still a fresh install.
+    result = server.install(stdin="DRIP_API_KEY=key-1\n")
+    assert result.returncode == 0, result.stderr
+    assert server.index("conference-drawing init") < server.index(
+        "conference-drawing collectstatic"
+    )
+    assert not any(line.startswith("systemctl stop") for line in server.log())
+
+
+def test_install_takes_the_lock_before_building_the_venv_or_touching_units(
     server: Server,
 ) -> None:
     assert server.install().returncode == 0
@@ -209,7 +233,9 @@ def test_install_is_idempotent_for_drip_keys(server: Server) -> None:
     stdin = "DRIP_API_KEY=key-1\n"
     assert server.install(stdin=stdin).returncode == 0
     assert server.install(stdin=stdin).returncode == 0
-    assert (server.data / ".env").read_text() == "DRIP_API_KEY='key-1'\n"
+    assert (server.data / ".env").read_text() == (
+        "DRIP_API_KEY='key-1'\nDJANGO_SECRET_KEY='fake'\n"
+    )
 
 
 # --- upgrades ------------------------------------------------------------------
@@ -265,6 +291,45 @@ def test_upgrade_failing_at_migrate_restarts_the_units_it_stopped(
     assert (upgrade.app / "venv").readlink() == Path(
         "venv-20261115T000000Z-bbbbbbbbbbbb"
     )
+    install_log = upgrade.root / "var/log/conference-drawing-install.log"
+    assert os_mode(install_log) == 0o600
+    text = install_log.read_text()
+    assert "restarted" in text
+    assert "partly migrated" in text
+    (snapshot,) = (upgrade.data / "snapshots").glob("db-*.sqlite3")
+    assert snapshot.name in text
+
+
+def test_upgrade_restarts_units_even_after_the_ssh_session_drops(
+    upgrade: Server,
+) -> None:
+    """Close the output pipe mid-run, as a dropped ssh connection does: the
+    trap must still start the units this run stopped."""
+    upgrade.fakes.prepend("runuser", {"match": "conference-drawing init", "exit": 1})
+    fakes = upgrade.fakes
+    (fakes.root / "responses.json").write_text(json.dumps(fakes.responses))
+    script = str(upgrade.release / "remote" / "install.sh")
+    process = subprocess.Popen(  # noqa: S603 - fixed test inputs
+        [str(fakes.bin / "bash"), script, DOMAIN],
+        env=fakes.env(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=fakes.root,
+    )
+    assert process.stdout is not None
+    for raw in process.stdout:
+        if b"switching to the new release" in raw:
+            break
+    process.stdout.close()  # the reader is gone
+    assert process.wait(timeout=60) != 0
+    time.sleep(0.2)
+    log = upgrade.log()
+    assert any(line.startswith("systemctl stop") for line in log)
+    (start,) = [line for line in log if line.startswith("systemctl start")]
+    assert sorted(start.split()[2:]) == sorted(APP_UNITS)
+    text = (upgrade.root / "var/log/conference-drawing-install.log").read_text()
+    assert "restarted" in text
 
 
 # --- uv --------------------------------------------------------------------------
@@ -318,13 +383,13 @@ def test_install_refuses_the_wrong_uv_without_a_tarball(server: Server) -> None:
 
 # --- symlinks the app user could plant ------------------------------------------
 
-PLANTED = ["snapshots", "static", "media", "media/covers", ".maintenance.lock", ".env"]
+PLANTED = ["snapshots", "static", "media", "media/covers", ".env"]
 
 
 @pytest.mark.parametrize("planted", PLANTED)
 def test_install_refuses_symlinks_in_the_data_dir(server: Server, planted: str) -> None:
     sentinel = server.fakes.root / "sentinel"
-    if planted in (".maintenance.lock", ".env"):
+    if planted == ".env":
         sentinel.write_text("untouched\n")
         sentinel.chmod(0o640)
     else:
@@ -343,6 +408,63 @@ def test_install_refuses_symlinks_in_the_data_dir(server: Server, planted: str) 
         assert list(sentinel.iterdir()) == []
 
 
+def test_install_refuses_a_symlinked_lock_file(server: Server) -> None:
+    sentinel = server.fakes.root / "sentinel"
+    sentinel.write_text("untouched\n")
+    sentinel.chmod(0o600)
+    server.app.mkdir(parents=True)
+    (server.app / ".maintenance.lock").symlink_to(sentinel)
+    result = server.install()
+    assert result.returncode != 0
+    assert "symbolic link" in result.stderr
+    assert os_mode(sentinel) == 0o600
+    assert not any(
+        line.startswith("chown") and "sentinel" in line for line in server.log()
+    )
+
+
+def test_as_app_closes_the_lock_descriptor(fakes: Fakes) -> None:
+    """Root holds the lock on fd 9; no app-user process may inherit it."""
+    fakes.set("runuser", [{"match": "", "passthrough": True}])
+    lock = fakes.root / "lock"
+    lock.touch()
+    script = 'source "$1"; exec 9<"$2"; ls /dev/fd; echo ---; as_app ls /dev/fd'
+    result = fakes.run(["-c", script, "_", COMMON, str(lock)])
+    assert result.returncode == 0, result.stderr
+    root_fds, app_fds = result.stdout.split("---")
+    assert "9" in root_fds.split()  # the probe can see fd 9
+    assert "9" not in app_fds.split()
+
+
+def test_lock_lives_in_roots_app_dir() -> None:
+    common = (DEPLOY / "remote" / "common.sh").read_text()
+    assert 'LOCK_FILE="$APP_DIR/.maintenance.lock"\n' in common
+    for path in [*DEPLOY.rglob("*.sh"), *DEPLOY.rglob("*.service")]:
+        assert "data/.maintenance.lock" not in path.read_text(), path
+    # The snapshot service flocks the root-owned file read-only: it needs no
+    # write access outside the data directory.
+    service = (DEPLOY / "systemd" / "conference-drawing-snapshot.service").read_text()
+    assert "ReadWritePaths=/srv/conference-drawing/data\n" in service
+
+
+def test_remote_backup_reads_the_database_as_the_app_user(upgrade: Server) -> None:
+    (upgrade.data / "media" / "covers").mkdir(parents=True)
+    (upgrade.data / "media" / "covers" / "c.png").write_bytes(b"png")
+    (upgrade.data / "snapshots").mkdir()
+    result = upgrade.fakes.run([str(upgrade.release / "remote" / "backup.sh")])
+    assert result.returncode == 0, result.stderr
+    tarball = Path(result.stdout.splitlines()[-1])
+    with tarfile.open(tarball) as tar:
+        names = tar.getnames()
+    assert "db.sqlite3" in names and "media/covers/c.png" in names
+    log = upgrade.log()
+    assert any(line.startswith("runuser") and ".backup" in line for line in log)
+    assert any(line.startswith("runuser") and "tar -czf -" in line for line in log)
+    assert upgrade.index("flock --wait 300") < upgrade.index(".backup")
+    assert list((upgrade.data / "snapshots").iterdir()) == []
+    shutil.rmtree(tarball.parent)
+
+
 def test_install_does_not_chmod_through_a_symlink_inside_media(server: Server) -> None:
     sentinel = server.fakes.root / "sentinel"
     sentinel.write_text("x")
@@ -354,7 +476,7 @@ def test_install_does_not_chmod_through_a_symlink_inside_media(server: Server) -
     assert os_mode(sentinel) == 0o600
 
 
-def test_root_scripts_never_chown_or_redirect_into_the_data_dir() -> None:
+def test_root_scripts_never_chown_or_redirect_into_app_user_paths() -> None:
     """Root must not follow a link the app user planted: no bare chown, and no
     shell redirection onto a path under the data directory."""
     for name in [*ROOT_SCRIPTS, "common.sh"]:
@@ -363,8 +485,11 @@ def test_root_scripts_never_chown_or_redirect_into_the_data_dir() -> None:
             code = line.split("#", 1)[0] if not line.lstrip().startswith("#") else ""
             assert not re.search(r"\bchown\s+(?!-h\b)", code), f"{name}:{number}"
             assert not re.search(
-                r">>?\s*\"?\$\{?(DATA_DIR|ENV_FILE|LOCK_FILE)", code
+                r">>?\s*\"?\$\{?(DATA_DIR|ENV_FILE|LOCK_FILE|APP_DIR)", code
             ), f"{name}:{number}"
+            # Root opens the database only through as_app.
+            if re.search(r"(^|[\s;|&(])sqlite3\s", code) and "db.sqlite3" in code:
+                assert "as_app" in code, f"{name}:{number}"
     assert "last_backup" not in (DEPLOY / "remote" / "backup.sh").read_text()
 
 

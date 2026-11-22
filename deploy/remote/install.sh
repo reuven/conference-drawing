@@ -16,7 +16,10 @@
 #      the maintenance lock, which this script holds throughout), init
 #      migrates, and the venv symlink is switched to the new venv;
 #   3. the units start again. If anything fails after they were stopped, the
-#      EXIT trap starts the ones this run stopped, on the old venv.
+#      EXIT trap starts the ones this run stopped, on whichever venv the link
+#      then names: the old one, unless the failure came after the switch.
+# "Upgrade" means the venv link exists; .env alone (a first install that
+# failed after writing the Drip keys) is still a fresh install.
 # The previous venv is kept for one release. To roll back by hand:
 #   ln -sfn venv-<previous> /srv/conference-drawing/venv
 #   systemctl restart conference-drawing-web conference-drawing-drip
@@ -24,8 +27,11 @@
 # taken just before migrate (data/snapshots/, newest) as data/db.sqlite3.
 #
 # up.sh stays attached over ssh for the whole run. If the connection drops
-# mid-run, the script gets SIGHUP; the trap still restarts stopped units, but
-# check `systemctl status conference-drawing-web` and rerun up.sh.
+# mid-run, output fails (SIGPIPE) or SIGHUP arrives; either ends the run
+# through the EXIT trap, which ignores both, starts the stopped units before
+# it prints anything, and records the outcome in
+# /var/log/conference-drawing-install.log (root, 0600). Read that file after
+# reconnecting, then rerun up.sh.
 #
 # Layout and permissions (Caddy runs as "caddy"):
 #   /srv/conference-drawing             root 0755: venv -> venv-*/, python/,
@@ -56,24 +62,61 @@ if [ $# -eq 3 ]; then
 fi
 require_root
 
+INSTALL_LOG="$ROOT/var/log/conference-drawing-install.log"
+# Append one line to the install log. Never fails, never prints.
+log_line() {
+	{
+		mkdir -p "$(dirname "$INSTALL_LOG")"
+		[ ! -L "$INSTALL_LOG" ] || return 0
+		(umask 077 && printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$INSTALL_LOG")
+		chmod 0600 "$INSTALL_LOG"
+	} 2>/dev/null || true
+}
+
 new_venv=""
 switched=0
+migrating=0
+pre_migrate=""
 stopped=()
+work=""
 on_exit() {
-	local status=$?
-	rm -rf "$work"
-	[ "$status" -ne 0 ] || return 0
+	local status=$? started=""
+	# The ssh session may be gone: no signal or failed write may stop this.
+	trap '' PIPE HUP
+	set +e
+	if [ "$status" -ne 0 ] && [ "${#stopped[@]}" -gt 0 ]; then
+		if systemctl start "${stopped[@]}" >/dev/null 2>&1; then
+			started="restarted ${stopped[*]}"
+		else
+			started="could not restart ${stopped[*]}"
+		fi
+	fi
+	[ -z "$work" ] || rm -rf "$work" 2>/dev/null
+	if [ "$status" -eq 0 ]; then
+		log_line "installed commit=${commit:-unknown}"
+		return 0
+	fi
 	if [ -n "$new_venv" ] && [ "$switched" -eq 0 ]; then
-		rm -rf -- "$new_venv"
+		rm -rf -- "$new_venv" 2>/dev/null
 	fi
-	if [ "${#stopped[@]}" -gt 0 ]; then
-		say "the install failed; starting the units it stopped: ${stopped[*]}"
-		systemctl start "${stopped[@]}" || true
+	log_line "install failed (exit $status) commit=${commit:-unknown}${started:+; $started}"
+	if [ "$migrating" -eq 1 ]; then
+		log_line "init/migrate failed: the schema may be partly migrated. To go back to the pre-migrate snapshot:" \
+			"systemctl stop $WEB_UNIT $DRIP_UNIT $SNAPSHOT_TIMER &&" \
+			"runuser -u $APP_USER -- cp $pre_migrate $DATA_DIR/db.sqlite3 &&" \
+			"rm -f $DATA_DIR/db.sqlite3-wal $DATA_DIR/db.sqlite3-shm &&" \
+			"systemctl start $WEB_UNIT $DRIP_UNIT $SNAPSHOT_TIMER"
 	fi
+	say "install failed${started:+; $started}; see $INSTALL_LOG" 2>/dev/null || true
+	return 0
 }
+trap on_exit EXIT
+# A dropped ssh session: end the run through the EXIT trap.
+trap 'exit 129' HUP
+trap 'exit 141' PIPE
 umask 077
 work=$(mktemp -d)
-trap on_exit EXIT
+log_line "install started domain=$domain"
 : >"$work/secrets"
 [ -t 0 ] || cat >"$work/secrets"
 read_secrets "$work/secrets"
@@ -118,7 +161,7 @@ prepare_data_dir() {
 	as_app bash -c '
 		set -euo pipefail
 		data=$1
-		for p in snapshots static media media/covers .maintenance.lock .env; do
+		for p in snapshots static media media/covers .env; do
 			if [ -L "$data/$p" ]; then
 				echo "error: $data/$p is a symbolic link; remove it and run again" >&2
 				exit 1
@@ -128,8 +171,6 @@ prepare_data_dir() {
 		chmod 0700 "$data/snapshots"
 		find -P "$data/static" "$data/media" ! -type l -type d -exec chmod 0755 {} +
 		find -P "$data/static" "$data/media" ! -type l -type f -exec chmod 0644 {} +
-		[ -e "$data/.maintenance.lock" ] || : >"$data/.maintenance.lock"
-		chmod 0600 "$data/.maintenance.lock"
 		[ ! -e "$data/db.sqlite3" ] || chmod 0660 "$data/db.sqlite3"
 	' _ "$DATA_DIR"
 }
@@ -171,9 +212,18 @@ ensure_uv
 say "data directory"
 no_symlink "$APP_DIR"
 install -d -m 0755 "$APP_DIR" "$APP_DIR/bin"
-prepare_data_dir
+upgrade=0
+if [ -L "$VENV" ]; then
+	upgrade=1
+fi
+no_symlink "$LOCK_FILE"
+[ -e "$LOCK_FILE" ] || install -m 0640 /dev/null "$LOCK_FILE"
+chown -h "root:$APP_USER" "$LOCK_FILE"
+chmod 0640 "$LOCK_FILE"
 take_lock 600
+prepare_data_dir
 if [ -n "$restore" ]; then
+	[ "$upgrade" -eq 0 ] || die "refusing to restore over an installed release"
 	check_restore_tarball "$restore"
 	[ ! -e "$DATA_DIR/db.sqlite3" ] || die "refusing to restore over an existing database"
 	as_app tar -xzf - -C "$DATA_DIR" <"$restore"
@@ -206,7 +256,7 @@ export UV_PYTHON_PREFERENCE=only-managed
 "$uv" pip install --no-deps --quiet --python "$new_venv/bin/python" "${wheels[0]}"
 APP_VENV=$new_venv
 collected=0
-if [ -e "$ENV_FILE" ]; then # an upgrade: settings exist, the old app keeps serving
+if [ "$upgrade" -eq 1 ]; then # settings exist, and the old app keeps serving
 	run_app collectstatic --noinput --verbosity 0
 	collected=1
 fi
@@ -221,14 +271,18 @@ done
 install -m 0755 "$here/common.sh" "$here/snapshot.sh" "$APP_DIR/bin/"
 if [ -e "$DATA_DIR/db.sqlite3" ]; then
 	as_app env CD_LOCK_HELD=1 "$APP_DIR/bin/snapshot.sh"
+	snapshots=("$DATA_DIR"/snapshots/db-*.sqlite3)
+	pre_migrate=${snapshots[${#snapshots[@]} - 1]}
 fi
 # init writes the secret key and allowed host on the first run, then (every
 # run) migrates, creates the cache table, the superuser if missing, and the
 # install settings. The superuser variables are set only in init's
 # environment, never in any argv.
+migrating=1
 DJANGO_SUPERUSER_USERNAME=$su_username DJANGO_SUPERUSER_EMAIL=$su_email \
 	DJANGO_SUPERUSER_PASSWORD=$su_password \
 	run_app init --non-interactive --domain "$domain"
+migrating=0
 su_password=""
 [ "$collected" -eq 1 ] || run_app collectstatic --noinput --verbosity 0
 previous=""

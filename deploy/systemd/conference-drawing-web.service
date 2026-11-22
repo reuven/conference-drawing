@@ -14,7 +14,7 @@ Environment=CD_VERSION_FILE=/srv/conference-drawing/version.json
 # /run/conference-drawing holds the socket. The directory is 0750 and handed
 # to group caddy ("+": as root) before gunicorn starts, so only gunicorn's
 # user and Caddy can reach the socket (gunicorn binds it with its own umask,
-# 0). install.sh refuses a server without a caddy group.
+# 0). up.sh refuses a server without a caddy group.
 RuntimeDirectory=conference-drawing
 RuntimeDirectoryMode=0750
 ExecStartPre=+/usr/bin/chgrp caddy /run/conference-drawing

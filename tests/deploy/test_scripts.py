@@ -108,7 +108,7 @@ def up(fakes: Fakes) -> Fakes:
             {"match": "hostname -I", "stdout": f"{HOST_IP} 10.10.0.5 2001:db8::5\n"},
             {"match": "uname -m", "stdout": "x86_64\n"},
             {"match": "/usr/local/bin/uv --version", "stdout": "uv 0.13.9 (a 2026)\n"},
-            {"match": "test -e /srv/conference-drawing/data/.env", "stdout": "fresh\n"},
+            {"match": "test -L /srv/conference-drawing/venv", "stdout": "fresh\n"},
             {"match": f"/remote/install.sh {DOMAIN}"},
             *_staging_ssh(),
         ],
@@ -196,7 +196,7 @@ def test_up_happy_path_installs_then_smoke_tests(up: Fakes) -> None:
         "caddy validate",
         "/etc/caddy/sites/",
         "hostname -I",
-        "test -e /srv/conference-drawing/data/.env",
+        "test -L /srv/conference-drawing/venv",
         "mkdir -m 700",
         "remote/install.sh",
     ]
@@ -334,6 +334,16 @@ def test_up_refuses_when_caddy_invalid(up: Fakes) -> None:
     _never_installed(up)
 
 
+def test_up_decides_upgrade_from_the_live_venv_link_not_env(up: Fakes) -> None:
+    # A first install that failed after writing .env (Drip keys) is still
+    # fresh: the owner prompt and --restore must stay available on a rerun.
+    text = (DEPLOY / "up.sh").read_text()
+    assert (
+        "test -L /srv/conference-drawing/venv && echo installed || echo fresh" in text
+    )
+    assert "data/.env" not in text.split("# 2. Preflight", 1)[1]
+
+
 def test_up_refuses_when_there_is_no_caddy_group(up: Fakes) -> None:
     _fail(up, "ssh", "getent group caddy")
     result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
@@ -411,7 +421,7 @@ def test_up_refuses_a_dirty_checkout(up: Fakes) -> None:
 def test_up_upgrade_does_not_prompt_for_a_password(up: Fakes) -> None:
     up.prepend(
         "ssh",
-        {"match": "test -e /srv/conference-drawing/data/.env", "stdout": "installed\n"},
+        {"match": "test -L /srv/conference-drawing/venv", "stdout": "installed\n"},
     )
     result = up.run([UP, HOST, DOMAIN], stdin="")
     assert result.returncode == 0, result.stderr
@@ -450,7 +460,7 @@ def test_up_restore_refuses_over_an_existing_install(up: Fakes) -> None:
     backup = make_backup_tarball(up.root / "old" / "previous.tar.gz")
     up.prepend(
         "ssh",
-        {"match": "test -e /srv/conference-drawing/data/.env", "stdout": "installed\n"},
+        {"match": "test -L /srv/conference-drawing/venv", "stdout": "installed\n"},
     )
     result = up.run([UP, HOST, DOMAIN, "--restore", str(backup)], stdin="")
     assert result.returncode != 0
@@ -612,6 +622,10 @@ def test_caddy_template_shape() -> None:
     assert not re.search(r"^\s*trusted_proxies", text, re.M)
 
 
+def WEB_UNIT_TEXT() -> str:  # noqa: N802 - reads like the constant it stands for
+    return (DEPLOY / "systemd" / "conference-drawing-web.service").read_text()
+
+
 def _log_filters(text: str) -> dict[str, list[tuple[str, str]] | str]:
     """Parse the `format filter { ... }` block: field -> regexp ops, or "delete".
 
@@ -752,6 +766,7 @@ def test_web_unit_serves_gunicorn_on_the_socket() -> None:
     # directory is 0750 and handed to group caddy (caddy's primary group, so
     # no Caddy restart) before gunicorn starts.
     assert unit["Service.RuntimeDirectoryMode"] == ["0750"]
+    assert "up.sh refuses a server without a caddy group" in WEB_UNIT_TEXT()
     assert unit["Service.ExecStartPre"] == [
         "+/usr/bin/chgrp caddy /run/conference-drawing"
     ]
@@ -790,7 +805,7 @@ def test_snapshot_keeps_newest_48(fakes: Fakes) -> None:
     with closing(sqlite3.connect(data / "db.sqlite3")) as db, db:
         db.execute("create table books (title text)")
         db.execute("insert into books values ('Python Workout')")
-    (data / ".maintenance.lock").touch()
+    (data.parent / ".maintenance.lock").touch()
     for hour in range(50):
         (snaps / f"db-20000101T{hour % 24:02d}{hour // 24:02d}00Z.sqlite3").write_text(
             ""
@@ -812,7 +827,7 @@ def test_snapshot_keeps_newest_48(fakes: Fakes) -> None:
 def _snapshot_root(fakes: Fakes, db: bytes | None) -> Path:
     data = fakes.root / "root" / "srv" / "conference-drawing" / "data"
     data.mkdir(parents=True)
-    (data / ".maintenance.lock").touch()
+    (data.parent / ".maintenance.lock").touch()
     if db is not None:
         (data / "db.sqlite3").write_bytes(db)
     fakes.extra_env["CD_ROOT"] = str(fakes.root / "root")
@@ -1019,7 +1034,7 @@ UP_STEPS: list[tuple[str, str]] = [
     ("dig", f"{DOMAIN} A"),
     ("ssh", "uname -m"),
     ("ssh", "uv --version"),
-    ("ssh", "test -e /srv"),
+    ("ssh", "test -L /srv"),
     ("ssh", "mkdir -m 700"),
     ("scp", f"{HOST}:{STAGE}"),
     ("ssh", "remote/install.sh"),

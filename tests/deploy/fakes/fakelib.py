@@ -88,7 +88,29 @@ def _copy_to_flag(entry: dict[str, Any], args: list[str]) -> None:
 def _passthrough(args: list[str]) -> int:
     """Run the command after ``--`` as the current user (fake ``runuser``)."""
     command = args[args.index("--") + 1 :]
-    return subprocess.run(command, check=False).returncode  # noqa: S603
+    # Like the real runuser, pass every open descriptor on to the command.
+    return subprocess.run(command, check=False, close_fds=False).returncode  # noqa: S603
+
+
+def _env_file_rules(entry: dict[str, Any]) -> None:
+    """Stand in for the app's settings (fake ``runuser`` of a manage command).
+
+    ``require_env_key``: fail like Django's ImproperlyConfigured unless
+    ``$CD_ENV_FILE`` has that key. ``ensure_env_line``: append the line unless
+    its key is there (what ``init`` does for DJANGO_SECRET_KEY).
+    """
+    path = Path(os.environ.get("CD_ENV_FILE", "/nonexistent"))
+    text = path.read_text() if path.exists() else ""
+    keys = {line.split("=", 1)[0] for line in text.splitlines()}
+    required = entry.get("require_env_key")
+    if required and required not in keys:
+        print(f"ImproperlyConfigured: {required} is not set", file=sys.stderr)
+        sys.exit(1)
+    line = entry.get("ensure_env_line")
+    if line and line.split("=", 1)[0] not in keys:
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a") as env:
+            env.write(line + "\n")
 
 
 def main() -> None:
@@ -127,6 +149,7 @@ def main() -> None:
         if entry.get("exact") and entry["match"] != key:
             continue
         if entry["match"] in key:
+            _env_file_rules(entry)
             if entry.get("passthrough"):
                 sys.exit(_passthrough(args))
             if tool == "scp":

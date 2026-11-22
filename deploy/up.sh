@@ -23,8 +23,10 @@
 # checked on the server, and so is the uv tarball's.
 #
 # Stay connected until it finishes: install.sh runs attached to this ssh
-# session, and a dropped connection interrupts it (its trap restarts any
-# units it had stopped; rerun up.sh).
+# session, and a dropped connection interrupts it. Its trap still restarts
+# any units it had stopped and records what happened in
+# /var/log/conference-drawing-install.log on the server; read that, then
+# rerun up.sh.
 #
 # --restore loads a backup.sh tarball (books, prizes, codes, media) into a
 # fresh install, so a new conference starts with the last one's books.
@@ -181,7 +183,9 @@ for ip in $dns_ips; do
 	*) die "DNS: $domain resolves to $ip, which is not an address of $HOST:$host_ips" ;;
 	esac
 done
-state=$(remote "test -e /srv/conference-drawing/data/.env && echo installed || echo fresh")
+# Installed means the live venv link exists (install.sh switches it last): a
+# first install that failed after writing .env is still fresh.
+state=$(remote "test -L /srv/conference-drawing/venv && echo installed || echo fresh")
 case $state in
 installed | fresh) ;;
 *) die "unexpected answer from $HOST: $state" ;;
