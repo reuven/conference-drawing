@@ -1,1 +1,1 @@
-{% if drawing_times %}<p class="schedule">Drawings at {{ drawing_times }}{% if conference.booth_location %} at {{ conference.booth_location }}{% endif %}. You must be present to win a printed book.</p>{% endif %}
+{% if drawing_times %}<p class="schedule">Drawings at {{ drawing_times }}{% if conference.booth_location %} at {{ conference.booth_location }}{% endif %}. {{ must_be_present }}</p>{% endif %}

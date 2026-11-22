@@ -1,0 +1,29 @@
+{% extends "raffle/base.html" %}
+{% load static %}
+{% block title %}{{ conference.name }} flyer{% endblock %}
+{% block scripts %}<link rel="stylesheet" href="{% static 'raffle/print.css' %}">{% endblock %}
+{% block body_attrs %} class="flyer"{% endblock %}
+{% block content %}
+<h1>{{ conference.name }}</h1>
+<p class="lead">Scan to enter to win a book.</p>
+<div class="qr">{{ qr_svg|safe }}</div>
+<p class="short-url">{{ short_url }}</p>
+{% if books %}
+<h2>Books in the drawings</h2>
+<ul class="books">
+  {% for book in books %}
+  <li>
+    {% if book.cover %}<img src="{{ book.cover.url }}" alt="Cover of {{ book.title }}">{% endif %}
+    <span>{{ book.title }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if days %}
+<h2>Drawings{% if conference.booth_location %} at {{ conference.booth_location }}{% endif %}</h2>
+<ul class="days">
+  {% for day, times in days %}<li><strong>{{ day }}</strong>: {{ times|join:", " }}</li>{% endfor %}
+</ul>
+{% endif %}
+<p class="rule">{{ must_be_present }}</p>
+{% endblock %}

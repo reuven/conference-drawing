@@ -120,6 +120,7 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = DATA_DIR / "static"
+MEDIA_URL = "/media/"
 MEDIA_ROOT = DATA_DIR / "media"
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 262_144

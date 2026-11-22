@@ -13,7 +13,7 @@ Spec: `docs/superpowers/specs/2026-11-22-conference-raffle-design.md`
 - [x] 6. Public entry flow
 - [x] 7. Booth drawing screen (phone-first, HTMX)
 - [x] 8. Display view
-- [ ] 9. Flyer
+- [x] 9. Flyer
 - [ ] 10. Admin setup screens
 - [ ] 11. CSV export
 - [ ] 12. Drip client, payloads, outbox, worker

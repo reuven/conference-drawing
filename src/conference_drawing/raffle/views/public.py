@@ -18,8 +18,8 @@ from django_ratelimit.decorators import ratelimit
 from django_ratelimit.exceptions import Ratelimited
 
 from ..forms import EntryForm
-from ..models import Book, Conference, Drawing, InstallSettings, PrizeLine
-from ..timezones import to_local
+from ..models import Conference, InstallSettings
+from ..schedule import schedule_context
 
 logger = logging.getLogger(__name__)
 
@@ -62,36 +62,6 @@ def client_ip(group: str, request: HttpRequest) -> str:
 def rate_limited(request: HttpRequest, exception: Ratelimited) -> HttpResponse:
     """Answer an over-limit POST with a friendly 429 (set as RATELIMIT_VIEW)."""
     return render(request, "raffle/rate_limited.html", status=429)
-
-
-def _list_join(parts: list[str]) -> str:
-    if len(parts) <= 1:
-        return "".join(parts)
-    return ", ".join(parts[:-1]) + " and " + parts[-1]
-
-
-def _schedule_context(conference: Conference) -> dict[str, object]:
-    """Drawing times (in the conference's zone) and books for the entry/thanks pages."""
-    drawings = Drawing.objects.filter(
-        conference=conference,
-        status__in=[Drawing.Status.SCHEDULED, Drawing.Status.OPEN],
-    )
-    times = []
-    for scheduled_at in drawings.values_list("scheduled_at", flat=True):
-        local = to_local(scheduled_at, conference.time_zone)
-        times.append(local.strftime("%a %I:%M %p").replace(" 0", " "))
-    book_ids = (
-        PrizeLine.objects.filter(drawing__in=drawings)
-        .order_by("drawing__scheduled_at", "drawing_id", "position", "id")
-        .values_list("book_id", flat=True)
-    )
-    ordered_ids = list(dict.fromkeys(book_ids))  # each book once, first seen first
-    books_by_id = Book.objects.in_bulk(ordered_ids)
-    return {
-        "conference": conference,
-        "drawing_times": _list_join(times),
-        "books": [books_by_id[i] for i in ordered_ids],
-    }
 
 
 # django-ratelimit is untyped; give the decorator a real signature so mypy
@@ -137,7 +107,7 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
     return render(
         request,
         "raffle/entry.html",
-        {**_schedule_context(conference), "form": form},
+        {**schedule_context(conference), "form": form},
     )
 
 
@@ -145,7 +115,7 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
 def thanks(request: HttpRequest, slug: str) -> HttpResponse:
     """Confirm the entry (identical for new and repeat entries)."""
     conference = get_object_or_404(Conference, slug=slug)
-    return render(request, "raffle/thanks.html", _schedule_context(conference))
+    return render(request, "raffle/thanks.html", schedule_context(conference))
 
 
 @require_GET
