@@ -33,6 +33,14 @@ __DOMAIN__ {
 		}
 	}
 
+	# HTTPS only, for this host alone: the host is shared, so sibling
+	# subdomains are left out of HSTS. Deleting Server (deferred, as every delete is) also
+	# drops the one gunicorn sends.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
 	handle_errors 5xx {
 		respond "Temporarily unavailable" 503
 	}
@@ -54,6 +62,9 @@ __DOMAIN__ {
 		reverse_proxy unix//run/conference-drawing/web.sock {
 			lb_try_duration 15s
 			lb_try_interval 500ms
+			# Read up to 1MB of a body before a sync gunicorn worker sees it,
+			# so a client trickling a slow body can't tie up a worker.
+			request_buffers 1MB
 		}
 	}
 }

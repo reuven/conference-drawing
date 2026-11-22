@@ -637,6 +637,22 @@ def test_caddy_template_shape() -> None:
     assert not re.search(r"^\s*trusted_proxies", text, re.M)
 
 
+def test_caddy_buffers_request_bodies_for_the_sync_workers() -> None:
+    """A slow-trickling body is read by Caddy, not by a gunicorn worker."""
+    text = TEMPLATE.read_text()
+    proxy = re.search(r"reverse_proxy unix//\S+ \{\n(.*?)\n\t\t\}", text, re.S)
+    assert proxy is not None
+    assert "\t\t\trequest_buffers 1MB" in proxy[1].splitlines()
+
+
+def test_caddy_sends_hsts_for_this_host_only_and_no_server_header() -> None:
+    text = TEMPLATE.read_text()
+    block = '\theader {\n\t\tStrict-Transport-Security "max-age=31536000"\n'
+    assert block + "\t\t-Server\n\t}" in text
+    # The host is shared: sibling subdomains must not be forced onto HTTPS.
+    assert "includeSubDomains" not in text
+
+
 def WEB_UNIT_TEXT() -> str:  # noqa: N802 - reads like the constant it stands for
     return (DEPLOY / "systemd" / "conference-drawing-web.service").read_text()
 
