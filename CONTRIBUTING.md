@@ -35,7 +35,8 @@ uv run pytest --cov=conference_drawing -m "not e2e"
 - Coverage must be 100% (branches included); the run fails below that.
 - The browser tests need a browser once: `uv run playwright install chromium`,
   then `uv run pytest -m e2e`. CI runs them on manual dispatch and on release
-  tags.
+  tags. A plain `uv run pytest` skips them (`-m "not e2e"` is in the pytest
+  `addopts`); `uv run pytest -m ""` runs everything.
 - Do not run the tests in parallel (no `pytest-xdist`); they share one
   database.
 

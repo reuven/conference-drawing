@@ -49,7 +49,9 @@ dev = [
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "conference_drawing.settings"
-addopts = "--strict-markers --timeout=60"
+# Plain `pytest` skips the browser tests (they need a heavy test slot); a
+# command-line -m (CI: -m e2e, -m "not e2e") replaces this one.
+addopts = "--strict-markers --timeout=60 -m \"not e2e\""
 testpaths = ["tests"]
 # The local PostgreSQL (Homebrew on the laptop: socket in /tmp, peer auth as
 # the login user). D: leaves a value CI already set alone.

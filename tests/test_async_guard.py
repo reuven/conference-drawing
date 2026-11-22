@@ -1,6 +1,8 @@
 """Django's async guard stays on outside the browser tests, even after them.
 
-In a plain `pytest` run tests/e2e collects first, so this runs after it."""
+Plain `pytest` deselects the e2e tests (pyproject addopts), so this proves the
+point only in a run that includes them: `pytest -m ""` or a mixed selection,
+where tests/e2e collects first and so runs before this."""
 
 import asyncio
 import os
@@ -17,7 +19,8 @@ def test_async_safety_is_back_on_after_browser_tests() -> None:
     """Django's async guard must still fire once the e2e tests have run.
 
     The e2e fixtures switch the guard off per test; this (unmarked, so it runs
-    in plain `pytest` too) proves the switch is gone and the guard still works.
+    alongside them in `pytest -m ""`) proves the switch is gone and the guard
+    still works.
     """
     assert "DJANGO_ALLOW_ASYNC_UNSAFE" not in os.environ
     errors: list[BaseException] = []
