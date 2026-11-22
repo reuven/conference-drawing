@@ -1,0 +1,17 @@
+{% extends "raffle/booth/base.html" %}
+{% block title %}{{ conference.name }}{% endblock %}
+{% block content %}
+<p><a href="{% url 'booth-home' %}">All conferences</a></p>
+<h1>{{ conference.name }}</h1>
+<ul class="booth-list">
+  {% for drawing, when in drawings %}
+  <li>
+    <a class="tap" href="{% url 'booth-drawing' drawing.pk %}">
+      {{ when }} <span class="state state-{{ drawing.status }}">{{ drawing.get_status_display }}</span>
+    </a>
+  </li>
+  {% empty %}
+  <li class="note">No drawings scheduled.</li>
+  {% endfor %}
+</ul>
+{% endblock %}

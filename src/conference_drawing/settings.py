@@ -40,6 +40,11 @@ ALLOWED_HOSTS = [
 
 DATA_DIR = Path(_env("CD_DATA_DIR") or BASE_DIR / "var")
 
+DRIP_ACCOUNT_ID = _env("DRIP_ACCOUNT_ID")
+DRIP_API_KEY = _env("DRIP_API_KEY")
+
+LOGIN_URL = "admin:login"
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

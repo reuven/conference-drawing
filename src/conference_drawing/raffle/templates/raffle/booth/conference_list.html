@@ -1,0 +1,12 @@
+{% extends "raffle/booth/base.html" %}
+{% block title %}Booth{% endblock %}
+{% block content %}
+<h1>Booth</h1>
+<ul class="booth-list">
+  {% for conf in conferences %}
+  <li><a class="tap" href="{% url 'booth-conference' conf.slug %}">{{ conf.name }}</a></li>
+  {% empty %}
+  <li class="note">No conferences yet.</li>
+  {% endfor %}
+</ul>
+{% endblock %}

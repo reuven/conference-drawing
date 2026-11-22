@@ -1,0 +1,26 @@
+{% extends "raffle/booth/base.html" %}
+{% block title %}Drawing{% endblock %}
+{% block content %}
+<p><a href="{% url 'booth-conference' drawing.conference.slug %}">{{ drawing.conference.name }}</a></p>
+<h1>Drawing, {{ when }}</h1>
+
+{% include "raffle/booth/_drawing_status.html" %}
+
+{% if drawing.status == "scheduled" %}
+<form method="post" action="{% url 'booth-start' drawing.pk %}">
+  {% csrf_token %}
+  <button type="submit">Start drawing</button>
+</form>
+{% endif %}
+
+{% for lv in lines %}
+<section class="line">
+  <h2>{{ lv.line.book.title }}{% if lv.line.kind == "digital" %} <span class="note">(digital)</span>{% endif %}</h2>
+  {% for slot in lv.slots %}
+    {% include "raffle/booth/_pick_row.html" %}
+  {% endfor %}
+</section>
+{% empty %}
+<p class="note">No prizes in this drawing.</p>
+{% endfor %}
+{% endblock %}

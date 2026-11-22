@@ -1,0 +1,17 @@
+<div id="drawing-status" data-state="{{ drawing.status }}"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {% for message in messages %}<p class="error" role="alert">{{ message }}</p>{% endfor %}
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  {% if drawing.status == "open" %}
+    <p class="state state-open">Open. {{ pending }} waiting to be marked.</p>
+  {% elif drawing.status == "finished" %}
+    <p class="state state-finished">Finished. {{ drawing.awarded_count }} awarded.</p>
+  {% else %}
+    <p class="state state-scheduled">Not started.</p>
+  {% endif %}
+  {% if can_close %}
+  <form method="post" action="{% url 'booth-close' drawing.pk %}">
+    {% csrf_token %}
+    <button type="submit" class="secondary">Close drawing</button>
+  </form>
+  {% endif %}
+</div>

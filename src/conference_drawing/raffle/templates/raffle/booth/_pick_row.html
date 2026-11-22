@@ -1,0 +1,32 @@
+<div class="slot" id="slot-{{ slot.line.pk }}-{{ slot.number }}">
+  {% for row in slot.rows %}
+  <div class="pick pick-{{ row.pick.status }}" id="pick-{{ row.pick.pk }}">
+    <p class="winner">
+      <strong>{{ row.pick.entrant.name }}</strong>
+      <span class="state">{{ row.pick.get_status_display }}</span>
+    </p>
+    {% if row.code %}<p class="code">Code: <code>{{ row.code }}</code></p>{% endif %}
+    {% if row.url %}<p class="code"><a href="{{ row.url }}">{{ row.url }}</a></p>{% endif %}
+    {% if row.pick.status == "pending" %}
+    <form method="post" action="{% url 'booth-claim' row.pick.pk %}"
+          hx-post="{% url 'booth-claim' row.pick.pk %}" hx-target="#slot-{{ slot.line.pk }}-{{ slot.number }}" hx-swap="outerHTML">
+      {% csrf_token %}
+      <button type="submit">Claimed</button>
+    </form>
+    <form method="post" action="{% url 'booth-not-here' row.pick.pk %}"
+          hx-post="{% url 'booth-not-here' row.pick.pk %}" hx-target="#slot-{{ slot.line.pk }}-{{ slot.number }}" hx-swap="outerHTML">
+      {% csrf_token %}
+      <button type="submit" class="secondary">Not here</button>
+    </form>
+    {% endif %}
+    {% if row.can_undo %}
+    <form method="post" action="{% url 'booth-undo' row.pick.pk %}"
+          hx-post="{% url 'booth-undo' row.pick.pk %}" hx-target="#slot-{{ slot.line.pk }}-{{ slot.number }}" hx-swap="outerHTML">
+      {% csrf_token %}
+      <button type="submit" class="undo">Undo</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+  {% if slot.exhausted %}<p class="exhausted">No one left in the pool for this copy.</p>{% endif %}
+</div>
