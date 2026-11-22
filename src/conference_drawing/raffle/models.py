@@ -8,6 +8,7 @@ import re
 import secrets
 import zoneinfo
 from typing import Any, NamedTuple
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, RegexValidator
@@ -295,6 +296,12 @@ class PrizeLine(models.Model):
             return
         if not self.url_template:
             raise ValidationError({"url_template": "A digital prize needs a URL."})
+        # The booth screen renders this as a link, so refuse javascript: etc.
+        parts = urlsplit(self.url_template)
+        if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+            raise ValidationError(
+                {"url_template": "Enter a full http:// or https:// URL."}
+            )
         if not self.code_mode:
             raise ValidationError({"code_mode": "Choose where the codes come from."})
         if self.code_mode == self.CodeMode.SHARED and not self.shared_code:

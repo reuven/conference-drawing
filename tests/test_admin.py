@@ -1,0 +1,498 @@
+"""Admin setup screens: driven through the test client as a superuser."""
+
+import datetime
+from collections.abc import Callable
+from typing import Any
+
+import pytest
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
+from django.test import Client
+from django.urls import reverse
+from django.utils import timezone
+
+from conference_drawing.raffle.admin import DrawingAdminForm, PrizeLineForm
+from conference_drawing.raffle.models import (
+    Book,
+    Conference,
+    CouponCode,
+    Drawing,
+    InstallSettings,
+    OutboxJob,
+    PrizeLine,
+    Question,
+)
+
+Factory = Callable[..., Any]
+
+
+@pytest.fixture
+def admin_client(db: None) -> Client:
+    user = get_user_model().objects.create_superuser("boss", "boss@example.com", "pw")
+    client = Client()
+    client.force_login(user)
+    return client
+
+
+def _formset(
+    prefix: str, rows: list[dict[str, Any]], initial: int = 0
+) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        f"{prefix}-TOTAL_FORMS": len(rows),
+        f"{prefix}-INITIAL_FORMS": initial,
+        f"{prefix}-MIN_NUM_FORMS": 0,
+        f"{prefix}-MAX_NUM_FORMS": 1000,
+    }
+    for i, row in enumerate(rows):
+        data.update({f"{prefix}-{i}-{k}": v for k, v in row.items()})
+    return data
+
+
+def _conference_post(**over: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "name": "PyCon",
+        "slug": "pycon",
+        "time_zone": "America/New_York",
+        "booth_location": "",
+        "starts_on": "2027-05-10",
+        "ends_on": "2027-05-12",
+        "exclusion_emails": "",
+        **_formset("question_set", []),
+    }
+    return {**data, **over}
+
+
+def test_new_conference_gets_default_questions(admin_client: Client) -> None:
+    resp = admin_client.post(reverse("admin:raffle_conference_add"), _conference_post())
+    assert resp.status_code == 302
+    conf = Conference.objects.get(slug="pycon")
+    assert Question.objects.filter(conference=conf).count() == 3
+
+
+def test_editing_conference_does_not_add_questions_again(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    conf = conference_factory()
+    data = _conference_post(slug=conf.slug)
+    resp = admin_client.post(
+        reverse("admin:raffle_conference_change", args=[conf.pk]), data
+    )
+    assert resp.status_code == 302
+    assert Question.objects.filter(conference=conf).count() == 0
+
+
+def test_display_token_and_wrapped_up_are_read_only(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    conf = conference_factory()
+    old = conf.display_token
+    data = _conference_post(
+        slug=conf.slug, **{"display_token": "x", "wrapped_up_at": "2027-01-01 00:00:00"}
+    )
+    admin_client.post(reverse("admin:raffle_conference_change", args=[conf.pk]), data)
+    conf.refresh_from_db()
+    assert conf.display_token == old
+    assert conf.wrapped_up_at is None
+
+
+def test_display_token_not_in_conference_list(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    conf = conference_factory()
+    resp = admin_client.get(reverse("admin:raffle_conference_changelist"))
+    assert resp.status_code == 200
+    assert conf.display_token not in resp.content.decode()
+
+
+def _line_row(**over: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "kind": "digital",
+        "quantity": 2,
+        "position": 0,
+        "url_template": "https://example.com/redeem?c={code}",
+        "code_mode": "pool",
+        "shared_code": "",
+        "codes_text": "",
+    }
+    return {**row, **over}
+
+
+def _drawing_post(
+    conf: Conference, book_id: int, rows: list[dict[str, Any]], **over: Any
+) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "conference": conf.pk,
+        "status": "scheduled",
+        "scheduled_at_0": "2027-05-11",
+        "scheduled_at_1": "14:00:00",
+        **_formset("prizeline_set", [{"book": book_id, **r} for r in rows]),
+    }
+    return {**data, **over}
+
+
+def test_drawing_local_time_saved_as_utc(
+    admin_client: Client, conference_factory: Factory, book_factory: Factory
+) -> None:
+    conf = conference_factory(time_zone="America/New_York")
+    book = book_factory()
+    physical = _line_row(kind="physical", url_template="", code_mode="")
+    resp = admin_client.post(
+        reverse("admin:raffle_drawing_add"), _drawing_post(conf, book.pk, [physical])
+    )
+    assert resp.status_code == 302, resp.content.decode()[:3000]
+    drawing = Drawing.objects.get()
+    # 14:00 EDT == 18:00 UTC
+    assert drawing.scheduled_at == datetime.datetime(
+        2027, 5, 11, 18, 0, tzinfo=datetime.UTC
+    )
+
+
+def test_drawing_form_shows_local_time_back(
+    admin_client: Client, conference_factory: Factory, drawing_factory: Factory
+) -> None:
+    conf = conference_factory(time_zone="America/New_York")
+    drawing = drawing_factory(
+        conf, scheduled_at=datetime.datetime(2027, 5, 11, 18, 0, tzinfo=datetime.UTC)
+    )
+    resp = admin_client.get(reverse("admin:raffle_drawing_change", args=[drawing.pk]))
+    html = resp.content.decode()
+    assert 'name="scheduled_at_0"' in html
+    assert 'value="2027-05-11"' in html
+    assert 'value="14:00:00"' in html
+
+
+def test_drawing_spring_forward_gap_is_a_form_error(
+    conference_factory: Factory,
+) -> None:
+    conf = conference_factory(time_zone="America/New_York")
+    form = DrawingAdminForm(
+        data={
+            "conference": conf.pk,
+            "status": "scheduled",
+            "scheduled_at_0": "2027-03-14",
+            "scheduled_at_1": "02:30:00",
+        }
+    )
+    assert not form.is_valid()
+    assert "scheduled_at" in form.errors
+
+
+def test_drawing_fall_back_ambiguous_time_is_accepted(
+    conference_factory: Factory,
+) -> None:
+    conf = conference_factory(time_zone="America/New_York")
+    form = DrawingAdminForm(
+        data={
+            "conference": conf.pk,
+            "status": "scheduled",
+            "scheduled_at_0": "2027-11-07",
+            "scheduled_at_1": "01:30:00",
+        }
+    )
+    assert form.is_valid(), form.errors
+
+
+def test_pasted_codes_create_coupon_rows_without_duplicates(
+    admin_client: Client,
+    conference_factory: Factory,
+    drawing_factory: Factory,
+    prize_line_factory: Factory,
+) -> None:
+    conf = conference_factory()
+    drawing = drawing_factory(conf)
+    line = prize_line_factory(
+        drawing,
+        kind=PrizeLine.Kind.DIGITAL,
+        url_template="https://example.com/r?c={code}",
+        code_mode=PrizeLine.CodeMode.POOL,
+        quantity=3,
+    )
+    CouponCode.objects.create(prize_line=line, code="AAA")
+    url = reverse("admin:raffle_drawing_change", args=[drawing.pk])
+    row = _line_row(
+        id=line.pk,
+        drawing=drawing.pk,
+        book=line.book_id,
+        quantity=3,
+        codes_text="AAA\nBBB\n\nBBB\nCCC\n",
+    )
+    data = _drawing_post(
+        conf,
+        line.book_id,
+        [],
+        scheduled_at_0="2027-05-11",
+        scheduled_at_1="14:00:00",
+        **_formset("prizeline_set", [row], 1),
+    )
+    resp = admin_client.post(url, data)
+    assert resp.status_code == 302, resp.content.decode()[:3000]
+    assert sorted(CouponCode.objects.values_list("code", flat=True)) == [
+        "AAA",
+        "BBB",
+        "CCC",
+    ]
+    html = admin_client.get(url).content.decode()
+    assert "3 unused / 3 total" in html
+
+
+def test_assigned_codes_are_untouched_and_counted_used(
+    admin_client: Client,
+    conference_factory: Factory,
+    drawing_factory: Factory,
+    prize_line_factory: Factory,
+    entrant_factory: Factory,
+    pick_factory: Factory,
+) -> None:
+    conf = conference_factory()
+    drawing = drawing_factory(conf)
+    line = prize_line_factory(
+        drawing,
+        kind=PrizeLine.Kind.DIGITAL,
+        url_template="https://example.com/r?c={code}",
+        code_mode=PrizeLine.CodeMode.POOL,
+    )
+    pick = pick_factory(line, entrant_factory(conf))
+    CouponCode.objects.create(prize_line=line, code="AAA", pick=pick)
+    CouponCode.objects.create(prize_line=line, code="BBB")
+    html = admin_client.get(
+        reverse("admin:raffle_drawing_change", args=[drawing.pk])
+    ).content.decode()
+    assert "1 unused / 2 total" in html
+    # Prize lines with picks cannot be deleted, so assigned codes survive.
+    assert 'name="prizeline_set-0-DELETE"' not in html
+    resp = admin_client.post(
+        reverse("admin:raffle_drawing_delete", args=[drawing.pk]), {"post": "yes"}
+    )
+    assert resp.status_code == 403
+    assert Drawing.objects.filter(pk=drawing.pk).exists()
+    assert CouponCode.objects.filter(pick=pick).exists()
+
+
+def test_codes_text_rejected_for_non_pool_line(
+    admin_client: Client, conference_factory: Factory, book_factory: Factory
+) -> None:
+    conf = conference_factory()
+    book = book_factory()
+    row = _line_row(code_mode="shared", shared_code="X", codes_text="AAA")
+    resp = admin_client.post(
+        reverse("admin:raffle_drawing_add"), _drawing_post(conf, book.pk, [row])
+    )
+    assert resp.status_code == 200
+    assert not CouponCode.objects.exists()
+
+
+def test_bad_code_paste_names_the_line(
+    admin_client: Client, conference_factory: Factory, book_factory: Factory
+) -> None:
+    conf = conference_factory()
+    book = book_factory()
+    row = _line_row(codes_text="AAA\nbad code")
+    resp = admin_client.post(
+        reverse("admin:raffle_drawing_add"), _drawing_post(conf, book.pk, [row])
+    )
+    assert resp.status_code == 200
+    assert "line 2" in resp.content.decode()
+    assert not Drawing.objects.exists()
+
+
+def test_new_line_with_pasted_codes_creates_them(
+    admin_client: Client, conference_factory: Factory, book_factory: Factory
+) -> None:
+    conf = conference_factory()
+    book = book_factory()
+    row = _line_row(codes_text="AAA\nBBB")
+    resp = admin_client.post(
+        reverse("admin:raffle_drawing_add"), _drawing_post(conf, book.pk, [row])
+    )
+    assert resp.status_code == 302
+    assert CouponCode.objects.count() == 2
+
+
+@pytest.mark.parametrize(
+    "bad", ["javascript:alert(1)", "ftp://x/{code}", "//x/{code}", "https:///{code}"]
+)
+def test_prize_line_url_must_be_http_or_https(
+    bad: str,
+    drawing_factory: Factory,
+    conference_factory: Factory,
+    book_factory: Factory,
+) -> None:
+    drawing = drawing_factory(conference_factory())
+    line = PrizeLine(
+        drawing=drawing,
+        book=book_factory(),
+        kind=PrizeLine.Kind.DIGITAL,
+        url_template=bad,
+        code_mode=PrizeLine.CodeMode.SHARED,
+        shared_code="X",
+    )
+    with pytest.raises(ValidationError) as exc:
+        line.clean()
+    assert "url_template" in exc.value.message_dict
+
+
+def test_prize_line_http_urls_are_accepted(
+    drawing_factory: Factory, conference_factory: Factory, book_factory: Factory
+) -> None:
+    drawing = drawing_factory(conference_factory())
+    for url in ("http://x.example/{code}", "HTTPS://x.example/r?c={code}"):
+        PrizeLine(
+            drawing=drawing,
+            book=book_factory(),
+            kind=PrizeLine.Kind.DIGITAL,
+            url_template=url,
+            code_mode=PrizeLine.CodeMode.SHARED,
+            shared_code="X",
+        ).clean()
+
+
+def test_admin_rejects_javascript_url(
+    admin_client: Client, conference_factory: Factory, book_factory: Factory
+) -> None:
+    conf = conference_factory()
+    book = book_factory()
+    row = _line_row(url_template="javascript:alert(1)")
+    resp = admin_client.post(
+        reverse("admin:raffle_drawing_add"), _drawing_post(conf, book.pk, [row])
+    )
+    assert resp.status_code == 200
+    assert not PrizeLine.objects.exists()
+
+
+def test_install_settings_singleton(admin_client: Client) -> None:
+    add = reverse("admin:raffle_installsettings_add")
+    assert admin_client.get(add).status_code == 200
+    settings_row = InstallSettings.get()
+    assert admin_client.get(add).status_code == 403
+    delete = reverse("admin:raffle_installsettings_delete", args=[settings_row.pk])
+    assert admin_client.post(delete, {"post": "yes"}).status_code == 403
+    assert InstallSettings.objects.count() == 1
+
+
+def test_book_admin_creates_a_book(admin_client: Client) -> None:
+    resp = admin_client.post(
+        reverse("admin:raffle_book_add"),
+        {"title": "Python Workout", "link": "https://example.com/b"},
+    )
+    assert resp.status_code == 302
+    assert Book.objects.get().title == "Python Workout"
+
+
+def test_entrant_admin_is_read_only(
+    admin_client: Client, conference_factory: Factory, entrant_factory: Factory
+) -> None:
+    conf = conference_factory()
+    entrant = entrant_factory(conf, name="Ada Lovelace", email="ada@example.com")
+    entrant_factory(conf, name="Bob", email="bob@example.com")
+    listing = reverse("admin:raffle_entrant_changelist")
+    html = admin_client.get(listing, {"q": "ada@example"}).content.decode()
+    assert "Ada Lovelace" in html
+    assert "bob@example.com" not in html
+    html = admin_client.get(listing, {"q": "Bob"}).content.decode()
+    assert "Ada Lovelace" not in html
+    assert admin_client.get(reverse("admin:raffle_entrant_add")).status_code == 403
+    change = reverse("admin:raffle_entrant_change", args=[entrant.pk])
+    assert admin_client.post(change, {"name": "Changed"}).status_code == 403
+    delete = reverse("admin:raffle_entrant_delete", args=[entrant.pk])
+    assert admin_client.post(delete, {"post": "yes"}).status_code == 403
+    entrant.refresh_from_db()
+    assert entrant.name == "Ada Lovelace"
+
+
+def test_outbox_admin_is_read_only_and_hides_payload(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    conf = conference_factory()
+    job = OutboxJob.objects.create(
+        conference=conf,
+        kind=OutboxJob.Kind.EVENT,
+        payload={"email": "secret@example.com"},
+        status=OutboxJob.Status.FAILED,
+        last_error_class="DripError",
+    )
+    listing = admin_client.get(reverse("admin:raffle_outboxjob_changelist"))
+    html = listing.content.decode()
+    assert "DripError" in html
+    assert "secret@example.com" not in html
+    assert admin_client.get(reverse("admin:raffle_outboxjob_add")).status_code == 403
+    detail = admin_client.get(reverse("admin:raffle_outboxjob_change", args=[job.pk]))
+    assert "secret@example.com" not in detail.content.decode()
+    delete = reverse("admin:raffle_outboxjob_delete", args=[job.pk])
+    assert admin_client.post(delete, {"post": "yes"}).status_code == 403
+
+
+def test_retry_failed_action_requeues(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    conf = conference_factory()
+    future = timezone.now() + datetime.timedelta(days=1)
+    failed = OutboxJob.objects.create(
+        conference=conf,
+        kind=OutboxJob.Kind.EVENT,
+        status=OutboxJob.Status.FAILED,
+        attempts=5,
+        next_attempt_at=future,
+    )
+    sent = OutboxJob.objects.create(
+        conference=conf,
+        kind=OutboxJob.Kind.EVENT,
+        status=OutboxJob.Status.SENT,
+        attempts=1,
+        next_attempt_at=future,
+    )
+    before = timezone.now()
+    resp = admin_client.post(
+        reverse("admin:raffle_outboxjob_changelist"),
+        {"action": "retry_failed", "_selected_action": [failed.pk, sent.pk]},
+    )
+    assert resp.status_code == 302
+    failed.refresh_from_db()
+    sent.refresh_from_db()
+    assert failed.status == OutboxJob.Status.PENDING
+    assert failed.attempts == 0
+    assert before <= failed.next_attempt_at <= timezone.now()
+    assert sent.status == OutboxJob.Status.SENT
+    assert sent.attempts == 1
+    assert sent.next_attempt_at == future
+
+
+def test_drawing_list_shows_local_time(
+    admin_client: Client, conference_factory: Factory, drawing_factory: Factory
+) -> None:
+    conf = conference_factory(time_zone="America/New_York")
+    drawing_factory(
+        conf, scheduled_at=datetime.datetime(2027, 5, 11, 18, 0, tzinfo=datetime.UTC)
+    )
+    html = admin_client.get(reverse("admin:raffle_drawing_changelist")).content
+    assert "2027-05-11 14:00" in html.decode()
+
+
+def test_drawing_form_requires_conference_and_time(db: None) -> None:
+    form = DrawingAdminForm(data={"status": "scheduled"})
+    assert not form.is_valid()
+    assert {"conference", "scheduled_at"} <= set(form.errors)
+
+
+def test_prize_line_form_uncommitted_save_still_adds_codes(
+    drawing_factory: Factory, conference_factory: Factory, book_factory: Factory
+) -> None:
+    drawing = drawing_factory(conference_factory())
+    form = PrizeLineForm(
+        data={
+            "book": book_factory().pk,
+            "kind": "digital",
+            "quantity": 1,
+            "position": 0,
+            "url_template": "https://example.com/{code}",
+            "code_mode": "pool",
+            "shared_code": "",
+            "codes_text": "AAA\nBBB",
+        }
+    )
+    form.instance.drawing = drawing
+    assert form.is_valid(), form.errors
+    line = form.save(commit=False)
+    assert not CouponCode.objects.exists()
+    line.save()
+    form.save_m2m()
+    assert CouponCode.objects.filter(prize_line=line).count() == 2

@@ -70,6 +70,12 @@ plugins = ["mypy_django_plugin.main"]
 module = ["django_ratelimit", "django_ratelimit.*"]
 ignore_missing_imports = true  # no stubs or py.typed
 
+[[tool.mypy.overrides]]
+module = ["conference_drawing.raffle.admin"]
+# django-stubs generics (ModelAdmin[M]) are not subscriptable at runtime.
+disallow_any_generics = false
+warn_return_any = false
+
 [tool.django-stubs]
 django_settings_module = "conference_drawing.settings"
 
