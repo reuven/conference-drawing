@@ -25,6 +25,11 @@ urlpatterns = [
     path("booth/<slug:slug>/flyer/", flyer.flyer, name="booth-flyer"),
     path("booth/<slug:slug>/wrap-up/", booth.wrapup_page, name="booth-wrapup"),
     path(
+        "booth/<slug:slug>/delete-entrants/",
+        booth.delete_entrants_page,
+        name="booth-delete-entrants",
+    ),
+    path(
         "booth/<slug:slug>/retry-failed/",
         booth.retry_failed,
         name="booth-retry-failed",

@@ -23,6 +23,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from ..codes import render_prize_url
+from ..deletion import delete_entrants
 from ..draw import (
     DrawingError,
     close_drawing,
@@ -33,7 +34,15 @@ from ..draw import (
 )
 from ..drip.config import drip_settings
 from ..drip.outbox import enqueue_won_prize, failed_count, pending_count, requeue_failed
-from ..models import Conference, CouponCode, Drawing, OutboxJob, Pick, PrizeLine
+from ..models import (
+    Conference,
+    CouponCode,
+    Drawing,
+    Entrant,
+    OutboxJob,
+    Pick,
+    PrizeLine,
+)
 from ..timezones import to_local
 from ..wrapup import counts, wrap_up
 
@@ -284,6 +293,39 @@ def wrapup_page(request: HttpRequest, slug: str) -> HttpResponse:
         request,
         "raffle/booth/wrapup.html",
         {"conference": conf, "counts": summary, "drip_on": drip_on},
+    )
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def delete_entrants_page(request: HttpRequest, slug: str) -> HttpResponse:
+    """Confirm (GET, read-only) and run (POST) deleting the conference's entrants.
+
+    The owner must type the conference's slug; whitespace around it is ignored.
+    A wrong slug or any refusal comes back as a message, never a 500.
+    """
+    conf = get_object_or_404(Conference, slug=slug)
+    here = reverse("booth-delete-entrants", args=[conf.slug])
+    if request.method == "POST":
+        if request.POST.get("slug", "").strip() != conf.slug:
+            messages.error(request, "Type the conference's slug to confirm.")
+            return HttpResponseRedirect(here)
+        try:
+            count = delete_entrants(conf, now=timezone.now())
+        except DrawingError as exc:
+            messages.error(request, str(exc))
+            return HttpResponseRedirect(here)
+        messages.success(request, f"Deleted {count} entrants and their picks.")
+        return HttpResponseRedirect(reverse("booth-conference", args=[conf.slug]))
+    return render(
+        request,
+        "raffle/booth/delete_entrants.html",
+        {
+            "conference": conf,
+            "entrants": Entrant.objects.filter(conference=conf).count(),
+            "failed": failed_count(conf),
+            "pending": pending_count(conf),
+        },
     )
 
 

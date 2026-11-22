@@ -1,0 +1,24 @@
+{% extends "raffle/booth/base.html" %}
+{% block title %}Delete entrants of {{ conference.name }}{% endblock %}
+{% block content %}
+<p><a href="{% url 'booth-conference' conference.slug %}">{{ conference.name }}</a></p>
+<h1>Delete entrants</h1>
+{% for message in messages %}<p class="note" role="status">{{ message }}</p>{% endfor %}
+{% if conference.deleted_entrant_count is not None %}
+<p class="note">Entrants were already deleted ({{ conference.deleted_entrant_count }}).</p>
+{% elif not conference.wrapped_up_at %}
+<p class="note">The conference must be wrapped up before its entrants can be deleted.</p>
+{% elif pending %}
+<p class="note">{{ pending }} Drip jobs are still pending. Wait for them to send, then come back.</p>
+{% else %}
+<p>This permanently deletes {{ entrants }} {{ entrants|pluralize:"entrant,entrants" }}: names, emails, answers and picks. Drawings, prizes and counts stay. It can't be undone.</p>
+<p>{{ failed }} failed Drip jobs will be discarded.</p>
+<p class="note">Hourly snapshots still hold the data until they age out (48 hours).</p>
+<form method="post" action="{% url 'booth-delete-entrants' conference.slug %}">
+  {% csrf_token %}
+  <label for="slug">Type <strong>{{ conference.slug }}</strong> to confirm</label>
+  <input id="slug" name="slug" type="text" autocomplete="off" required>
+  <button class="tap" type="submit">Delete entrants</button>
+</form>
+{% endif %}
+{% endblock %}

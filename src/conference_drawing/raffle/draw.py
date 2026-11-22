@@ -163,7 +163,7 @@ def start_drawing(
         if line.code_mode != PrizeLine.CodeMode.POOL:
             continue
         codes = list(
-            CouponCode.objects.filter(prize_line=line, pick__isnull=True).order_by("id")
+            CouponCode.objects.filter(prize_line=line, used=False).order_by("id")
         )
         if len(codes) < line.quantity:
             raise DrawingError(

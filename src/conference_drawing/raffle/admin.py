@@ -160,7 +160,7 @@ class PrizeLineInline(admin.StackedInline[PrizeLine, Drawing]):
         if obj is None or obj.pk is None:
             return "-"
         counts = CouponCode.objects.filter(prize_line=obj).aggregate(
-            total=Count("pk"), unused=Count("pk", filter=Q(pick__isnull=True))
+            total=Count("pk"), unused=Count("pk", filter=Q(used=False))
         )
         return f"{counts['unused']} unused / {counts['total']} total"
 

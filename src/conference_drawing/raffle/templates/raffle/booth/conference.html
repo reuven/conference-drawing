@@ -27,6 +27,11 @@
 </ul>
 {% if conference.wrapped_up_at %}
 <p class="note">Wrapped up. Entries are closed.</p>
+{% if conference.deleted_entrant_count is not None %}
+<p class="note">Entrants deleted ({{ conference.deleted_entrant_count }})</p>
+{% else %}
+<p><a class="tap" href="{% url 'booth-delete-entrants' conference.slug %}">Delete entrants</a></p>
+{% endif %}
 {% else %}
 <p><a class="tap" href="{% url 'booth-wrapup' conference.slug %}">Wrap up</a></p>
 {% endif %}

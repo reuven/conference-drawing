@@ -18,7 +18,7 @@ Spec: `docs/superpowers/specs/2026-11-22-conference-raffle-design.md`
 - [x] 11. CSV export
 - [x] 12. Drip client, payloads, outbox, worker
 - [x] 13. Wrap-up
-- [ ] 14. Deleting a conference's entrants
+- [x] 14. Deleting a conference's entrants
 - [ ] 15. `init` command
 - [ ] 16. Deploy, backup and teardown scripts (wp2 / any systemd+Caddy host)
 - [ ] 17. End-to-end browser tests

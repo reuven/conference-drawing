@@ -347,6 +347,9 @@ class CouponCode(models.Model):
     prize_line = models.ForeignKey(PrizeLine, on_delete=models.CASCADE)
     code = models.CharField(max_length=200)
     pick = models.OneToOneField(Pick, null=True, blank=True, on_delete=models.SET_NULL)
+    # Outlives `pick`: deleting an entrant nulls `pick`, but the code must never
+    # return to the pool. `save()` sets it whenever a pick is assigned.
+    used = models.BooleanField(default=False)
 
     class Meta:
         constraints = [
@@ -357,6 +360,14 @@ class CouponCode(models.Model):
 
     def __str__(self) -> str:
         return self.code
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if self.pick_id is not None:
+            self.used = True
+            fields = kwargs.get("update_fields")
+            if fields is not None:
+                kwargs["update_fields"] = {*fields, "used"}
+        super().save(*args, **kwargs)
 
 
 class AuditEvent(models.Model):
