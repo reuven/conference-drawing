@@ -32,7 +32,7 @@ class SubscriberPayload(BaseModel):
     """One subscriber to create or update, with tags and optional EU consent."""
 
     email: EmailStr
-    first_name: str
+    first_name: str | None = None
     tags: list[str]
     eu_consent: Literal["granted"] | None = None
     eu_consent_message: str | None = None
@@ -59,14 +59,15 @@ class SubscriberPayload(BaseModel):
         """Build a payload from an entrant, using the first word of their name.
 
         A blank or whitespace-only name (the form requires one, but admin edits
-        and old rows may not) gives an empty `first_name` rather than an error.
+        and old rows may not) leaves `first_name` unset (the key is omitted, so an
+        existing first name in Drip is not wiped) rather than raising.
         Pass `consent_message` only for an entrant who opted in: it records the
         EU consent grant with that wording. Without it no consent fields are set.
         """
         words = entrant.name.split()
         return cls(
             email=entrant.email,
-            first_name=words[0] if words else "",
+            first_name=words[0] if words else None,
             tags=tags,
             eu_consent="granted" if consent_message is not None else None,
             eu_consent_message=consent_message,

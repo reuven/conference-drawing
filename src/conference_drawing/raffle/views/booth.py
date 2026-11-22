@@ -273,7 +273,10 @@ def wrapup_page(request: HttpRequest, slug: str) -> HttpResponse:
         )
         messages.success(
             request,
-            f"Wrapped up: {result.entrants} entrants, {result.winners} winners. {sent}",
+            f"Wrapped up: {result.entrants} "
+            f"{'entrant' if result.entrants == 1 else 'entrants'}, "
+            f"{result.winners} {'winner' if result.winners == 1 else 'winners'}, "
+            f"{result.excluded} excluded. {sent}",
         )
         return HttpResponseRedirect(reverse("booth-conference", args=[conf.slug]))
     summary = counts(conf)

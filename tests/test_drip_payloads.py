@@ -179,14 +179,15 @@ def test_subscriber_from_entrant_uses_first_name_and_tags(
     assert sub.tags == ["pycon-raffle"]
 
 
-def test_subscriber_from_entrant_blank_name_gives_empty_first_name(
+def test_subscriber_from_entrant_blank_name_omits_first_name(
     conference_factory: Callable[..., Conference],
     entrant_factory: Callable[..., Entrant],
 ) -> None:
     entrant = entrant_factory(conference_factory(), name="Ada")
     entrant.name = "   "
     sub = SubscriberPayload.from_entrant(entrant, tags=["t"])
-    assert sub.first_name == ""
+    assert sub.first_name is None
+    assert "first_name" not in sub.to_json()
     assert "eu_consent" not in sub.to_json()
 
 

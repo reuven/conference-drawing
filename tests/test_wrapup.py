@@ -63,7 +63,7 @@ def test_wrapup_closes_entry(conference: Conference, client: Client) -> None:
     result = wrap_up(conference, now=NOW)
     conference.refresh_from_db()
     assert conference.wrapped_up_at == NOW
-    assert result == WrapUpResult(entrants=0, winners=0, jobs=0, skipped=0)
+    assert result == WrapUpResult(entrants=0, winners=0, jobs=0, skipped=0, excluded=0)
     assert "closed" in client.get(reverse("entry", args=["pycon"])).content.decode()
 
 
@@ -216,7 +216,7 @@ def test_without_drip_only_closes_entry(
     result = wrap_up(conference, now=NOW)
     conference.refresh_from_db()
     assert conference.wrapped_up_at == NOW
-    assert result == WrapUpResult(entrants=1, winners=0, jobs=0, skipped=0)
+    assert result == WrapUpResult(entrants=1, winners=0, jobs=0, skipped=0, excluded=0)
     assert not OutboxJob.objects.exists()
 
 
@@ -245,7 +245,7 @@ def test_blank_name_does_not_break_wrapup(
     Entrant.objects.filter(pk=entrant.pk).update(name="   ")
     result = wrap_up(conference, now=NOW)
     assert result.skipped == 0
-    assert _subscribers()["a@example.com"]["first_name"] == ""
+    assert "first_name" not in _subscribers()["a@example.com"]
 
 
 def test_wrapup_logs_counts_only(
@@ -330,7 +330,70 @@ def test_post_wraps_up_and_redirects(
     conference.refresh_from_db()
     assert conference.wrapped_up_at is not None
     assert OutboxJob.objects.count() == 2
-    assert "Wrapped up: 1 entrants" in response.content.decode()
+    assert "Wrapped up: 1 entrant, 0 winners, 0 excluded" in response.content.decode()
+
+
+def test_success_message_pluralizes(
+    owner: Client, conference: Conference, entrant_factory: Callable[..., Entrant]
+) -> None:
+    entrant_factory(conference)
+    entrant_factory(conference)
+    response = owner.post(reverse("booth-wrapup", args=["pycon"]), follow=True)
+    assert "Wrapped up: 2 entrants, 0 winners" in response.content.decode()
+
+
+def test_double_post_shows_already_wrapped_up(
+    owner: Client, conference: Conference, entrant_factory: Callable[..., Entrant]
+) -> None:
+    entrant_factory(conference)
+    url = reverse("booth-wrapup", args=["pycon"])
+    owner.post(url)
+    jobs = OutboxJob.objects.count()
+    response = owner.post(url, follow=True)
+    assert response.status_code == 200
+    assert "This conference is already wrapped up." in response.content.decode()
+    assert OutboxJob.objects.count() == jobs
+
+
+def test_excluded_entrants_are_not_sent_to_drip(
+    conference: Conference, entrant_factory: Callable[..., Entrant]
+) -> None:
+    conference.exclusion_emails = "Owner@Example.com, staff@example.com"
+    conference.save()
+    entrant_factory(conference, email="owner@example.com")
+    entrant_factory(conference, email="Staff@example.com")
+    entrant_factory(conference, email="guest@example.com")
+    result = wrap_up(conference, now=NOW)
+    assert list(_subscribers()) == ["guest@example.com"]
+    events = OutboxJob.objects.filter(kind=OutboxJob.Kind.EVENT)
+    assert [e.payload["email"] for e in events] == ["guest@example.com"]
+    assert (result.entrants, result.excluded, result.jobs) == (3, 2, 2)
+
+
+def test_excluded_count_shown_on_confirmation_and_success(
+    owner: Client, conference: Conference, entrant_factory: Callable[..., Entrant]
+) -> None:
+    conference.exclusion_emails = "owner@example.com"
+    conference.save()
+    entrant_factory(conference, email="owner@example.com")
+    entrant_factory(conference, email="guest@example.com")
+    url = reverse("booth-wrapup", args=["pycon"])
+    assert "<dt>Excluded (not sent)</dt><dd>1</dd>" in owner.get(url).content.decode()
+    response = owner.post(url, follow=True)
+    assert "1 excluded" in response.content.decode()
+
+
+def test_caller_object_not_stamped_when_transaction_rolls_back(
+    conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError
+
+    monkeypatch.setattr(wrapup, "enqueue", boom)
+    conference.entrant_set.create(name="A", email="a@example.com")
+    with pytest.raises(RuntimeError):
+        wrap_up(conference, now=NOW)
+    assert conference.wrapped_up_at is None
 
 
 def test_post_without_drip_says_nothing_sent(

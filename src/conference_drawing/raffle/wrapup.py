@@ -36,13 +36,16 @@ class WrapUpResult(NamedTuple):
 
     `skipped` entrants could not be turned into a valid Drip payload (for
     example an old row with an address the payload rejects); they are left out
-    of the batch rather than failing the wrap-up.
+    of the batch rather than failing the wrap-up. `excluded` entrants are on the
+    conference's exclusion list (the owner's and staff's own test entries) and
+    are never sent to Drip.
     """
 
     entrants: int
     winners: int
     jobs: int
     skipped: int = 0
+    excluded: int = 0
 
 
 class WrapUpCounts(NamedTuple):
@@ -52,6 +55,7 @@ class WrapUpCounts(NamedTuple):
     winners: int
     nonwinners: int
     optins: int
+    excluded: int
 
 
 def counts(conference: Conference) -> WrapUpCounts:
@@ -66,7 +70,8 @@ def counts(conference: Conference) -> WrapUpCounts:
         id__in=winning_picks(conference).values("entrant_id")
     ).count()
     optins = entrants.filter(bd_optin_at__isnull=False).count()
-    return WrapUpCounts(total, winners, total - winners, optins)
+    excluded = entrants.filter(email__in=conference.excluded_emails).count()
+    return WrapUpCounts(total, winners, total - winners, optins, excluded)
 
 
 def _refuse_unless_ready(conference: Conference) -> None:
@@ -82,33 +87,37 @@ def _refuse_unless_ready(conference: Conference) -> None:
         raise DrawingError("Some winners have not been claimed or marked not here yet.")
 
 
-@transaction.atomic
 def wrap_up(conference: Conference, *, now: datetime.datetime) -> WrapUpResult:
     """Lock `conference` and queue its entrants for Drip; refuse with `DrawingError`.
 
     Refuses if it is already wrapped up, a drawing is open, or any pick is still
     pending. The checks, the `wrapped_up_at` stamp and every enqueue share one
     transaction, so a refusal or a crash leaves nothing half done. Without Drip
-    configured it only locks the conference.
+    configured it only locks the conference. Entrants on the exclusion list are
+    never sent. The caller's object is stamped only after the commit.
     """
-    locked = Conference.objects.select_for_update().get(pk=conference.pk)
-    _refuse_unless_ready(locked)
-    locked.wrapped_up_at = now
-    locked.save(update_fields=["wrapped_up_at"])
+    with transaction.atomic():
+        locked = Conference.objects.select_for_update().get(pk=conference.pk)
+        _refuse_unless_ready(locked)
+        locked.wrapped_up_at = now
+        locked.save(update_fields=["wrapped_up_at"])
+        summary = counts(locked)
+        jobs = skipped = 0
+        if drip_settings() is not None:
+            jobs, skipped = _enqueue_entrants(locked, now)
     conference.wrapped_up_at = now
-    summary = counts(locked)
-    jobs = skipped = 0
-    if drip_settings() is not None:
-        jobs, skipped = _enqueue_entrants(locked, now)
     logger.info(
-        "wrapup conference=%s entrants=%s winners=%s jobs=%s skipped=%s",
+        "wrapup conference=%s entrants=%s winners=%s jobs=%s skipped=%s excluded=%s",
         locked.pk,
         summary.entrants,
         summary.winners,
         jobs,
         skipped,
+        summary.excluded,
     )
-    return WrapUpResult(summary.entrants, summary.winners, jobs, skipped)
+    return WrapUpResult(
+        summary.entrants, summary.winners, jobs, skipped, summary.excluded
+    )
 
 
 def _answers(entrant: Entrant) -> dict[str, str]:
@@ -132,7 +141,10 @@ def _enqueue_entrants(
     subscribers: list[dict[str, object]] = []
     events: list[dict[str, object]] = []
     skipped = 0
-    for entrant in Entrant.objects.filter(conference=conference).order_by("id"):
+    sendable = Entrant.objects.filter(conference=conference).exclude(
+        email__in=conference.excluded_emails
+    )
+    for entrant in sendable.order_by("id"):
         entrant_tags = [
             tags.all,
             tags.winner if entrant.pk in winner_ids else tags.nonwinner,
