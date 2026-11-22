@@ -84,11 +84,36 @@ with no SurveyMonkey, no CSV juggling, and no manual exclusion of staff.
 
 | Approach | Trade-off | Verdict |
 |---|---|---|
-| **A. Django + HTMX + SQLite** | Auth, sessions, CSRF, forms, migrations, and an admin come built in; HTMX gives live updates without custom JS. Heaviest framework, own conventions. | **Chosen** |
+| **A. Django + HTMX + PostgreSQL** (SQLite until 2026-11-22) | Auth, sessions, CSRF, forms, migrations, and an admin come built in; HTMX gives live updates without custom JS. Heaviest framework, own conventions. | **Chosen** |
 | B. FastAPI + Jinja + SQLAlchemy/Alembic + HTMX | Lighter, typed; but login, sessions, CSRF, forms, and setup screens are hand-built — more security surface on a public app. | Rejected |
 | C. React SPA + Python API | Doubles the test burden (100% coverage both sides) for no user-visible gain. | Rejected |
 
 Reuven picked A, on Python 3.14.
+
+### Storage (revised 2026-11-22: PostgreSQL only)
+- **PostgreSQL, and nothing else.** Reuven trusts it more than SQLite: real
+  row locks, concurrent writers, mature backup tooling. SQLite support was
+  removed entirely; there are no dual code paths.
+- Settings come from the environment (or the project `.env`): `CD_DB_NAME`
+  (default `conference_drawing`), `CD_DB_USER` (default `conference-drawing`),
+  `CD_DB_HOST` (default empty: the local unix socket), `CD_DB_PORT`, and
+  `CD_DB_PASSWORD` (optional; empty means peer auth over the socket).
+  `CONN_MAX_AGE=60` with `CONN_HEALTH_CHECKS`; `ATOMIC_REQUESTS` off. Driver:
+  psycopg 3 (`psycopg[binary]`: wheels bundle libpq, so the server needs no
+  libpq-dev or compiler, and `uv export` carries their hashes).
+- **Concurrency.** `select_for_update()` takes real row locks: two phones
+  tapping the same pick serialize on the drawing's lock, and the second sees
+  the first's result. The Drip worker claims jobs with `skip_locked`, so
+  concurrent workers never wait on each other.
+- **Versions.** The laptop and CI run PostgreSQL 18 (Homebrew
+  `postgresql@18`; a `postgres:18` service container), the server Ubuntu
+  24.04's PostgreSQL 16. Django 6.1 (PostgreSQL 15+) and psycopg 3 support
+  both, and the app uses nothing newer than 16, so the drift is harmless.
+- **Tests** run against a local PostgreSQL; pytest-django creates
+  `test_conference_drawing`. The conftest guard refuses any host but
+  `localhost`, `127.0.0.1` or a socket directory, and any `OPTIONS` or libpq
+  variable (`PGHOST`, `PGHOSTADDR`, `PGSERVICE`, `PGSERVICEFILE`) that could
+  point elsewhere.
 
 ## Decisions (made with Reuven)
 
@@ -245,6 +270,16 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
   — what lives in Drip is managed in Drip. *(My call.)*
   *(My call: keep the conference, drawings, and aggregate counts — pool size,
   number of winners — so history survives without personal data.)*
+- PostgreSQL's `DELETE` only marks tuples dead; their bytes stay in the table
+  files. So once the deleting transaction commits, the app runs
+  `VACUUM (FULL, ANALYZE)` on the entrant, pick, outbox-job, coupon-code and
+  admin-log tables, outside any transaction (from `on_commit`), which writes
+  each table to a new file. The app role owns these tables (it ran migrate),
+  as VACUUM FULL requires. A failure is logged by exception class only.
+  **What VACUUM FULL cannot guarantee:** WAL segments keep the deleted rows
+  until PostgreSQL recycles them, an old snapshot (a long transaction) can
+  keep them alive until it ends, and the hourly pg_dump snapshots hold them
+  until they age out, 48 hours later. The owner's privacy note should say so.
 
 ### Randomness and audit
 - Picks use Python's `secrets` module (`secrets.SystemRandom`).
@@ -284,8 +319,25 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
     dependencies under `/srv/conference-drawing/`, owned by a dedicated
     `conference-drawing` system user. Two systemd units: `conference-drawing-web`
     (gunicorn, 2 workers, on a unix socket) and `conference-drawing-drip`
-    (the outbox worker). An hourly systemd timer snapshots SQLite with
-    `sqlite3 .backup`, keeping 48.
+    (the outbox worker), both `Requires=postgresql.service`. An hourly
+    systemd timer runs `pg_dump -Fc` as the app user, reads every block back
+    with `pg_restore -f /dev/null` (`--list` reads only the table of
+    contents), and keeps the newest 48, under the same maintenance lock as
+    install, backup and teardown.
+  - **PostgreSQL on the server** (wp2 has none yet; MySQL is active for
+    WordPress; about 860 MB RAM free): `install.sh` installs Ubuntu's
+    `postgresql` package (16) if it is missing and records that it did in
+    `/srv/conference-drawing/.installed-postgresql`; only then does it write a
+    `conf.d` drop-in (`listen_addresses = ''` — socket only —
+    `shared_buffers = 64MB`, `max_connections = 20`), restarting PostgreSQL
+    when the drop-in changes. An already-installed PostgreSQL may serve
+    others, so its configuration is left alone. It creates role
+    `conference-drawing` (LOGIN, no password: the app's OS user maps to it by
+    peer auth, so no database password exists anywhere) and database
+    `conference_drawing` owned by it, idempotently, via
+    `runuser -u postgres -- psql -v ON_ERROR_STOP=1` with the names passed
+    only as psql variables (`:"role"`, `:"db"`). `PUBLIC` loses all access to
+    the database.
   - **Caddy**: the install writes one file, `/etc/caddy/sites/conference-drawing.caddy`
     (`<domain> { reverse_proxy unix//run/conference-drawing/web.sock }` plus
     static/media handling), runs `caddy validate` on the full config, and only
@@ -296,19 +348,31 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
       failed, Caddy invalid, or the domain's DNS doesn't point at the host),
       install or upgrade, optional restore of a previous backup, then a smoke
       check of `/health`, `/version`, and the entry page over HTTPS.
-    - `deploy/backup.sh <host>` — pulls a consistent SQLite snapshot plus
-      media to the laptop.
+    - `deploy/backup.sh <host>` — pulls a consistent backup to the laptop:
+      `db.dump` (`pg_dump -Fc` run as the app user, read back fully) plus
+      media; root only receives the tar stream.
     - `deploy/down.sh <host>` — **refuses** while Drip outbox jobs are pending
       or if no backup newer than the last write exists; then removes the units,
-      the Caddy site file (validate + reload), and `/srv/conference-drawing`.
+      the Caddy site file (validate + reload), the database and role, and
+      `/srv/conference-drawing`. It purges the `postgresql` package only if
+      `install.sh` installed it (the marker) and no other database exists;
+      otherwise PostgreSQL stays.
   - **No server?** The README shows creating a $6 DigitalOcean Droplet,
     installing Caddy from its official apt repo, then running `up.sh`.
   - **Init**: `conference-drawing init` (run by `up.sh` on first install)
-    generates `SECRET_KEY`, writes the server's `.env` (mode 0600), migrates,
-    and creates the owner login.
+    generates `SECRET_KEY`, writes the server's `.env` (mode 0600), checks the
+    database connection (failing with a message that names the `CD_DB_*`
+    settings, never a password), migrates, and creates the owner login.
   - **Books carry across conferences** by restoring the previous backup on
     `up.sh --restore <file>`; deleting a finished conference's entrants first
-    keeps personal data out of the backup.
+    keeps personal data out of the backup. Restore checks the tarball (only
+    `db.dump` and plain files under `media/`), refuses a database that already
+    has tables, and loads the dump into the fresh database as the app user
+    with `pg_restore --clean --if-exists --no-owner --role=conference-drawing`.
+  - A migrate that fails after the pre-migrate snapshot leaves the exact
+    recovery commands in the install log (drop and recreate the database,
+    then `pg_restore` the snapshot); with no snapshot (an empty database) it
+    says there is nothing to put back.
   - Every page footer shows the running version; `GET`/`HEAD /health`
     (no DB) and `GET /version` exist.
 - **License**: MIT. Package/distribution name `conference-drawing`.
