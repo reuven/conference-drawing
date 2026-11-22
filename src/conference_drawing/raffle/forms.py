@@ -55,7 +55,9 @@ class EntryForm(forms.Form):
     followup_ack = forms.BooleanField(required=True)
     bd_optin = forms.BooleanField(required=False, initial=False)
     # Honeypot: hidden from people by CSS, irresistible to form-filling bots.
-    website = forms.CharField(required=False)
+    # Not named like anything browser autofill fills (website, url, company),
+    # so a real person's autofill can't trip it.
+    leave_blank = forms.CharField(required=False)
 
     def __init__(self, conference: Conference, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -63,8 +65,8 @@ class EntryForm(forms.Form):
         self.install = InstallSettings.get()
         self.fields["followup_ack"].label = self.install.followup_ack_text
         self.fields["bd_optin"].label = self.install.bd_checkbox_text
-        self.fields["website"].label = "Leave this field empty"
-        self.fields["website"].widget.attrs.update(
+        self.fields["leave_blank"].label = "Leave this field empty"
+        self.fields["leave_blank"].widget.attrs.update(
             {"autocomplete": "off", "tabindex": "-1"}
         )
         self.fields["email"].widget.attrs.update(
@@ -115,7 +117,7 @@ class EntryForm(forms.Form):
 
     def honeypot_filled(self) -> bool:
         """True if something was typed into the hidden field (a bot, not a person)."""
-        return bool(self.data.get("website", "").strip())
+        return bool(self.data.get("leave_blank", "").strip())
 
     def _already_entered(self, email: str) -> bool:
         return Entrant.objects.filter(conference=self.conference, email=email).exists()

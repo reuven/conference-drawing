@@ -148,9 +148,33 @@ def test_honeypot_filled_shows_thanks_but_saves_nothing(
     client: Client, conference: Conference
 ) -> None:
     # Invalid on purpose: a bot must not be told which field failed.
-    response = _post(client, conference, website="http://spam.example", name="")
+    response = _post(client, conference, leave_blank="http://spam.example", name="")
     assert response.status_code == 303
     assert response["Location"] == reverse("thanks", args=[conference.slug])
+    assert Entrant.objects.count() == 0
+
+
+def test_honeypot_markup_hides_it_from_people_and_screen_readers(
+    client: Client, conference: Conference
+) -> None:
+    html = client.get(reverse("entry", args=[conference.slug])).content.decode()
+    wrapper = html.split('<div class="hp" aria-hidden="true">', 1)[1].split("</div>")[0]
+    assert 'name="leave_blank"' in wrapper
+    assert 'tabindex="-1"' in wrapper and 'autocomplete="off"' in wrapper
+    assert 'name="website"' not in html
+
+
+@pytest.mark.parametrize(
+    "answer", ["evil‮txt.exe", "tab\there"], ids=["bidi-override", "tab"]
+)
+def test_answer_with_bidi_override_or_tab_is_rejected(
+    client: Client, conference: Conference, answer: str
+) -> None:
+    response = _post(client, conference, q_want_to_learn=answer)
+    assert response.status_code == 200
+    assert "Remove tabs and invisible or control characters." in (
+        response.content.decode()
+    )
     assert Entrant.objects.count() == 0
 
 
@@ -235,7 +259,7 @@ def test_entry_never_logs_personal_data(
     caplog.set_level(logging.DEBUG)
     _post(client, conference, name="Zedekiah Quux", email="zed.quux@example.com")
     _post(client, conference, name="Zedekiah Quux", email="zed.quux@example.com")
-    _post(client, conference, name="Zedekiah Quux", website="x")
+    _post(client, conference, name="Zedekiah Quux", leave_blank="x")
     assert "Zedekiah" not in caplog.text
     assert "quux" not in caplog.text.lower()
 

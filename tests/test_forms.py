@@ -254,7 +254,43 @@ def test_unrelated_integrity_error_is_not_swallowed(
 
 def test_honeypot_detection(conference: Conference) -> None:
     assert not EntryForm(conference, _data()).honeypot_filled()
-    assert EntryForm(conference, _data(website="http://spam")).honeypot_filled()
+    assert EntryForm(conference, _data(leave_blank="http://spam")).honeypot_filled()
+    # Browser autofill puts a URL in a field named "website"; that is a person.
+    assert not EntryForm(conference, _data(website="https://ada.dev")).honeypot_filled()
+
+
+def test_honeypot_field_is_hidden_and_never_autofilled(conference: Conference) -> None:
+    html = str(EntryForm(conference)["leave_blank"])
+    assert 'name="leave_blank"' in html
+    assert 'autocomplete="off"' in html
+    assert 'tabindex="-1"' in html
+
+
+def test_unknown_and_server_side_keys_cannot_be_mass_assigned(
+    conference: Conference, conference_factory: Callable[..., Conference]
+) -> None:
+    other = conference_factory()
+    posted = _data(
+        q_not_a_question="smuggled",
+        q_want_to_learn="Async",
+        answers='{"evil": 1}',
+        followup_ack_text="I agree to anything",
+        bd_optin_text="forged consent",
+        bd_optin_at="2000-01-01T00:00:00Z",
+        conference=str(other.pk),
+        created_at="2000-01-01T00:00:00Z",
+    )
+    form = EntryForm(conference, posted)
+    assert form.is_valid(), form.errors
+    entrant = form.save(NOW)
+    assert entrant is not None
+    entrant.refresh_from_db()
+    install = InstallSettings.get()
+    assert entrant.answers == {"want_to_learn": "Async"}
+    assert entrant.conference_id == conference.pk
+    assert entrant.followup_ack_text == install.followup_ack_text
+    assert (entrant.bd_optin_text, entrant.bd_optin_at) == ("", None)
+    assert entrant.created_at == NOW
 
 
 def test_answer_and_name_accept_zwj_emoji(conference: Conference) -> None:
