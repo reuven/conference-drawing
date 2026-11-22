@@ -1,0 +1,39 @@
+# Managed by conference-drawing (deploy/remote/install.sh).
+[Unit]
+Description=conference-drawing web app (gunicorn on a unix socket)
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=conference-drawing
+Group=conference-drawing
+Environment=CD_ENV_FILE=/srv/conference-drawing/data/.env
+Environment=CD_DATA_DIR=/srv/conference-drawing/data
+Environment=CD_VERSION_FILE=/srv/conference-drawing/version.json
+# /run/conference-drawing (0755) holds the socket. gunicorn binds it with its
+# own umask (0), so Caddy, running as "caddy", can connect.
+RuntimeDirectory=conference-drawing
+RuntimeDirectoryMode=0755
+# No gunicorn access log: request lines carry display tokens and query strings.
+# gunicorn tells systemd when it is ready (Type=notify), so "start" waits.
+ExecStart=/srv/conference-drawing/venv/bin/gunicorn --workers 2 --bind unix:/run/conference-drawing/web.sock conference_drawing.wsgi:application
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+UMask=007
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/conference-drawing/data
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

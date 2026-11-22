@@ -1,0 +1,11 @@
+# Managed by conference-drawing (deploy/remote/install.sh).
+[Unit]
+Description=Hourly conference-drawing database snapshot (keeps 48)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=conference-drawing-snapshot.service
+
+[Install]
+WantedBy=timers.target

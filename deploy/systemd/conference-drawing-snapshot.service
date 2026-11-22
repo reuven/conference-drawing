@@ -1,0 +1,29 @@
+# Managed by conference-drawing (deploy/remote/install.sh).
+#
+# One hourly database snapshot (see the .timer). No OnFailure= yet: the server
+# has no email unit to point it at, so a failed snapshot shows only in
+# "systemctl --failed", which up.sh's preflight refuses on.
+[Unit]
+Description=conference-drawing database snapshot
+
+[Service]
+Type=oneshot
+User=conference-drawing
+Group=conference-drawing
+Environment=CD_ENV_FILE=/srv/conference-drawing/data/.env
+Environment=CD_DATA_DIR=/srv/conference-drawing/data
+Environment=CD_VERSION_FILE=/srv/conference-drawing/version.json
+ExecStart=/srv/conference-drawing/bin/snapshot.sh
+UMask=007
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/conference-drawing/data
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes

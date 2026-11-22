@@ -1,0 +1,39 @@
+# Managed by conference-drawing (deploy/remote/install.sh).
+#
+# Exactly one Drip worker: a single unit, not a template. On restart systemd
+# stops the old process (SIGTERM, waiting up to TimeoutStopSec) before it
+# starts the new one, so two workers never run at once. The worker finishes
+# the job in hand on SIGTERM; one job's worst case is about 40 s.
+[Unit]
+Description=conference-drawing Drip outbox worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=conference-drawing
+Group=conference-drawing
+Environment=CD_ENV_FILE=/srv/conference-drawing/data/.env
+Environment=CD_DATA_DIR=/srv/conference-drawing/data
+Environment=CD_VERSION_FILE=/srv/conference-drawing/version.json
+ExecStart=/srv/conference-drawing/venv/bin/conference-drawing drip_worker
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+UMask=007
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/conference-drawing/data
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

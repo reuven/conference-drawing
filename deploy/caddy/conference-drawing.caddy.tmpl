@@ -1,0 +1,57 @@
+# Managed by conference-drawing (deploy/remote/install.sh). Do not edit by hand:
+# the next install overwrites this file and uninstall removes it.
+#
+# No trusted_proxies here: Caddy then ignores any X-Forwarded-For a client
+# sends and passes the connecting address alone, which is what the app's rate
+# limit (raffle/views/public.py client_ip) relies on.
+__DOMAIN__ {
+	request_body {
+		max_size 6MB
+	}
+
+	# Access log without secrets: display tokens become REDACTED (any case,
+	# repeated slashes, %-escaped letters or slashes), and every query string
+	# is dropped (entry pages under /c/, admin searches). The Referer header
+	# repeats the page URL, so it gets the same treatment.
+	#
+	# Caddy's error log (upstream down, e.g. during an upgrade) still records
+	# the raw URI, and only global options can filter it; the logger is named
+	# so an operator can do that in the shared Caddyfile, e.g.
+	#   log default { exclude http.log.error.conference-drawing }
+	log conference-drawing {
+		output file /var/log/caddy/conference-drawing.access.log {
+			roll_keep 5
+			roll_keep_for 336h
+		}
+		format filter {
+			request>uri multi_regexp {
+				regexp "(?i)((?:/|%2f)+(?:d|%64)(?:i|%69)(?:s|%73)(?:p|%70)(?:l|%6c)(?:a|%61)(?:y|%79)(?:/|%2f)+)[^/?#]+" "${1}REDACTED"
+				regexp "\?.*" ""
+			}
+			request>headers>Referer multi_regexp {
+				regexp "(?i)((?:/|%2f)+(?:d|%64)(?:i|%69)(?:s|%73)(?:p|%70)(?:l|%6c)(?:a|%61)(?:y|%79)(?:/|%2f)+)[^/?#]+" "${1}REDACTED"
+				regexp "\?.*" ""
+			}
+		}
+	}
+
+	handle /static/* {
+		root * /srv/conference-drawing/data
+		file_server
+	}
+
+	handle /media/* {
+		root * /srv/conference-drawing/data
+		header X-Content-Type-Options nosniff
+		header Content-Security-Policy "default-src 'none'"
+		file_server
+	}
+
+	handle {
+		# Ride out a restart (a few seconds) instead of answering 502.
+		reverse_proxy unix//run/conference-drawing/web.sock {
+			lb_try_duration 15s
+			lb_try_interval 500ms
+		}
+	}
+}
