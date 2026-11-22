@@ -5,18 +5,22 @@ with ``-m "not e2e"`` and never starts a browser.
 """
 
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from typing import Any
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.db import connections
 from django.test import Client
 from playwright.sync_api import (
     Browser,
     BrowserContext,
+    BrowserType,
     ConsoleMessage,
     Page,
+    Playwright,
     ViewportSize,
+    sync_playwright,
 )
 
 from conference_drawing.raffle.models import Conference, Drawing, PrizeLine
@@ -58,19 +62,47 @@ def is_csp_message(message: ConsoleMessage) -> bool:
     return "Content Security Policy" in message.text or "Refused to" in message.text
 
 
-@pytest.fixture(autouse=True, scope="session")
-def _allow_orm_beside_playwright() -> Iterator[None]:
-    """Playwright's sync API keeps an event loop running in the test thread.
+@pytest.fixture
+def playwright() -> Iterator[Playwright]:
+    """Start Playwright per test instead of per session.
 
-    Django refuses ORM calls from inside one unless told otherwise. Setting it
-    through a session fixture that exists only under tests/e2e scopes it to the
-    e2e run (so the default suite keeps Django's protection) and, being autouse
-    at session scope, it is set before the browser starts and the test database
-    is created.
+    Its sync API keeps an event loop alive in the test thread for as long as it
+    runs, and Django refuses ORM calls (even in unrelated transactional tests)
+    while one is. Stopping it after each e2e test means no loop outlives the
+    test, so tests that run later in a mixed session see a normal thread.
     """
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setitem(os.environ, "DJANGO_ALLOW_ASYNC_UNSAFE", "true")
-        yield
+    with sync_playwright() as instance:
+        yield instance
+
+
+@pytest.fixture
+def browser_type(playwright: Playwright, browser_name: str) -> BrowserType:
+    browser_type: BrowserType = getattr(playwright, browser_name)
+    return browser_type
+
+
+@pytest.fixture
+def browser(
+    browser_type: BrowserType, browser_type_launch_args: dict[str, Any]
+) -> Iterator[Browser]:
+    browser = browser_type.launch(**browser_type_launch_args)
+    yield browser
+    browser.close()
+
+
+@pytest.fixture(autouse=True)
+def _allow_orm_beside_playwright(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Let tests in this directory use the ORM while Playwright's loop is running.
+
+    Playwright's sync API keeps an event loop in the test thread, and Django
+    refuses ORM calls inside one unless DJANGO_ALLOW_ASYNC_UNSAFE is set. It is
+    function-scoped (and the fixture lives only in tests/e2e), so monkeypatch
+    removes it after every test and no test outside this directory ever sees
+    it, whatever the collection mix or order. (The loop itself is why the
+    playwright and browser fixtures above are per test.)
+    """
+    monkeypatch.setitem(os.environ, "DJANGO_ALLOW_ASYNC_UNSAFE", "true")
+    yield
 
 
 @pytest.fixture
@@ -173,3 +205,17 @@ def drawing(conference: Conference) -> Drawing:
     for n in range(6):
         factories.make_entrant(conference, name=f"Attendee {n}")
     return drawing
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item) -> Generator[None]:
+    """Close the connection the test body's own ORM calls opened.
+
+    Under Playwright the body runs in a different context from the fixtures, so
+    its connection is not the one fixture teardown sees. Left open it would
+    block dropping the test database at the end of the session.
+    """
+    try:
+        yield
+    finally:
+        connections.close_all()

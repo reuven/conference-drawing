@@ -63,7 +63,8 @@ def test_display_updates_after_drawing(
     desktop_page.goto(f"{live_server.url}/display/{conference.display_token}/")
     panel = desktop_page.locator("#panel")
     expect(panel.get_by_role("heading", name=conference.name)).to_be_visible()
-    expect(panel).to_contain_text("6")  # entries so far
+    expect(panel.locator(".big").last).to_have_text("6")  # entries so far
+    expect(panel.get_by_role("heading", name="Drawing now")).not_to_be_visible()
 
     owner_phone_page.goto(f"{live_server.url}/booth/drawing/{drawing.pk}/")
     owner_phone_page.get_by_role("button", name="Start drawing").click()
@@ -86,7 +87,10 @@ def test_flyer_prints_one_page(
     ).to_be_visible()
     pdf = owner_desktop_page.pdf()
     assert pdf.startswith(b"%PDF")
-    # Page objects are "/Type /Page"; the page tree is "/Type /Pages".
+    # Page objects read "/Type /Page"; the page tree reads "/Type /Pages". This
+    # relies on Skia writing page dictionaries uncompressed; if that changes the
+    # count becomes 0 and this fails loudly rather than passing. pypdf was not
+    # added to the dev dependencies just to count pages.
     assert len(re.findall(rb"/Type\s*/Page(?![s\w])", pdf)) == 1
 
 
