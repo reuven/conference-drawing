@@ -112,8 +112,9 @@ Everything is configured by environment variables or that `.env` file; see
    comes, start it. Digital winners are announced at once and emailed through
    Drip. For each physical pick, tap Claimed if the person is there or Not
    here to draw a replacement. A mis-tap can be undone while the drawing is
-   open. Close the drawing when every copy is claimed, or when you decide to
-   stop.
+   open, or after the claim that auto-finished it (that reopens the drawing),
+   but never after wrap-up or after you close the drawing yourself. Close the
+   drawing when every copy is claimed, or when you decide to stop.
 6. **Wrap up.** After the last drawing, tap "Wrap up". It shows the counts,
    closes entries, and, if Drip is configured, queues every entrant for
    Drip (see Privacy notes below for what is sent). The Drip worker sends the

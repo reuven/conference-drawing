@@ -384,6 +384,24 @@ def test_undo_hidden_when_owner_closed(
     assert "/undo/" not in _page(owner, drawing)
 
 
+def test_undo_hidden_after_wrap_up(
+    owner: Client,
+    drawing: Drawing,
+    conference: Conference,
+    prize_line_factory: Callable[..., PrizeLine],
+    entrant_factory: Callable[..., Entrant],
+) -> None:
+    """Drip already has the winners, so an auto-finished claim can't be reopened."""
+    line = _open_drawing(drawing, conference, prize_line_factory, entrant_factory)
+    pick = Pick.objects.get(prize_line=line)
+    owner.post(reverse("booth-claim", args=[pick.pk]))
+    Conference.objects.filter(pk=conference.pk).update(wrapped_up_at=STARTED)
+    assert "/undo/" not in _page(owner, drawing)
+    owner.post(reverse("booth-undo", args=[pick.pk]))
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.FINISHED
+
+
 def test_undo_hidden_when_later_drawing_started(
     owner: Client,
     drawing: Drawing,

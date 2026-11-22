@@ -105,6 +105,18 @@ def test_refuses_with_pending_jobs(
     assert conference.deleted_entrant_count is None
 
 
+def test_refuses_while_a_drawing_is_open(
+    conference: Conference, populated: dict[str, Any]
+) -> None:
+    """Otherwise the display would show "Drawing now" with nobody in it."""
+    factories.make_drawing(conference, status=Drawing.Status.OPEN)
+    with pytest.raises(DrawingError, match=r"^A drawing is still open\."):
+        delete_entrants(conference, now=NOW)
+    assert Entrant.objects.filter(conference=conference).count() == 3
+    conference.refresh_from_db()
+    assert conference.deleted_entrant_count is None
+
+
 def test_refuses_before_wrapup(conference_factory: Callable[..., Conference]) -> None:
     conf = conference_factory()
     factories.make_entrant(conf)

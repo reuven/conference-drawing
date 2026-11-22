@@ -2,7 +2,12 @@
 
 Each operation runs in one transaction that first locks the drawing row and
 re-reads the pick, so two taps (or two phones) on the same button serialize and
-the second sees the first's result. Randomness comes only from the injected
+the second sees the first's result. The two operations that can open a drawing
+(start, and an undo that reopens an auto-finished one) first lock the
+conference row FOR NO KEY UPDATE, which conflicts with wrap-up's FOR UPDATE and
+with each other: a wrap-up never commits alongside a drawing being opened, and
+two phones starting two drawings serialize. Lock order is always conference,
+then drawing. Randomness comes only from the injected
 `rng`, applied to the sorted id list from `eligible_entrant_ids`, so a seeded
 `random.Random` reproduces a drawing exactly. Audit details carry ids and
 counts only.
@@ -12,6 +17,7 @@ import datetime
 import random
 import secrets
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from django.db import transaction
 from django.db.models import Sum
@@ -34,9 +40,32 @@ def _lock(drawing_id: int) -> Drawing:
     return Drawing.objects.select_for_update().get(pk=drawing_id)
 
 
-def _lock_for_pick(pick: Pick) -> tuple[Drawing, Pick]:
-    """Lock the pick's drawing, then re-read the pick so a stale copy can't act."""
-    drawing = _lock(pick.prize_line.drawing_id)
+_WRAPPED_UP = "This conference has been wrapped up."
+
+
+def _lock_conference_then(drawing_id: int) -> Drawing:
+    """Lock the drawing's conference (FOR NO KEY UPDATE), then the drawing.
+
+    Refuses once the conference is wrapped up. A drawing never changes
+    conference, so reading the id unlocked first is safe.
+    """
+    conference_id = Drawing.objects.values_list("conference_id", flat=True).get(
+        pk=drawing_id
+    )
+    conference = Conference.objects.select_for_update(no_key=True).get(pk=conference_id)
+    if conference.wrapped_up_at is not None:
+        raise DrawingError(_WRAPPED_UP)
+    return _lock(drawing_id)
+
+
+def _lock_for_pick(pick: Pick, *, conference: bool = False) -> tuple[Drawing, Pick]:
+    """Lock the pick's drawing, then re-read the pick so a stale copy can't act.
+
+    With `conference`, lock (and check) the conference first, for operations
+    that may reopen the drawing.
+    """
+    drawing_id = pick.prize_line.drawing_id
+    drawing = _lock_conference_then(drawing_id) if conference else _lock(drawing_id)
     return drawing, Pick.objects.select_related("prize_line").get(pk=pick.pk)
 
 
@@ -144,11 +173,7 @@ def start_drawing(
     inside this transaction, so whatever it writes commits or rolls back with
     the pick.
     """
-    drawing = _lock(drawing.pk)
-    if Conference.objects.filter(
-        pk=drawing.conference_id, wrapped_up_at__isnull=False
-    ).exists():
-        raise DrawingError("This conference has been wrapped up.")
+    drawing = _lock_conference_then(drawing.pk)
     if drawing.status != Drawing.Status.SCHEDULED:
         raise DrawingError("This drawing has already started.")
     if _another_open(drawing):
@@ -235,23 +260,55 @@ def mark_not_here(
     return _draw_slot(drawing, line, pick.slot, now=now, rng=rng, replaces=pick)
 
 
-def _allow_undo(drawing: Drawing, pick: Pick) -> None:
-    """Undo works while open, or to reverse the claim that auto-finished it.
+@dataclass(frozen=True)
+class UndoRule:
+    """Which picks of one drawing may be undone, decided once per drawing.
 
-    Reopening is refused once a later drawing has started: that drawing's pool
-    was computed with this winner already counted, so reopening would be unfair.
+    Undo works while the drawing is open, or to reverse the claim that
+    auto-finished it. It never works after wrap-up (Drip already has the
+    winners) or after the owner closed the drawing. Reopening is also refused
+    while another drawing is open, or once a later drawing has started: that
+    drawing's pool was computed with this winner already counted. The booth
+    asks `can_undo` whether to show the button and `undo_last` raises
+    `refusal`, so the two never disagree.
     """
-    if drawing.status == Drawing.Status.OPEN:
-        return
+
+    drawing_open: bool
+    reopen_refusal: str | None
+
+    def refusal(self, pick: Pick, replacement: Pick | None) -> str | None:
+        """Why `pick` can't be undone, or None. `replacement` is its live redraw."""
+        if not self.drawing_open:
+            if self.reopen_refusal is not None:
+                return self.reopen_refusal
+            if pick.status != Pick.Status.CLAIMED:
+                return "This drawing isn't open."
+            return None
+        if pick.status == Pick.Status.CLAIMED:
+            return None
+        if pick.status != Pick.Status.NOT_HERE:
+            return "Nothing to undo."
+        if replacement is not None and replacement.status != Pick.Status.PENDING:
+            return "The replacement has already been marked."
+        return None
+
+    def can_undo(self, pick: Pick, replacement: Pick | None) -> bool:
+        """Whether the booth should offer Undo on `pick`."""
+        return self.refusal(pick, replacement) is None
+
+
+def _reopen_refusal(drawing: Drawing) -> str | None:
+    """Why an undo can't reopen this drawing (which isn't open), or None."""
+    if Conference.objects.filter(
+        pk=drawing.conference_id, wrapped_up_at__isnull=False
+    ).exists():
+        return _WRAPPED_UP
     if drawing.closed_by_owner:
-        raise DrawingError("This drawing was closed.")
-    auto_finished = (
-        drawing.status == Drawing.Status.FINISHED and pick.status == Pick.Status.CLAIMED
-    )
-    if not auto_finished:
-        raise DrawingError("This drawing isn't open.")
+        return "This drawing was closed."
+    if drawing.status != Drawing.Status.FINISHED:
+        return "This drawing isn't open."
     if _another_open(drawing):
-        raise DrawingError("Another drawing is open. Close it first.")
+        return "Another drawing is open. Close it first."
     later_started = (
         Drawing.objects.filter(
             conference_id=drawing.conference_id, started_at__gte=drawing.closed_at
@@ -260,13 +317,15 @@ def _allow_undo(drawing: Drawing, pick: Pick) -> None:
         .exists()
     )
     if later_started:
-        raise DrawingError(
-            "A later drawing has already started, so this one can't be reopened."
-        )
-    drawing.status = Drawing.Status.OPEN
-    drawing.closed_at = None
-    drawing.awarded_count = 0
-    drawing.save(update_fields=["status", "closed_at", "awarded_count"])
+        return "A later drawing has already started, so this one can't be reopened."
+    return None
+
+
+def undo_rule(drawing: Drawing) -> UndoRule:
+    """The undo rule for `drawing` as the database has it now."""
+    if drawing.status == Drawing.Status.OPEN:
+        return UndoRule(drawing_open=True, reopen_refusal=None)
+    return UndoRule(drawing_open=False, reopen_refusal=_reopen_refusal(drawing))
 
 
 @transaction.atomic
@@ -274,24 +333,31 @@ def undo_last(pick: Pick, *, now: datetime.datetime) -> Pick:
     """Reverse a mis-tapped Claimed or Not here, recording the reversal.
 
     Undoing Not here voids its replacement, so long as nobody has marked the
-    replacement yet. History is never deleted: the void and the undo are audited.
+    replacement yet. Undoing the claim that auto-finished the drawing reopens
+    it. History is never deleted: the void and the undo are audited. The
+    conference is locked first, so a concurrent wrap-up either waits for this
+    undo to commit (and then sees the open drawing) or makes it refuse.
     """
-    drawing, pick = _lock_for_pick(pick)
-    _allow_undo(drawing, pick)
+    drawing, pick = _lock_for_pick(pick, conference=True)
     previous = pick.status
-    if previous == Pick.Status.NOT_HERE:
-        replacement = (
-            Pick.objects.filter(replaces=pick).exclude(status=Pick.Status.VOID).first()
-        )
-        if replacement is not None:
-            if replacement.status != Pick.Status.PENDING:
-                raise DrawingError("The replacement has already been marked.")
-            replacement.status = Pick.Status.VOID
-            replacement.marked_at = now
-            replacement.save(update_fields=["status", "marked_at"])
-            _audit(drawing, AuditEvent.Kind.VOID, now, replacement)
-    elif previous != Pick.Status.CLAIMED:
-        raise DrawingError("Nothing to undo.")
+    replacement = (
+        Pick.objects.filter(replaces=pick).exclude(status=Pick.Status.VOID).first()
+        if previous == Pick.Status.NOT_HERE
+        else None
+    )
+    refusal = undo_rule(drawing).refusal(pick, replacement)
+    if refusal is not None:
+        raise DrawingError(refusal)
+    if drawing.status != Drawing.Status.OPEN:
+        drawing.status = Drawing.Status.OPEN
+        drawing.closed_at = None
+        drawing.awarded_count = 0
+        drawing.save(update_fields=["status", "closed_at", "awarded_count"])
+    if replacement is not None:
+        replacement.status = Pick.Status.VOID
+        replacement.marked_at = now
+        replacement.save(update_fields=["status", "marked_at"])
+        _audit(drawing, AuditEvent.Kind.VOID, now, replacement)
     pick.status = Pick.Status.PENDING
     pick.marked_at = None
     pick.save(update_fields=["status", "marked_at"])

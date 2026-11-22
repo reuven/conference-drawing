@@ -10,8 +10,9 @@ Audit details hold ids and counts only, so nothing else needs redacting.
 A coupon code keeps `used=True` so it is never handed out twice.
 
 Refuses with `DrawingError` (reused rather than adding a new class) unless the
-conference is wrapped up, has not already been deleted, and has no pending
-Drip jobs, because a pending job still needs its payload to be sent.
+conference is wrapped up, has no open drawing, has not already been deleted,
+and has no pending Drip jobs, because a pending job still needs its payload to
+be sent.
 
 PostgreSQL's DELETE only marks tuples dead; their bytes stay in the table files
 until something rewrites them. So once the deleting transaction commits we run
@@ -43,7 +44,7 @@ from django.db.models.functions import Cast
 
 from .draw import DrawingError
 from .drip.outbox import pending_count
-from .models import Conference, CouponCode, Entrant, OutboxJob, Pick
+from .models import Conference, CouponCode, Drawing, Entrant, OutboxJob, Pick
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,10 @@ def delete_entrants(conference: Conference, *, now: datetime.datetime) -> int:
             )
         if locked.deleted_entrant_count is not None:
             raise DrawingError("Entrants were already deleted.")
+        if Drawing.objects.filter(
+            conference=locked, status=Drawing.Status.OPEN
+        ).exists():
+            raise DrawingError("A drawing is still open. Close it before deleting.")
         if pending_count(locked) > 0:
             raise DrawingError(
                 "Drip jobs are still pending. Wait for them to send first."

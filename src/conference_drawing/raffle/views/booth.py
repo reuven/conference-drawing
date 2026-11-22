@@ -31,6 +31,7 @@ from ..draw import (
     mark_not_here,
     start_drawing,
     undo_last,
+    undo_rule,
 )
 from ..drip.config import drip_settings
 from ..drip.outbox import enqueue_won_prize, failed_count, pending_count, requeue_failed
@@ -96,33 +97,6 @@ def _local_label(drawing: Drawing) -> str:
     return local.strftime("%a %b %-d, %-I:%M %p")
 
 
-def _auto_finished_undo_allowed(drawing: Drawing) -> bool:
-    """Best-effort mirror of the service's rule for undoing a claim after finish."""
-    if drawing.status != Drawing.Status.FINISHED or drawing.closed_by_owner:
-        return False
-    others = Drawing.objects.filter(conference_id=drawing.conference_id).exclude(
-        pk=drawing.pk
-    )
-    if others.filter(status=Drawing.Status.OPEN).exists():
-        return False
-    return not (
-        drawing.closed_at is not None
-        and others.filter(started_at__gte=drawing.closed_at).exists()
-    )
-
-
-def _can_undo(
-    pick: Pick, replacement: Pick | None, *, is_open: bool, reopenable: bool
-) -> bool:
-    if pick.status == Pick.Status.CLAIMED:
-        return is_open or reopenable
-    if pick.status == Pick.Status.NOT_HERE:
-        return is_open and (
-            replacement is None or replacement.status == Pick.Status.PENDING
-        )
-    return False
-
-
 def _row(
     pick: Pick,
     line: PrizeLine,
@@ -156,8 +130,7 @@ def _build(drawing: Drawing) -> list[LineView]:
         )
     )
     replacement_of = {p.replaces_id: p for p in picks if p.replaces_id is not None}
-    reopenable = _auto_finished_undo_allowed(drawing)
-    is_open = drawing.status == Drawing.Status.OPEN
+    rule = undo_rule(drawing)
     started = drawing.status != Drawing.Status.SCHEDULED
     by_slot: dict[tuple[int, int], list[Pick]] = {}
     for pick in picks:
@@ -177,12 +150,7 @@ def _build(drawing: Drawing) -> list[LineView]:
                         _row(
                             p,
                             line,
-                            can_undo=_can_undo(
-                                p,
-                                replacement_of.get(p.pk),
-                                is_open=is_open,
-                                reopenable=reopenable,
-                            ),
+                            can_undo=rule.can_undo(p, replacement_of.get(p.pk)),
                             codes=codes,
                             show_codes=show_codes,
                         )

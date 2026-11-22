@@ -1,6 +1,7 @@
 """Drawing service: start, claim, not-here redraw, undo, close."""
 
 import datetime
+import functools
 import json
 import random
 import threading
@@ -9,7 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from django.db import connection
+from django.db import connection, transaction
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.django import TestCase
@@ -21,6 +22,7 @@ from conference_drawing.raffle.draw import (
     mark_not_here,
     start_drawing,
     undo_last,
+    undo_rule,
 )
 from conference_drawing.raffle.eligibility import eligible_entrant_ids
 from conference_drawing.raffle.models import (
@@ -32,6 +34,7 @@ from conference_drawing.raffle.models import (
     Pick,
     PrizeLine,
 )
+from conference_drawing.raffle.wrapup import wrap_up
 from tests import factories
 
 NOW = datetime.datetime(2027, 5, 11, 20, 30, tzinfo=datetime.UTC)
@@ -600,6 +603,204 @@ def test_close_counts_claimed_and_digital_and_audits(
 def test_close_refuses_drawing_not_open(drawing: Drawing) -> None:
     with pytest.raises(DrawingError, match="isn't open"):
         close_drawing(drawing, now=LATER)
+
+
+# --- wrap-up ---------------------------------------------------------------------
+
+
+def test_start_refused_after_wrap_up(drawing: Drawing, entrants: list[int]) -> None:
+    factories.make_prize_line(drawing)
+    Conference.objects.filter(pk=drawing.conference_id).update(wrapped_up_at=NOW)
+    with pytest.raises(DrawingError, match=r"^This conference has been wrapped up\.$"):
+        start_drawing(drawing, now=LATER, rng=rng())
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.SCHEDULED
+
+
+def test_undo_claim_after_auto_finish_refused_after_wrap_up(
+    conf: Conference, drawing: Drawing, entrants: list[int]
+) -> None:
+    """Reopening after wrap-up would let a winner miss the Drip tag already queued."""
+    [pick] = started_single(drawing)
+    mark_claimed(pick, now=LATER)
+    wrap_up(conf, now=LATER)
+    assert undo_rule(drawing).can_undo(pick, None) is False
+    with pytest.raises(DrawingError, match=r"^This conference has been wrapped up\.$"):
+        undo_last(pick, now=LATER)
+    drawing.refresh_from_db()
+    pick.refresh_from_db()
+    assert (drawing.status, pick.status) == (Drawing.Status.FINISHED, S.CLAIMED)
+
+
+def test_undo_rule_matches_undo_last(drawing: Drawing, entrants: list[int]) -> None:
+    """The booth's Undo button and the service agree, pick by pick."""
+    first, second, third = started_single(drawing, quantity=3)
+    first = mark_claimed(first, now=LATER)
+    replacement = mark_not_here(second, now=LATER, rng=rng())
+    assert replacement is not None
+    for stale in (drawing, second):
+        stale.refresh_from_db()
+    rule = undo_rule(drawing)
+    assert rule.can_undo(first, None) is True
+    assert rule.can_undo(second, replacement) is True
+    assert rule.can_undo(third, None) is False  # pending: nothing to undo
+    replacement = mark_claimed(replacement, now=LATER)
+    assert undo_rule(drawing).can_undo(second, replacement) is False
+    assert undo_rule(drawing).refusal(second, replacement) == (
+        "The replacement has already been marked."
+    )
+
+
+def _hold_conference_lock_and_wrap_up(
+    conference_id: int, locked: threading.Event, release: threading.Event
+) -> None:
+    """Act as a wrap-up in progress: FOR UPDATE on the conference, stamp, wait."""
+    try:
+        with transaction.atomic():
+            Conference.objects.select_for_update().get(pk=conference_id)
+            Conference.objects.filter(pk=conference_id).update(wrapped_up_at=NOW)
+            locked.set()
+            release.wait(timeout=5)
+    finally:
+        connection.close()
+
+
+def _run_while_wrap_up_holds_lock(
+    conference_id: int, action: Callable[[], object]
+) -> tuple[bool, list[object]]:
+    """Run `action` while a wrap-up holds the conference; report if it waited."""
+    locked, release = threading.Event(), threading.Event()
+    outcomes: list[object] = []
+
+    def act() -> None:
+        try:
+            outcomes.append(action())
+        except Exception as exc:  # recorded for the caller's assertion
+            outcomes.append(exc)
+        finally:
+            connection.close()
+
+    holder = threading.Thread(
+        target=_hold_conference_lock_and_wrap_up,
+        args=(conference_id, locked, release),
+    )
+    holder.start()
+    worker = threading.Thread(target=act)
+    try:
+        assert locked.wait(timeout=5)
+        worker.start()
+        worker.join(timeout=0.5)
+        waited = worker.is_alive()
+    finally:
+        release.set()
+        holder.join()
+        worker.join()
+    return waited, outcomes
+
+
+@pytest.mark.django_db(transaction=True)
+def test_start_waits_for_a_concurrent_wrap_up_and_then_refuses(
+    conf: Conference, drawing: Drawing, entrants: list[int]
+) -> None:
+    factories.make_prize_line(drawing)
+    waited, [outcome] = _run_while_wrap_up_holds_lock(
+        conf.pk, lambda: start_drawing(drawing, now=LATER, rng=rng())
+    )
+    assert waited
+    assert isinstance(outcome, DrawingError)
+    assert str(outcome) == "This conference has been wrapped up."
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.SCHEDULED
+
+
+@pytest.mark.django_db(transaction=True)
+def test_undo_waits_for_a_concurrent_wrap_up_and_then_refuses(
+    conf: Conference, drawing: Drawing, entrants: list[int]
+) -> None:
+    [pick] = started_single(drawing)
+    mark_claimed(pick, now=LATER)
+    waited, [outcome] = _run_while_wrap_up_holds_lock(
+        conf.pk, lambda: undo_last(pick, now=LATER)
+    )
+    assert waited
+    assert isinstance(outcome, DrawingError)
+    assert str(outcome) == "This conference has been wrapped up."
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.FINISHED
+
+
+def _race(*actions: Callable[[], object]) -> list[object]:
+    """Run each action on its own connection, released together by a barrier."""
+    barrier = threading.Barrier(len(actions))
+    outcomes: list[object] = []
+
+    def run(action: Callable[[], object]) -> None:
+        try:
+            barrier.wait()
+            outcomes.append(action())
+        except Exception as exc:  # recorded for the caller's assertion
+            outcomes.append(exc)
+        finally:
+            connection.close()
+
+    threads = [threading.Thread(target=run, args=(a,)) for a in actions]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return outcomes
+
+
+@pytest.mark.django_db(transaction=True)
+def test_racing_wrap_up_and_start_never_leaves_an_open_drawing_wrapped_up(
+    conf: Conference, drawing: Drawing, entrants: list[int]
+) -> None:
+    factories.make_prize_line(drawing, quantity=2)
+    outcomes = _race(
+        lambda: wrap_up(conf, now=LATER),
+        lambda: start_drawing(drawing, now=LATER, rng=rng()),
+    )
+    assert [type(o) for o in outcomes].count(DrawingError) == 1
+    conf.refresh_from_db()
+    drawing.refresh_from_db()
+    assert not (
+        conf.wrapped_up_at is not None and drawing.status == Drawing.Status.OPEN
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_racing_wrap_up_and_undo_never_leaves_an_open_drawing_wrapped_up(
+    conf: Conference, drawing: Drawing, entrants: list[int]
+) -> None:
+    [pick] = started_single(drawing)
+    mark_claimed(pick, now=LATER)
+    outcomes = _race(
+        lambda: wrap_up(conf, now=LATER),
+        lambda: undo_last(pick, now=LATER),
+    )
+    assert [type(o) for o in outcomes].count(DrawingError) == 1
+    conf.refresh_from_db()
+    drawing.refresh_from_db()
+    assert not (
+        conf.wrapped_up_at is not None and drawing.status == Drawing.Status.OPEN
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_two_phones_starting_two_drawings_open_exactly_one(
+    conf: Conference, entrants: list[int]
+) -> None:
+    """The loser gets a DrawingError, not the unique constraint's IntegrityError."""
+    drawings = [factories.make_drawing(conf, scheduled_at=SCHEDULED) for _ in "ab"]
+    for d in drawings:
+        factories.make_prize_line(d)
+    outcomes = _race(
+        *[functools.partial(start_drawing, d, now=NOW, rng=rng()) for d in drawings]
+    )
+    errors = [o for o in outcomes if isinstance(o, Exception)]
+    assert [str(e) for e in errors] == ["Another drawing is open. Close it first."]
+    assert [type(e) for e in errors] == [DrawingError]
+    assert Drawing.objects.filter(status=Drawing.Status.OPEN).count() == 1
 
 
 # --- privacy ---------------------------------------------------------------------

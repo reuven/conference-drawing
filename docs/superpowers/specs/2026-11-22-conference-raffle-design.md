@@ -315,8 +315,11 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
 - **One drawing in progress at a time** per conference.
 - **Undo a mis-tap**: while a drawing is open, the most recent Claimed or Not
   here on a pick can be undone. Undoing a Not here voids its replacement
-  (allowed only if the replacement hasn't been marked yet). Undo is recorded
-  in the audit trail as a reversal, never by deleting history.
+  (allowed only if the replacement hasn't been marked yet). Undoing the claim
+  that auto-finished a drawing reopens it, unless another drawing is open or
+  a later one has started. Undo never works after wrap-up (Drip already has
+  the winners) or after the owner closed the drawing. Undo is recorded in the
+  audit trail as a reversal, never by deleting history.
 - **Display view privacy**: the display URL contains an unguessable
   per-conference token, so winner names aren't on a public, guessable page.
 - **Entry form abuse**: per-IP rate limit and a honeypot field; no CAPTCHA
