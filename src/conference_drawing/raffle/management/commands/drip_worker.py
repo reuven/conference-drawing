@@ -56,10 +56,12 @@ class Command(BaseCommand):
                                 "drip worker pass failed: %s", type(exc).__name__
                             )
                         else:
-                            self.stdout.write(
-                                f"sent={result.sent} retried={result.retried} "
-                                f"failed={result.failed}"
-                            )
+                            # Quiet when idle: no 5 s heartbeat in the journal.
+                            if result.sent or result.retried or result.failed:
+                                self.stdout.write(
+                                    f"sent={result.sent} retried={result.retried} "
+                                    f"failed={result.failed}"
+                                )
                     # An interruptible sleep: a signal sets `stop` and wakes us.
                     if options["once"] or stop.wait(INTERVAL_SECONDS):
                         break

@@ -517,6 +517,13 @@ def test_worker_once_processes_and_exits(
     assert "sent=1 retried=0 failed=0" in out.getvalue()
 
 
+def test_worker_says_nothing_on_an_idle_pass(conference: Conference) -> None:
+    """Every 5 s of "sent=0 retried=0 failed=0" would bury the journal."""
+    out = StringIO()
+    call_command("drip_worker", "--once", stdout=out)
+    assert out.getvalue() == ""
+
+
 def test_worker_idles_when_drip_is_unconfigured(
     conference: Conference, settings: Any
 ) -> None:
