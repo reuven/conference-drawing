@@ -1,4 +1,5 @@
 import datetime
+import io
 from collections.abc import Callable
 from typing import Any
 
@@ -9,7 +10,9 @@ from django.db.models import ProtectedError
 from hypothesis import given
 from hypothesis import strategies as st
 
+from conference_drawing.raffle.csv_export import write_csv
 from conference_drawing.raffle.models import (
+    RESERVED_QUESTION_KEYS,
     AuditEvent,
     Book,
     Conference,
@@ -109,7 +112,7 @@ def test_single_day_conference_is_valid(conference_factory: Factory) -> None:
 
 
 @pytest.mark.parametrize(
-    "bad", ["Has Caps", "-lead", "trail-", "double--dash", "a_b", ""]
+    "bad", ["Has Caps", "-lead", "trail-", "double--dash", "a_b", "", "pycon\n"]
 )
 def test_bad_slug_rejected(conference_factory: Factory, bad: str) -> None:
     c = conference_factory()
@@ -199,11 +202,48 @@ def test_question_key_unique_per_conference(conference_factory: Factory) -> None
         Question.objects.create(conference=a, key="k", prompt="p2")
 
 
-def test_question_key_must_be_slug(conference_factory: Factory) -> None:
-    q = Question(conference=conference_factory(), key="Bad Key", prompt="p")
+@pytest.mark.parametrize(
+    "bad", ["Bad Key", "a__b", "_lead", "trail_", "k\n", "a-_b", ""]
+)
+def test_question_key_must_be_slug(conference_factory: Factory, bad: str) -> None:
+    q = Question(conference=conference_factory(), key=bad, prompt="p")
     with pytest.raises(ValidationError) as exc:
         q.full_clean()
     assert "key" in exc.value.message_dict
+
+
+@pytest.mark.parametrize("good", ["want_to_learn", "coding_style", "k", "a-b", "x1"])
+def test_question_key_accepts_the_default_style(
+    conference_factory: Factory, good: str
+) -> None:
+    Question(conference=conference_factory(), key=good, prompt="p").full_clean()
+
+
+def test_default_questions_pass_their_own_validation(
+    conference_factory: Factory,
+) -> None:
+    c = conference_factory()
+    create_default_questions(c)
+    for q in c.question_set.all():
+        q.full_clean()
+
+
+@pytest.mark.parametrize("key", sorted(RESERVED_QUESTION_KEYS))
+def test_question_key_cannot_shadow_a_csv_column_or_conference(
+    conference_factory: Factory, key: str
+) -> None:
+    """Its CSV column (or Drip event property) would collide with a fixed one."""
+    q = Question(conference=conference_factory(), key=key, prompt="p")
+    with pytest.raises(ValidationError) as exc:
+        q.full_clean()
+    assert "reserved" in exc.value.message_dict["key"][0]
+
+
+def test_reserved_keys_are_the_csv_columns_and_conference() -> None:
+    out = io.StringIO()
+    write_csv([], [], out)
+    header = out.getvalue().strip().split(",")
+    assert RESERVED_QUESTION_KEYS == {*header, "conference"}
 
 
 def test_choice_question_needs_string_choices(conference_factory: Factory) -> None:

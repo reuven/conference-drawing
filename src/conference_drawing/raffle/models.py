@@ -23,10 +23,49 @@ DEFAULT_FOLLOWUP_ACK_TEXT = (
 )
 DEFAULT_BD_CHECKBOX_TEXT = "Also subscribe me to Better Developers"
 
-_SLUG_RE = r"^[a-z0-9]+(-[a-z0-9]+)*$"
+# \A and \Z, not ^ and $: `$` also matches before a trailing newline.
+_SLUG_RE = r"\A[a-z0-9]+(-[a-z0-9]+)*\Z"
 _slug_validator = RegexValidator(
     _SLUG_RE, "Use lowercase letters, digits and single hyphens."
 )
+
+# Question keys: the default ones use underscores (want_to_learn).
+_QUESTION_KEY_RE = re.compile(r"\A[a-z0-9]+([_-][a-z0-9]+)*\Z")
+
+# A question key becomes a CSV column and a Drip event property, so it may not
+# shadow a fixed CSV column or the event's own `conference` property.
+RESERVED_QUESTION_KEYS = frozenset(
+    {
+        "name",
+        "email",
+        "entered_at",
+        "status",
+        "won",
+        "digital_codes",
+        "digital_urls",
+        "followup_ack_at",
+        "bd_optin",
+        "bd_optin_at",
+        "conference",
+    }
+)
+
+
+def validate_question_key(value: str) -> None:
+    """Reject a key that isn't a lowercase slug or that a fixed column already uses.
+
+    Why: the key is the answer's CSV column and its Drip event property name.
+    """
+    if not _QUESTION_KEY_RE.match(value):
+        raise ValidationError(
+            "Use lowercase letters and digits, separated by single _ or -.",
+            code="invalid",
+        )
+    if value in RESERVED_QUESTION_KEYS:
+        raise ValidationError(
+            f"{value!r} is reserved: the export already has a column by that name.",
+            code="reserved",
+        )
 
 
 def validate_time_zone(value: str) -> None:
@@ -137,7 +176,7 @@ class Question(models.Model):
         CHOICE = "choice"
 
     conference = models.ForeignKey(Conference, on_delete=models.CASCADE)
-    key = models.CharField(max_length=60, validators=[_slug_validator])
+    key = models.CharField(max_length=60, validators=[validate_question_key])
     prompt = models.CharField(max_length=300)
     kind = models.CharField(max_length=10, choices=Kind, default=Kind.TEXT)
     choices = models.JSONField(default=list, blank=True)

@@ -1,6 +1,8 @@
 """Admin setup screens: driven through the test client as a superuser."""
 
 import datetime
+import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -21,6 +23,7 @@ from conference_drawing.raffle.models import (
     OutboxJob,
     PrizeLine,
     Question,
+    create_default_questions,
 )
 
 Factory = Callable[..., Any]
@@ -79,6 +82,32 @@ def test_editing_conference_does_not_add_questions_again(
     )
     assert resp.status_code == 302
     assert Question.objects.filter(conference=conf).count() == 0
+
+
+def test_editing_conference_with_its_default_questions_saves(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    """The browser posts the default question rows back; they must validate."""
+    conf = conference_factory()
+    create_default_questions(conf)
+    rows = [
+        {
+            "id": q.pk,
+            "conference": conf.pk,
+            "key": q.key,
+            "prompt": q.prompt,
+            "kind": q.kind,
+            "choices": json.dumps(q.choices),
+            "position": q.position,
+        }
+        for q in conf.question_set.all()
+    ]
+    data = _conference_post(slug=conf.slug, **_formset("question_set", rows, len(rows)))
+    resp = admin_client.post(
+        reverse("admin:raffle_conference_change", args=[conf.pk]), data
+    )
+    errors = re.findall(r"errorlist.{0,300}", resp.content.decode(), re.S)
+    assert resp.status_code == 302, errors
 
 
 def test_display_token_and_wrapped_up_are_read_only(
