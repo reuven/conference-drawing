@@ -1,7 +1,8 @@
 # Managed by conference-drawing (deploy/remote/install.sh).
 [Unit]
 Description=conference-drawing web app (gunicorn on a unix socket)
-After=network.target
+After=network.target postgresql.service
+Requires=postgresql.service
 
 [Service]
 Type=notify

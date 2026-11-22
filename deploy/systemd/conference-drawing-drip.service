@@ -6,7 +6,8 @@
 # the job in hand on SIGTERM; one job's worst case is about 40 s.
 [Unit]
 Description=conference-drawing Drip outbox worker
-After=network-online.target
+After=network-online.target postgresql.service
+Requires=postgresql.service
 Wants=network-online.target
 
 [Service]

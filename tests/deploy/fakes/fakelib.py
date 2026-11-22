@@ -1,5 +1,6 @@
 """Shared body of the fake ``ssh``, ``scp``, ``dig``, ``curl``, ``uv``, ``git``,
-``caddy``, ``systemctl`` and ``flock`` used by the deploy-script tests.
+``caddy``, ``systemctl``, ``flock``, ``apt-get``, ``dpkg-query``, ``psql``,
+``pg_dump`` and ``pg_restore`` used by the deploy-script tests.
 
 Each fake appends one JSON line to ``$FAKE_LOG`` (tool, argv, stdin) and replays
 the first canned response in ``$FAKE_RESPONSES`` whose ``match`` is a substring
@@ -11,6 +12,11 @@ instead of reaching a real machine.
 ``ssh`` and ``scp`` also refuse every host but ``$FAKE_HOST`` (exit 97). An
 entry with ``"passthrough": true`` runs the command after ``--`` instead (the
 fake ``runuser`` runs shell helpers this way, as the current user).
+
+``ssh`` and ``psql`` also log what they read on stdin (the remote command's
+input; the SQL a script feeds psql). An entry with ``"require_magic"`` fails
+like ``pg_restore`` on a file that is not a custom-format dump: the last
+argument must be a file starting with those bytes.
 """
 
 import json
@@ -113,6 +119,20 @@ def _env_file_rules(entry: dict[str, Any]) -> None:
             env.write(line + "\n")
 
 
+def _require_magic(entry: dict[str, Any], args: list[str]) -> None:
+    """Refuse, as pg_restore does, an archive without the expected header."""
+    magic = entry.get("require_magic")
+    if not magic:
+        return
+    path = Path(args[-1]) if args else Path("/nonexistent")
+    if not path.is_file() or not path.read_bytes().startswith(magic.encode()):
+        print(
+            "pg_restore: error: input file does not appear to be a valid archive",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def main() -> None:
     tool = Path(sys.argv[0]).name
     args = sys.argv[1:]
@@ -123,7 +143,7 @@ def main() -> None:
         sys.exit(UNKNOWN)
 
     stdin = ""
-    if tool == "ssh" and not sys.stdin.isatty():
+    if tool in {"ssh", "psql"} and not sys.stdin.isatty():
         stdin = sys.stdin.read()
     with open(log_path, "a") as log:
         log.write(json.dumps({"tool": tool, "argv": args, "stdin": stdin}) + "\n")
@@ -150,6 +170,7 @@ def main() -> None:
             continue
         if entry["match"] in key:
             _env_file_rules(entry)
+            _require_magic(entry, args)
             if entry.get("passthrough"):
                 sys.exit(_passthrough(args))
             if tool == "scp":

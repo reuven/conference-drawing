@@ -37,6 +37,32 @@ systemctl daemon-reload
 # Forget any failed state so the next preflight sees a clean server.
 systemctl reset-failed "${units[@]}" 2>/dev/null || true
 
+# The database and role go once nothing can use them. PostgreSQL itself goes
+# only if install.sh installed it (the marker) and no other database exists;
+# its dependencies (postgresql-common, the client) stay for apt autoremove.
+if postgresql_installed; then
+	say "dropping the $DB_NAME database and the $DB_ROLE role"
+	pg_admin -f - <<'SQL'
+DROP DATABASE IF EXISTS :"db" WITH (FORCE);
+DROP ROLE IF EXISTS :"role";
+SQL
+	no_symlink "$PG_MARKER"
+	if [ -f "$PG_MARKER" ]; then
+		major=$(cat "$PG_MARKER")
+		[[ $major =~ ^[0-9]+$ ]] || die "$PG_MARKER does not hold a PostgreSQL major version"
+		others=$(pg_admin -At -c "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres', 'template0', 'template1')")
+		if [ -n "$others" ]; then
+			say "left PostgreSQL installed: other databases exist ($(printf '%s\n' "$others" | wc -l | tr -d ' '))"
+		else
+			say "removing PostgreSQL $major, which install.sh installed"
+			rm -f "$ROOT/etc/postgresql/$major/main/conf.d/$PG_DROPIN_NAME"
+			DEBIAN_FRONTEND=noninteractive apt-get purge -y -q postgresql "postgresql-$major"
+		fi
+	fi
+else
+	say "PostgreSQL is not installed; no database to drop"
+fi
+
 say "removing $APP_DIR and the $APP_USER user"
 rm -rf -- "$APP_DIR"
 if id -u "$APP_USER" >/dev/null 2>&1; then

@@ -8,12 +8,19 @@
 # DJANGO_SUPERUSER_USERNAME/EMAIL/PASSWORD), never in argv. Safe to run again:
 # init only fills in what is missing, then migrates and runs createcachetable.
 #
+# The database is PostgreSQL on the local unix socket. A first run installs
+# Ubuntu's postgresql package if it is missing (recording that it did, in
+# /srv/conference-drawing/.installed-postgresql, and only then giving it a
+# small-footprint conf.d drop-in), and creates the role conference-drawing
+# (LOGIN, no password: the app user's OS name maps to it by peer auth) and the
+# database conference_drawing it owns. Every run repeats that idempotently.
+#
 # Upgrades keep the old release serving for as long as possible:
 #   1. a new venv, venv-<UTC time>-<commit>, is built beside the live one
 #      (uv pip install --require-hashes, the wheel's sha256 checked first),
 #      and collectstatic runs from it, while the old units still run;
-#   2. only then are the running units stopped, a snapshot is taken (under
-#      the maintenance lock, which this script holds throughout), init
+#   2. only then are the running units stopped, a pg_dump snapshot is taken
+#      (under the maintenance lock, which this script holds throughout), init
 #      migrates, and the venv symlink is switched to the new venv;
 #   3. the units start again. If anything fails after they were stopped, the
 #      EXIT trap starts the ones this run stopped, on whichever venv the link
@@ -24,7 +31,9 @@
 #   ln -sfn venv-<previous> /srv/conference-drawing/venv
 #   systemctl restart conference-drawing-web conference-drawing-drip
 # and, if the new release migrated the schema, first put back the snapshot
-# taken just before migrate (data/snapshots/, newest) as data/db.sqlite3.
+# taken just before migrate (data/snapshots/, newest): drop and recreate the
+# database as postgres, then pg_restore the snapshot as the app user (a failed
+# migrate writes the exact commands to the install log).
 #
 # up.sh stays attached over ssh for the whole run. If the connection drops
 # mid-run, output fails (SIGPIPE) or SIGHUP arrives; either ends the run
@@ -38,10 +47,13 @@
 #                                       bin/, version.json
 #   /srv/conference-drawing/data        app user 0711: others may pass through,
 #                                       not list. The only writable path.
-#     .env 0600, db.sqlite3 0660 (UMask=007), snapshots/ 0700
+#     .env 0600, snapshots/ 0700 (pg_dump files, 0600)
 #     static/, media/, media/covers/    app user 0755, files 0644 (public anyway)
 #   /run/conference-drawing/web.sock    gunicorn's socket, in a 0750 directory
 #                                       of group caddy (see the web unit)
+#   PostgreSQL                          socket only (listen_addresses = ''),
+#                                       database conference_drawing owned by
+#                                       role conference-drawing (peer auth)
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 release=$(dirname "$here")
@@ -100,12 +112,16 @@ on_exit() {
 		rm -rf -- "$new_venv" 2>/dev/null
 	fi
 	log_line "install failed (exit $status) commit=${commit:-unknown}${started:+; $started}"
-	if [ "$migrating" -eq 1 ]; then
+	if [ "$migrating" -eq 1 ] && [ -n "$pre_migrate" ]; then
 		log_line "init/migrate failed: the schema may be partly migrated. To go back to the pre-migrate snapshot:" \
 			"systemctl stop $WEB_UNIT $DRIP_UNIT $SNAPSHOT_TIMER &&" \
-			"runuser -u $APP_USER -- cp $pre_migrate $DATA_DIR/db.sqlite3 &&" \
-			"rm -f $DATA_DIR/db.sqlite3-wal $DATA_DIR/db.sqlite3-shm &&" \
-			"systemctl start $WEB_UNIT $DRIP_UNIT $SNAPSHOT_TIMER"
+			"runuser -u postgres -- dropdb --force $DB_NAME &&" \
+			"runuser -u postgres -- createdb --owner=$DB_ROLE $DB_NAME &&" \
+			"runuser -u $APP_USER -- pg_restore --no-owner --role=$DB_ROLE --exit-on-error --single-transaction --dbname=$DB_NAME $pre_migrate &&" \
+			"systemctl start $WEB_UNIT $DRIP_UNIT $SNAPSHOT_TIMER;" \
+			"then rerun up.sh, which grants the database's privileges again"
+	elif [ "$migrating" -eq 1 ]; then
+		log_line "init/migrate failed with no pre-migrate snapshot (the database had no tables yet), so there is nothing to put back"
 	fi
 	say "install failed${started:+; $started}; see $INSTALL_LOG" 2>/dev/null || true
 	return 0
@@ -171,7 +187,6 @@ prepare_data_dir() {
 		chmod 0700 "$data/snapshots"
 		find -P "$data/static" "$data/media" ! -type l -type d -exec chmod 0755 {} +
 		find -P "$data/static" "$data/media" ! -type l -type f -exec chmod 0644 {} +
-		[ ! -e "$data/db.sqlite3" ] || chmod 0660 "$data/db.sqlite3"
 	' _ "$DATA_DIR"
 }
 
@@ -199,10 +214,66 @@ write_env_keys() {
 	' _ "$ENV_FILE"
 }
 
+# Install Ubuntu's postgresql package if it is missing, and record that this
+# script did, so uninstall.sh may purge it again. Only a PostgreSQL this script
+# installed gets the small-footprint drop-in: one that was already there may
+# serve others, so its configuration is left alone. Restarts PostgreSQL only
+# when the drop-in changed (its settings need a restart, not a reload).
+ensure_postgresql() {
+	local confs major dropin new
+	no_symlink "$PG_MARKER"
+	if ! postgresql_installed; then
+		say "installing PostgreSQL"
+		DEBIAN_FRONTEND=noninteractive apt-get install -y -q postgresql
+		confs=("$ROOT"/etc/postgresql/*/main/conf.d)
+		[ "${#confs[@]}" -eq 1 ] && [ -d "${confs[0]}" ] ||
+			die "expected exactly one PostgreSQL cluster under /etc/postgresql"
+		major=$(basename "$(dirname "$(dirname "${confs[0]}")")")
+		printf '%s\n' "$major" >"$PG_MARKER"
+	fi
+	[ -f "$PG_MARKER" ] || return 0
+	major=$(cat "$PG_MARKER")
+	[[ $major =~ ^[0-9]+$ ]] || die "$PG_MARKER does not hold a PostgreSQL major version"
+	dropin="$ROOT/etc/postgresql/$major/main/conf.d/$PG_DROPIN_NAME"
+	no_symlink "$dropin"
+	new="$work/$PG_DROPIN_NAME"
+	printf '%s\n' \
+		"# Managed by conference-drawing (deploy/remote/install.sh)." \
+		"# Unix socket only, and small: this server's memory is shared." \
+		"listen_addresses = ''" \
+		"shared_buffers = 64MB" \
+		"max_connections = 20" >"$new"
+	if ! cmp -s "$new" "$dropin"; then
+		install -m 0644 "$new" "$dropin"
+		systemctl restart postgresql
+	fi
+}
+
+# Create the role and its database if missing, idempotently, as postgres.
+# The role logs in by peer auth only: it never gets a password. Nobody else
+# may connect to the database.
+provision_database() {
+	pg_admin -f - <<'SQL'
+SELECT NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'role') AS need_role \gset
+\if :need_role
+CREATE ROLE :"role" LOGIN;
+\endif
+ALTER ROLE :"role" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD NULL;
+SELECT NOT EXISTS (SELECT FROM pg_database WHERE datname = :'db') AS need_db \gset
+\if :need_db
+CREATE DATABASE :"db" OWNER :"role";
+\endif
+REVOKE ALL ON DATABASE :"db" FROM PUBLIC;
+SQL
+}
+
+# How many tables the app's database holds (0 before the first migrate).
+app_table_count() {
+	as_app psql -X -At -v ON_ERROR_STOP=1 --dbname="$DB_NAME" \
+		-c "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'"
+}
+
 say "packages and users"
-if ! command -v sqlite3 >/dev/null; then
-	DEBIAN_FRONTEND=noninteractive apt-get install -y -q sqlite3
-fi
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
 	useradd --system --user-group --home-dir "$APP_DIR" --no-create-home \
 		--shell /usr/sbin/nologin "$APP_USER"
@@ -221,14 +292,21 @@ no_symlink "$LOCK_FILE"
 chown -h "root:$APP_USER" "$LOCK_FILE"
 chmod 0640 "$LOCK_FILE"
 take_lock 600
+say "PostgreSQL"
+ensure_postgresql
+provision_database
 prepare_data_dir
 if [ -n "$restore" ]; then
 	[ "$upgrade" -eq 0 ] || die "refusing to restore over an installed release"
 	check_restore_tarball "$restore"
-	[ ! -e "$DATA_DIR/db.sqlite3" ] || die "refusing to restore over an existing database"
+	[ "$(app_table_count)" = 0 ] ||
+		die "refusing to restore: the database $DB_NAME already has tables"
 	as_app tar -xzf - -C "$DATA_DIR" <"$restore"
-	[ "$(as_app sqlite3 "$DATA_DIR/db.sqlite3" "PRAGMA integrity_check")" = ok ] ||
-		die "the restored database failed integrity_check"
+	as_app pg_restore -f /dev/null "$DATA_DIR/db.dump" ||
+		die "the restore dump failed verification (pg_restore could not read it)"
+	as_app pg_restore --clean --if-exists --no-owner --role="$DB_ROLE" \
+		--exit-on-error --single-transaction --dbname="$DB_NAME" "$DATA_DIR/db.dump"
+	as_app rm -f -- "$DATA_DIR/db.dump"
 	prepare_data_dir
 	say "restored $(basename "$restore")"
 fi
@@ -269,9 +347,10 @@ for unit in "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_TIMER"; do
 	fi
 done
 install -m 0755 "$here/common.sh" "$here/snapshot.sh" "$APP_DIR/bin/"
-if [ -e "$DATA_DIR/db.sqlite3" ]; then
+# Snapshot before migrate, unless there is nothing to snapshot yet.
+if [ "$(app_table_count)" != 0 ]; then
 	as_app env CD_LOCK_HELD=1 "$APP_DIR/bin/snapshot.sh"
-	snapshots=("$DATA_DIR"/snapshots/db-*.sqlite3)
+	snapshots=("$DATA_DIR"/snapshots/db-*.dump)
 	pre_migrate=${snapshots[${#snapshots[@]} - 1]}
 fi
 # init writes the secret key and allowed host on the first run, then (every

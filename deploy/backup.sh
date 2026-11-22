@@ -3,11 +3,11 @@
 #
 #   deploy/backup.sh <host>
 #
-# On the server, remote/backup.sh takes the maintenance lock, copies the
-# database with sqlite3 .backup, checks it with PRAGMA integrity_check, and
-# tars it with media/. The tarball lands in backups/<host>-<UTC time>.tar.gz
-# (git-ignored, mode 0600: it holds personal data until entrants are
-# deleted). The local path is the last line on stdout, for down.sh.
+# On the server, remote/backup.sh takes the maintenance lock, dumps the
+# database with pg_dump -Fc as the app user, reads the dump back fully with
+# pg_restore, and tars it (db.dump) with media/. The tarball lands in
+# backups/<host>-<UTC time>.tar.gz (git-ignored, mode 0600: it holds personal
+# data until entrants are deleted). The local path is the last line on stdout, for down.sh.
 #
 # The tarball is NOT encrypted: keep backups/ on an encrypted disk, and delete
 # old ones once entrants are deleted. (Encrypting with age is deferred.)
@@ -40,7 +40,7 @@ remote_file=$(printf '%s\n' "$remote_file" | tail -n 1)
 
 scp -q "${SSH_OPTS[@]}" "$TARGET:$remote_file" "$local_file"
 # grep without -q reads all of tar's output, so pipefail sees no SIGPIPE.
-if [ ! -s "$local_file" ] || ! tar -tzf "$local_file" 2>/dev/null | grep -x 'db.sqlite3' >/dev/null; then
+if [ ! -s "$local_file" ] || ! tar -tzf "$local_file" 2>/dev/null | grep -x 'db.dump' >/dev/null; then
 	rm -f "$local_file"
 	die "the downloaded backup is empty or has no database; the server copy is kept at $remote_file"
 fi

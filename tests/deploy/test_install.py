@@ -3,8 +3,9 @@
 ``CD_ROOT`` points every server path into a temp dir, and fakes stand in for
 everything privileged: ``id`` says root, ``runuser`` runs shell helpers as the
 current user (and fakes the app's own commands), ``chown``, ``useradd``,
-``userdel``, ``systemctl``, ``caddy``, ``flock`` and ``uv`` are canned. No real
-server step runs on this machine.
+``userdel``, ``systemctl``, ``caddy``, ``flock``, ``uv``, ``apt-get``,
+``dpkg-query``, ``psql``, ``pg_dump`` and ``pg_restore`` are canned. No real
+server step runs on this machine, and no real database is touched.
 """
 
 import hashlib
@@ -12,11 +13,9 @@ import io
 import json
 import re
 import shutil
-import sqlite3
 import subprocess
 import tarfile
 import time
-from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,10 +25,12 @@ from tests.deploy.conftest import (
     COMMIT,
     DEPLOY,
     DOMAIN,
+    DUMP_BYTES,
     FAKES,
     Entry,
     Fakes,
     make_backup_tarball,
+    make_dump,
     os_mode,
 )
 
@@ -81,8 +82,29 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _canned(active: bool) -> dict[str, list[Entry]]:
+PG_MARKER = "srv/conference-drawing/.installed-postgresql"
+PG_DROPIN = "etc/postgresql/16/main/conf.d/conference-drawing.conf"
+
+
+def _canned(active: bool, dump: Path) -> dict[str, list[Entry]]:
+    """Responses for a server whose PostgreSQL exists only if `active`."""
     return {
+        "dpkg-query": [
+            {"match": "postgresql", "stdout": "install ok installed"}
+            if active
+            else {"match": "postgresql", "exit": 1}
+        ],
+        "apt-get": [
+            {"match": "install -y -q postgresql"},
+            {"match": "purge -y -q postgresql postgresql-16"},
+        ],
+        "psql": [
+            {"match": "pg_tables", "stdout": "14\n" if active else "0\n"},
+            {"match": "FROM pg_database WHERE", "stdout": ""},
+            {"match": "-v ON_ERROR_STOP=1"},
+        ],
+        "pg_dump": [{"match": "-Fc", "copy_to_flag": "--file", "file": str(dump)}],
+        "pg_restore": [{"match": "", "require_magic": "PGDMP"}],
         "id": [
             {"match": "-u conference-drawing", "stdout": "999\n"},
             {"match": "-u", "stdout": "0\n"},
@@ -106,6 +128,7 @@ def _canned(active: bool) -> dict[str, list[Entry]]:
             {"match": "disable --now"},
             {"match": "reset-failed"},
             {"match": "reload caddy"},
+            {"match": "restart postgresql"},
         ],
         "runuser": [
             {
@@ -143,26 +166,32 @@ def server(fakes: Fakes) -> Server:
     (root / "etc" / "systemd" / "system").mkdir(parents=True)
     (root / "usr" / "local" / "bin").mkdir(parents=True)
     (root / "usr" / "local" / "bin" / "uv").symlink_to(FAKES / "uv")
+    # What Ubuntu's postgresql package leaves (the fake apt-get installs nothing).
+    (root / "etc" / "postgresql" / "16" / "main" / "conf.d").mkdir(parents=True)
     fakes.extra_env["CD_ROOT"] = str(root)
-    fakes.responses.update(_canned(active=False))
+    make_dump(fakes.root / "canned" / "db.dump")
+    fakes.responses.update(_canned(active=False, dump=_canned_dump(fakes)))
     return Server(fakes, root, release)
+
+
+def _canned_dump(fakes: Fakes) -> Path:
+    return fakes.root / "canned" / "db.dump"
 
 
 @pytest.fixture
 def upgrade(server: Server) -> Server:
-    """A running install: data, two old venvs, units active."""
+    """A running install: data, database tables, two old venvs, units active."""
     server.data.mkdir(parents=True)
     (server.data / ".env").write_text("DJANGO_SECRET_KEY='x'\n")
     (server.app / ".maintenance.lock").touch()
-    with closing(sqlite3.connect(server.data / "db.sqlite3")) as db, db:
-        db.execute("create table books (title text)")
     for name in (
         "venv-20261101T000000Z-aaaaaaaaaaaa",
         "venv-20261115T000000Z-bbbbbbbbbbbb",
     ):
         (server.app / name / "bin").mkdir(parents=True)
     (server.app / "venv").symlink_to("venv-20261115T000000Z-bbbbbbbbbbbb")
-    server.fakes.responses.update(_canned(active=True))
+    (server.root / PG_MARKER).write_text("16\n")
+    server.fakes.responses.update(_canned(active=True, dump=_canned_dump(server.fakes)))
     return server
 
 
@@ -238,6 +267,128 @@ def test_install_is_idempotent_for_drip_keys(server: Server) -> None:
     )
 
 
+# --- PostgreSQL ------------------------------------------------------------------
+
+
+def _psql_calls(server: Server, user: str) -> list[str]:
+    """The argv of each runuser call that ran psql as `user`."""
+    return [
+        " ".join(c.argv)
+        for c in server.fakes.calls("runuser")
+        if c.argv[:2] == ["-u", user] and "psql" in c.argv
+    ]
+
+
+def _admin_sql(server: Server) -> str:
+    """Everything the scripts fed psql on stdin (the admin SQL)."""
+    return "".join(c.stdin for c in server.fakes.calls("psql"))
+
+
+def test_fresh_install_installs_postgresql_and_records_that_it_did(
+    server: Server,
+) -> None:
+    result = server.install()
+    assert result.returncode == 0, result.stderr
+    log = server.log()
+    assert "apt-get install -y -q postgresql" in log
+    assert (server.root / PG_MARKER).read_text() == "16\n"
+    dropin = (server.root / PG_DROPIN).read_text()
+    for setting in (
+        "listen_addresses = ''",
+        "shared_buffers = 64MB",
+        "max_connections = 20",
+    ):
+        assert f"\n{setting}\n" in dropin, setting
+    assert os_mode(server.root / PG_DROPIN) == 0o644
+    restart = server.index("systemctl restart postgresql")
+    assert server.index("flock --wait") < server.index("apt-get install")
+    assert restart < server.index("runuser -u postgres -- psql")
+
+
+def test_install_creates_the_role_and_database_through_psql_variables(
+    server: Server,
+) -> None:
+    assert server.install().returncode == 0
+    (admin,) = _psql_calls(server, "postgres")
+    assert admin.startswith("-u postgres -- psql -X ")
+    assert "-v ON_ERROR_STOP=1" in admin
+    assert "-v role=conference-drawing" in admin
+    assert "-v db=conference_drawing" in admin
+    sql = _admin_sql(server)
+    # Identifiers only as :"role" / :"db" (psql quotes them), never spliced in.
+    assert "conference-drawing" not in sql and "conference_drawing" not in sql
+    assert 'CREATE ROLE :"role" LOGIN;' in sql
+    assert 'CREATE DATABASE :"db" OWNER :"role";' in sql
+    assert "\\if :need_role" in sql and "\\if :need_db" in sql  # idempotent
+    # Peer auth only: the role never has a password.
+    assert (
+        'ALTER ROLE :"role" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE '
+        "PASSWORD NULL;" in sql
+    )
+    assert 'REVOKE ALL ON DATABASE :"db" FROM PUBLIC;' in sql
+    assert "PASSWORD '" not in sql
+
+
+def test_install_leaves_an_existing_postgresql_alone(server: Server) -> None:
+    server.fakes.set(
+        "dpkg-query", [{"match": "postgresql", "stdout": "install ok installed"}]
+    )
+    assert server.install().returncode == 0
+    log = server.log()
+    assert not any(line.startswith("apt-get") for line in log)
+    assert not (server.root / PG_MARKER).exists()
+    assert not (server.root / PG_DROPIN).exists()
+    assert "systemctl restart postgresql" not in log
+    assert len(_psql_calls(server, "postgres")) == 1  # the role and database
+
+
+def test_install_restarts_postgresql_only_when_its_dropin_changes(
+    server: Server,
+) -> None:
+    assert server.install().returncode == 0
+    server.fakes.log.unlink()
+    server.fakes.set(
+        "dpkg-query", [{"match": "postgresql", "stdout": "install ok installed"}]
+    )
+    assert server.install().returncode == 0
+    log = server.log()
+    assert "systemctl restart postgresql" not in log
+    assert not any(line.startswith("apt-get") for line in log)
+    assert (server.root / PG_MARKER).exists()  # still ours
+
+
+def test_install_refuses_a_symlinked_postgresql_dropin(server: Server) -> None:
+    sentinel = server.fakes.root / "sentinel"
+    sentinel.write_text("untouched\n")
+    (server.root / PG_DROPIN).symlink_to(sentinel)
+    result = server.install()
+    assert result.returncode != 0
+    assert "symbolic link" in result.stderr
+    assert sentinel.read_text() == "untouched\n"
+
+
+def test_install_fails_when_the_role_cannot_be_created(server: Server) -> None:
+    server.fakes.prepend("psql", {"match": "-v role=", "exit": 3})
+    result = server.install()
+    assert result.returncode != 0
+    assert not any("conference-drawing init" in line for line in server.log())
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "conference-drawing-web.service",
+        "conference-drawing-drip.service",
+        "conference-drawing-snapshot.service",
+    ],
+)
+def test_units_need_postgresql(unit: str) -> None:
+    lines = (DEPLOY / "systemd" / unit).read_text().splitlines()
+    after = [line for line in lines if line.startswith("After=")]
+    assert any("postgresql.service" in line.split("=", 1)[1].split() for line in after)
+    assert "Requires=postgresql.service" in lines
+
+
 # --- upgrades ------------------------------------------------------------------
 
 
@@ -252,7 +403,12 @@ def test_upgrade_snapshots_before_migrate_and_keeps_one_previous_venv(
     migrate = upgrade.index("conference-drawing init")
     start = upgrade.index("systemctl enable --now")
     assert collect < stop < snapshot < migrate < start
-    assert len(list((upgrade.data / "snapshots").glob("db-*.sqlite3"))) == 1
+    (dump,) = (upgrade.data / "snapshots").glob("db-*.dump")
+    assert dump.read_bytes() == DUMP_BYTES
+    # The snapshot ran as the app user (peer auth), holding the lock already.
+    as_app = upgrade.index("runuser -u conference-drawing -- env CD_LOCK_HELD=1")
+    assert as_app == snapshot < upgrade.index("pg_dump -Fc") < migrate
+    assert "systemctl restart postgresql" in upgrade.log()  # no drop-in yet
     venvs = _venvs(upgrade)
     assert venvs[0] == "venv-20261115T000000Z-bbbbbbbbbbbb"  # previous, kept
     assert len(venvs) == 2  # the older one is pruned
@@ -296,8 +452,30 @@ def test_upgrade_failing_at_migrate_restarts_the_units_it_stopped(
     text = install_log.read_text()
     assert "restarted" in text
     assert "partly migrated" in text
-    (snapshot,) = (upgrade.data / "snapshots").glob("db-*.sqlite3")
-    assert snapshot.name in text
+    (snapshot,) = (upgrade.data / "snapshots").glob("db-*.dump")
+    assert (
+        "runuser -u postgres -- dropdb --force conference_drawing && "
+        "runuser -u postgres -- createdb --owner=conference-drawing "
+        "conference_drawing && "
+        "runuser -u conference-drawing -- pg_restore --no-owner "
+        "--role=conference-drawing --exit-on-error --single-transaction "
+        f"--dbname=conference_drawing {upgrade.data / 'snapshots' / snapshot.name}"
+    ) in text
+    assert "sqlite" not in text
+
+
+def test_fresh_install_failing_at_migrate_gives_no_restore_advice(
+    server: Server,
+) -> None:
+    """No tables, so no snapshot was taken, so there is nothing to put back."""
+    server.fakes.prepend("runuser", {"match": "conference-drawing init", "exit": 1})
+    result = server.install()
+    assert result.returncode != 0
+    assert not any("pg_dump" in line for line in server.log())
+    text = (server.root / "var/log/conference-drawing-install.log").read_text()
+    assert "install failed" in text
+    assert "pg_restore" not in text
+    assert "no pre-migrate snapshot" in text
 
 
 def test_upgrade_restarts_units_even_after_the_ssh_session_drops(
@@ -456,13 +634,28 @@ def test_remote_backup_reads_the_database_as_the_app_user(upgrade: Server) -> No
     tarball = Path(result.stdout.splitlines()[-1])
     with tarfile.open(tarball) as tar:
         names = tar.getnames()
-    assert "db.sqlite3" in names and "media/covers/c.png" in names
+        dump = tar.extractfile("db.dump")
+        assert dump is not None and dump.read() == DUMP_BYTES
+    assert "media/covers/c.png" in names
     log = upgrade.log()
-    assert any(line.startswith("runuser") and ".backup" in line for line in log)
-    assert any(line.startswith("runuser") and "tar -czf -" in line for line in log)
-    assert upgrade.index("flock --wait 300") < upgrade.index(".backup")
+    dump_cmd = upgrade.index("runuser -u conference-drawing -- pg_dump -Fc --file")
+    verify = upgrade.index("runuser -u conference-drawing -- pg_restore -f /dev/null")
+    tar_cmd = upgrade.index("runuser -u conference-drawing -- tar -czf -")
+    assert upgrade.index("flock --wait 300") < dump_cmd < verify < tar_cmd
+    assert "--dbname=conference_drawing" in log[dump_cmd]
     assert list((upgrade.data / "snapshots").iterdir()) == []
     shutil.rmtree(tarball.parent)
+
+
+def test_remote_backup_refuses_a_dump_that_does_not_read_back(
+    upgrade: Server,
+) -> None:
+    make_dump(_canned_dump(upgrade.fakes), b"truncated")
+    (upgrade.data / "snapshots").mkdir()
+    result = upgrade.fakes.run([str(upgrade.release / "remote" / "backup.sh")])
+    assert result.returncode != 0
+    assert "verification" in result.stderr
+    assert not any("tar -czf" in line for line in upgrade.log())
 
 
 def test_install_does_not_chmod_through_a_symlink_inside_media(server: Server) -> None:
@@ -487,9 +680,14 @@ def test_root_scripts_never_chown_or_redirect_into_app_user_paths() -> None:
             assert not re.search(
                 r">>?\s*\"?\$\{?(DATA_DIR|ENV_FILE|LOCK_FILE|APP_DIR)", code
             ), f"{name}:{number}"
-            # Root opens the database only through as_app.
-            if re.search(r"(^|[\s;|&(])sqlite3\s", code) and "db.sqlite3" in code:
-                assert "as_app" in code, f"{name}:{number}"
+            # Root reaches the database only as the app user (as_app) or,
+            # for the role and database themselves, as postgres (pg_admin).
+            # (Quoted strings are messages and advice, not commands.)
+            unquoted = re.sub(r'"[^"]*"', '""', code)
+            if re.search(r"(^|[\s;|&(])(pg_dump|pg_restore|psql)\s", unquoted):
+                assert re.search(
+                    r"\b(as_app|pg_admin)\b|runuser -u postgres -- ", code
+                ), f"{name}:{number}"
     assert "last_backup" not in (DEPLOY / "remote" / "backup.sh").read_text()
 
 
@@ -517,17 +715,19 @@ def _link(name: str, target: str, kind: bytes) -> tarfile.TarInfo:
 
 HOSTILE = {
     "symlink": [
-        _file("db.sqlite3"),
+        _file("db.dump"),
         _link("media/x.png", "/etc/passwd", tarfile.SYMTYPE),
     ],
     "hardlink": [
-        _file("db.sqlite3"),
-        _link("media/x.png", "db.sqlite3", tarfile.LNKTYPE),
+        _file("db.dump"),
+        _link("media/x.png", "db.dump", tarfile.LNKTYPE),
     ],
-    "dotdot": [_file("db.sqlite3"), _file("media/../../evil")],
-    "absolute": [_file("db.sqlite3"), _file("/etc/evil")],
-    "other-name": [_file("db.sqlite3"), _file(".env")],
+    "dotdot": [_file("db.dump"), _file("media/../../evil")],
+    "absolute": [_file("db.dump"), _file("/etc/evil")],
+    "other-name": [_file("db.dump"), _file(".env")],
     "no-db": [_file("media/covers/c.png")],
+    "old-sqlite-backup": [_file("db.sqlite3"), _file("media/covers/c.png")],
+    "symlinked-dump": [_link("db.dump", "/etc/shadow", tarfile.SYMTYPE)],
 }
 
 
@@ -553,8 +753,45 @@ def test_install_restore_loads_the_database_and_media(server: Server) -> None:
     shutil.copy(backup, server.release / "restore.tar.gz")
     result = server.install("--restore", str(server.release / "restore.tar.gz"))
     assert result.returncode == 0, result.stderr
-    assert (server.data / "db.sqlite3").exists()
     assert os_mode(server.data / "media" / "covers" / "c.png") == 0o644
+    log = server.log()
+    restore = server.index("runuser -u conference-drawing -- pg_restore --clean")
+    assert log[restore].endswith(
+        "pg_restore --clean --if-exists --no-owner --role=conference-drawing "
+        "--exit-on-error --single-transaction --dbname=conference_drawing "
+        f"{server.data / 'db.dump'}"
+    )
+    # Into the fresh database: after the role and database exist, before migrate.
+    assert server.index("runuser -u postgres -- psql") < restore
+    assert restore < server.index("conference-drawing init")
+    assert server.index("pg_restore -f /dev/null") < restore  # read fully first
+    assert not (server.data / "db.dump").exists()  # loaded, then removed
+
+
+def test_install_restore_refuses_a_database_that_already_has_tables(
+    server: Server,
+) -> None:
+    server.fakes.prepend("psql", {"match": "pg_tables", "stdout": "3\n"})
+    backup = make_backup_tarball(server.fakes.root / "canned" / "backup.tar.gz")
+    result = server.install("--restore", str(backup))
+    assert result.returncode != 0
+    assert "already has tables" in result.stderr
+    assert not any("pg_restore" in line for line in server.log())
+
+
+def test_install_restore_refuses_a_dump_that_does_not_read_back(
+    server: Server,
+) -> None:
+    import tarfile as tf
+
+    work = server.fakes.root / "bad"
+    make_dump(work / "db.dump", b"not a dump")
+    bad = server.fakes.root / "bad.tar.gz"
+    with tf.open(bad, "w:gz") as tar:
+        tar.add(work / "db.dump", arcname="db.dump")
+    result = server.install("--restore", str(bad))
+    assert result.returncode != 0
+    assert not any("pg_restore --clean" in line for line in server.log())
 
 
 # --- uninstall -----------------------------------------------------------------
@@ -572,6 +809,48 @@ def test_uninstall_stops_units_then_removes_everything(upgrade: Server) -> None:
     assert list((upgrade.root / "etc/caddy/sites").iterdir()) == []
     assert upgrade.index("flock --wait") < upgrade.index("systemctl disable --now")
     assert upgrade.log()[-1] == "userdel conference-drawing"
+    sql = _admin_sql(upgrade)
+    assert 'DROP DATABASE IF EXISTS :"db" WITH (FORCE);' in sql
+    assert 'DROP ROLE IF EXISTS :"role";' in sql
+    assert upgrade.index("runuser -u postgres -- psql") > upgrade.index(
+        "systemctl disable --now"
+    )
+    # This install put PostgreSQL there and nothing else uses it: it goes too.
+    assert upgrade.index("apt-get purge -y -q postgresql postgresql-16") < (
+        upgrade.index("userdel")
+    )
+
+
+def test_uninstall_keeps_postgresql_when_other_databases_exist(
+    upgrade: Server,
+) -> None:
+    upgrade.fakes.prepend("systemctl", {"match": "is-active", "exit": 3})
+    upgrade.fakes.prepend(
+        "psql", {"match": "FROM pg_database WHERE", "stdout": "someone_else\n"}
+    )
+    result = upgrade.uninstall()
+    assert result.returncode == 0, result.stderr
+    assert not any(line.startswith("apt-get") for line in upgrade.log())
+    assert "other databases" in result.stderr
+    assert 'DROP DATABASE IF EXISTS :"db"' in _admin_sql(upgrade)
+
+
+def test_uninstall_keeps_a_postgresql_it_did_not_install(upgrade: Server) -> None:
+    upgrade.fakes.prepend("systemctl", {"match": "is-active", "exit": 3})
+    (upgrade.root / PG_MARKER).unlink()
+    result = upgrade.uninstall()
+    assert result.returncode == 0, result.stderr
+    assert not any(line.startswith("apt-get") for line in upgrade.log())
+    assert 'DROP ROLE IF EXISTS :"role"' in _admin_sql(upgrade)
+
+
+def test_uninstall_without_postgresql_skips_the_database(upgrade: Server) -> None:
+    upgrade.fakes.prepend("systemctl", {"match": "is-active", "exit": 3})
+    upgrade.fakes.set("dpkg-query", [{"match": "postgresql", "exit": 1}])
+    result = upgrade.uninstall()
+    assert result.returncode == 0, result.stderr
+    assert upgrade.fakes.calls("psql") == []
+    assert not upgrade.app.exists()
 
 
 def test_uninstall_refuses_while_a_unit_still_runs(upgrade: Server) -> None:

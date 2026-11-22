@@ -5,6 +5,8 @@
 # "systemctl --failed", which up.sh's preflight refuses on.
 [Unit]
 Description=conference-drawing database snapshot
+After=postgresql.service
+Requires=postgresql.service
 
 [Service]
 Type=oneshot

@@ -10,9 +10,7 @@ the snapshot job, in a temp root (``CD_ROOT``) with fake ``caddy``,
 import hashlib
 import re
 import shutil
-import sqlite3
 import subprocess
-from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -21,6 +19,7 @@ from tests.deploy.conftest import (
     COMMIT,
     DEPLOY,
     DOMAIN,
+    DUMP_BYTES,
     HOST,
     HOST_IP,
     REMOTE_BACKUP,
@@ -29,6 +28,7 @@ from tests.deploy.conftest import (
     Entry,
     Fakes,
     make_backup_tarball,
+    make_dump,
     os_mode,
 )
 
@@ -813,59 +813,66 @@ def test_snapshot_timer_runs_hourly() -> None:
 # --- snapshots ---------------------------------------------------------------
 
 
-def test_snapshot_keeps_newest_48(fakes: Fakes) -> None:
-    data = fakes.root / "root" / "srv" / "conference-drawing" / "data"
-    snaps = data / "snapshots"
-    snaps.mkdir(parents=True)
-    with closing(sqlite3.connect(data / "db.sqlite3")) as db, db:
-        db.execute("create table books (title text)")
-        db.execute("insert into books values ('Python Workout')")
-    (data.parent / ".maintenance.lock").touch()
-    for hour in range(50):
-        (snaps / f"db-20000101T{hour % 24:02d}{hour // 24:02d}00Z.sqlite3").write_text(
-            ""
-        )
-    fakes.extra_env["CD_ROOT"] = str(fakes.root / "root")
-    fakes.set("flock", [{"match": "--wait"}])
-    result = fakes.run([SNAPSHOT])
-    assert result.returncode == 0, result.stderr
-    names = sorted(p.name for p in snaps.iterdir())
-    assert len(names) == 48
-    newest = snaps / names[-1]
-    assert not newest.name.startswith("db-2000")
-    with closing(sqlite3.connect(newest)) as db, db:
-        assert db.execute("select title from books").fetchall() == [("Python Workout",)]
-    assert [c.argv[:2] for c in fakes.calls("flock")] == [["--wait", "600"]]
-    assert os_mode(newest) & 0o077 == 0
-
-
-def _snapshot_root(fakes: Fakes, db: bytes | None) -> Path:
+def _snapshot_root(fakes: Fakes, dump: bytes = DUMP_BYTES) -> Path:
+    """A data dir, the lock file, and a fake pg_dump that writes `dump`."""
     data = fakes.root / "root" / "srv" / "conference-drawing" / "data"
     data.mkdir(parents=True)
     (data.parent / ".maintenance.lock").touch()
-    if db is not None:
-        (data / "db.sqlite3").write_bytes(db)
+    canned = make_dump(fakes.root / "canned" / "db.dump", dump)
     fakes.extra_env["CD_ROOT"] = str(fakes.root / "root")
     fakes.set("flock", [{"match": "--wait"}])
+    fakes.set(
+        "pg_dump", [{"match": "-Fc", "copy_to_flag": "--file", "file": str(canned)}]
+    )
+    fakes.set("pg_restore", [{"match": "-f /dev/null", "require_magic": "PGDMP"}])
     return data
 
 
+def test_snapshot_keeps_newest_48(fakes: Fakes) -> None:
+    data = _snapshot_root(fakes)
+    snaps = data / "snapshots"
+    snaps.mkdir()
+    for hour in range(50):
+        (snaps / f"db-20000101T{hour % 24:02d}{hour // 24:02d}00Z.dump").write_text("")
+    keep = snaps / "notes.txt"  # not a snapshot: never pruned
+    keep.write_text("x")
+    result = fakes.run([SNAPSHOT])
+    assert result.returncode == 0, result.stderr
+    names = sorted(p.name for p in snaps.glob("db-*.dump"))
+    assert len(names) == 48
+    newest = snaps / names[-1]
+    assert not newest.name.startswith("db-2000")
+    assert newest.read_bytes() == DUMP_BYTES
+    assert keep.exists()
+    assert [c.argv[:2] for c in fakes.calls("flock")] == [["--wait", "600"]]
+    assert os_mode(newest) & 0o077 == 0
+    (dump,) = fakes.calls("pg_dump")
+    assert dump.argv[:3] == ["-Fc", "--file", f"{newest}.partial"]
+    assert dump.argv[3:] == ["--dbname=conference_drawing"]
+    # Verified by reading every block (pg_restore --list reads only the TOC).
+    (verify,) = fakes.calls("pg_restore")
+    assert verify.argv == ["-f", "/dev/null", f"{newest}.partial"]
+
+
 def test_snapshot_removes_its_partial_file_on_failure(fakes: Fakes) -> None:
-    data = _snapshot_root(fakes, db=b"this is not a database" * 100)
+    data = _snapshot_root(fakes, dump=b"this is not a dump" * 100)
     result = fakes.run([SNAPSHOT])
     assert result.returncode != 0
+    assert "verification" in result.stderr
     assert list((data / "snapshots").iterdir()) == []
 
 
+def test_snapshot_fails_when_pg_dump_fails(fakes: Fakes) -> None:
+    data = _snapshot_root(fakes)
+    fakes.set("pg_dump", [{"match": "-Fc", "exit": 1}])
+    result = fakes.run([SNAPSHOT])
+    assert result.returncode != 0
+    assert list((data / "snapshots").iterdir()) == []
+    assert fakes.calls("pg_restore") == []
+
+
 def test_snapshot_skips_the_lock_its_caller_already_holds(fakes: Fakes) -> None:
-    _snapshot_root(fakes, db=None)
-    with (
-        closing(
-            sqlite3.connect(fakes.root / "root/srv/conference-drawing/data/db.sqlite3")
-        ) as db,
-        db,
-    ):
-        db.execute("create table t (x)")
+    _snapshot_root(fakes)
     fakes.extra_env["CD_LOCK_HELD"] = "1"
     assert fakes.run([SNAPSHOT]).returncode == 0
     assert fakes.calls("flock") == []

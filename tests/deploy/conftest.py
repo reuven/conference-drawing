@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
-from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,9 +35,9 @@ REMOTE_BACKUP = "/tmp/conference-drawing-backup.Ab12Cd34/backup.tar.gz"  # noqa:
 
 # Host tools the scripts and fakes may use. Nothing here can reach a network.
 ALLOWED_TOOLS = (
-    "awk basename bash cat chmod cp cut date dirname env find grep gzip head id "
-    "install ln ls mkdir mktemp mv od readlink rm sed sh sha256sum sleep sort "
-    "sqlite3 stat tail tar tee touch tr uname wc xargs"
+    "awk basename bash cat chmod cmp cp cut date dirname env find grep gzip head "
+    "id install ln ls mkdir mktemp mv od readlink rm sed sh sha256sum sleep sort "
+    "stat tail tar tee touch tr uname wc xargs"
 ).split()
 NETWORK_TOOLS = {"ssh", "scp", "curl", "dig", "uv", "git", "wget", "rsync", "nc"}
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
@@ -147,18 +146,28 @@ def fakes(tmp_path: Path) -> Iterator[Fakes]:
     yield box
 
 
+# What the fake pg_dump writes: the custom-format header, then some bytes. The
+# fake pg_restore accepts a file only if it starts with PGDMP, as the real one
+# does.
+DUMP_BYTES = b"PGDMP\x01\x10\x00 pretend custom-format dump of conference_drawing\n"
+
+
+def make_dump(path: Path, data: bytes = DUMP_BYTES) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
 def make_backup_tarball(path: Path) -> Path:
-    """Write a small real backup tarball (db.sqlite3 plus media/) to `path`."""
-    import sqlite3
+    """Write a small backup tarball (db.dump plus media/) to `path`."""
     import tarfile
 
     work = path.parent / "tarball-src"
     (work / "media" / "covers").mkdir(parents=True)
-    with closing(sqlite3.connect(work / "db.sqlite3")) as db, db:
-        db.execute("create table t (x)")
+    make_dump(work / "db.dump")
     (work / "media" / "covers" / "c.png").write_bytes(b"png")
     with tarfile.open(path, "w:gz") as tar:
-        tar.add(work / "db.sqlite3", arcname="db.sqlite3")
+        tar.add(work / "db.dump", arcname="db.dump")
         tar.add(work / "media", arcname="media")
     return path
 

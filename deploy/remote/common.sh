@@ -17,11 +17,13 @@ APP_DIR="$ROOT/srv/conference-drawing"
 DATA_DIR="$APP_DIR/data"
 VENV="$APP_DIR/venv"
 ENV_FILE="$DATA_DIR/.env"
-# One lock for every job that copies or rewrites the database from a shell:
-# install.sh, uninstall.sh, backup.sh and the hourly snapshot. (Entrant
-# deletion's VACUUM runs inside the app and relies on SQLite's own locking
-# instead.) It lives in root's directory, root:conference-drawing 0640: the
-# app user can open and flock it but never replace it with a link.
+# One lock for every job that dumps, restores or migrates the database from a
+# shell: install.sh, uninstall.sh, backup.sh and the hourly snapshot. (pg_dump
+# reads one consistent MVCC snapshot whatever the app writes meanwhile; the
+# lock keeps these jobs from overlapping each other and migrate. Entrant
+# deletion's VACUUM FULL runs inside the app under PostgreSQL's own table
+# locks.) It lives in root's directory, root:conference-drawing 0640: the app
+# user can open and flock it but never replace it with a link.
 LOCK_FILE="$APP_DIR/.maintenance.lock"
 CADDY_MAIN="$ROOT/etc/caddy/Caddyfile"
 CADDY_SITE="$ROOT/etc/caddy/sites/conference-drawing.caddy"
@@ -32,6 +34,14 @@ DRIP_UNIT=conference-drawing-drip.service
 SNAPSHOT_SERVICE=conference-drawing-snapshot.service
 SNAPSHOT_TIMER=conference-drawing-snapshot.timer
 UV_VERSION=0.13.9
+# PostgreSQL, on the local unix socket only. The app's OS user maps to the role
+# of the same name by peer auth, so no database password exists anywhere.
+DB_NAME=conference_drawing
+DB_ROLE=$APP_USER
+# Present only if install.sh installed the postgresql package (it holds the
+# major version); uninstall.sh then may purge it again.
+PG_MARKER="$APP_DIR/.installed-postgresql"
+PG_DROPIN_NAME=conference-drawing.conf
 
 say() { printf '==> %s\n' "$*" >&2; }
 die() {
@@ -58,6 +68,24 @@ as_app() {
 	)
 }
 
+# Run psql as the postgres superuser (peer auth), for the role and database
+# themselves. -X skips any psqlrc; the role and database names reach SQL only
+# as the psql variables :"role" and :"db", which psql quotes as identifiers.
+pg_admin() {
+	(
+		cd /
+		runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1 \
+			-v role="$DB_ROLE" -v db="$DB_NAME" "$@" 9<&-
+	)
+}
+
+# Is Ubuntu's postgresql package installed?
+postgresql_installed() {
+	local status
+	status=$(dpkg-query -W -f='${Status}' postgresql 2>/dev/null) || status=""
+	[ "$status" = "install ok installed" ]
+}
+
 # Run a conference-drawing management command as the app user, with the same
 # environment the systemd units set. APP_VENV picks another venv (install.sh
 # runs the new release before switching to it).
@@ -73,15 +101,15 @@ no_symlink() {
 }
 
 # Check that backup tarball $1 is safe to unpack into the data directory: it
-# holds db.sqlite3, and otherwise only plain files and directories under
-# media/ (no links, no absolute paths, no "..", nothing else).
+# holds db.dump (pg_dump -Fc), and otherwise only plain files and directories
+# under media/ (no links, no absolute paths, no "..", nothing else).
 check_restore_tarball() {
 	local names types
 	names=$(tar -tzf "$1") || die "cannot read the restore tarball"
 	types=$(tar -tvzf "$1" | cut -c1) || die "cannot read the restore tarball"
-	printf '%s\n' "$names" | grep -x 'db.sqlite3' >/dev/null ||
-		die "the restore tarball has no db.sqlite3"
-	if printf '%s\n' "$names" | grep -Ev '^(db\.sqlite3|media/?|media/[A-Za-z0-9._/-]+)$' >/dev/null ||
+	printf '%s\n' "$names" | grep -x 'db.dump' >/dev/null ||
+		die "the restore tarball has no db.dump"
+	if printf '%s\n' "$names" | grep -Ev '^(db\.dump|media/?|media/[A-Za-z0-9._/-]+)$' >/dev/null ||
 		printf '%s\n' "$names" | grep -E '(^|/)\.\.(/|$)' >/dev/null ||
 		printf '%s\n' "$types" | grep -v '^[-d]$' >/dev/null; then
 		die "the restore tarball holds unexpected entries (links, other paths or ..)"
