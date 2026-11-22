@@ -144,6 +144,7 @@ def test_panel_never_shows_email_or_codes(
 def test_panel_shows_next_drawing_and_entry_count_when_idle(
     client: Client,
     conference: Conference,
+    conference_factory: Callable[..., Conference],
     drawing_factory: Callable[..., Drawing],
     entrant_factory: Callable[..., object],
 ) -> None:
@@ -157,6 +158,7 @@ def test_panel_shows_next_drawing_and_entry_count_when_idle(
     )
     for _ in range(3):
         entrant_factory(conference)
+    entrant_factory(conference_factory())  # another conference's entrant: not counted
     html = _panel(client, conference)
     assert "Tue 2:00 PM" in html  # 21:00 UTC is 2 pm in Los Angeles (PDT)
     assert "Wed" not in html

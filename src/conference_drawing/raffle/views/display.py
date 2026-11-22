@@ -100,7 +100,5 @@ def display(request: HttpRequest, token: str) -> HttpResponse:
 def panel(request: HttpRequest, token: str) -> HttpResponse:
     """The swappable part: winners by book, or next drawing and entry count."""
     conf = _conference_for(token)
-    response = render(request, "raffle/display/_panel.html", _context(conf, token))
-    response["Cache-Control"] = "private, no-store"
-    response["X-Robots-Tag"] = "noindex, nofollow"
-    return response
+    # No-store and noindex headers come from DefaultHeadersMiddleware (HTML).
+    return render(request, "raffle/display/_panel.html", _context(conf, token))
