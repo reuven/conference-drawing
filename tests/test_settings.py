@@ -53,7 +53,7 @@ def test_settings_never_read_home_env(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("DJANGO_SECRET_KEY", raising=False)
     monkeypatch.delenv("DJANGO_DEBUG", raising=False)
-    monkeypatch.delenv("CD_ENV_FILE", raising=False)
+    monkeypatch.setenv("CD_ENV_FILE", str(tmp_path / "absent.env"))
     with pytest.raises(ImproperlyConfigured):
         importlib.reload(cd_settings)
 
