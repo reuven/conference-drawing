@@ -117,9 +117,10 @@ def requeue_failed(jobs: QuerySet[OutboxJob], *, now: datetime.datetime) -> int:
 def claim_due(*, now: datetime.datetime, limit: int) -> list[int]:
     """Lease up to `limit` due jobs and return their ids.
 
-    One short transaction: select the due pending ids, then push each job's
-    `next_attempt_at` out by `LEASE` and count the attempt. SQLite's IMMEDIATE
-    transactions serialize this against the booth's writes and other workers.
+    One short transaction: lock the due pending rows, then push each job's
+    `next_attempt_at` out by `LEASE` and count the attempt. `skip_locked`
+    passes over rows another worker is claiming right now, so concurrent
+    workers never wait on each other or claim the same job.
     A job whose lease lapsed after its last attempt (a crash mid-send) is
     retired as failed rather than claimed again, so a poison job cannot loop.
     """
@@ -133,6 +134,7 @@ def claim_due(*, now: datetime.datetime, limit: int) -> list[int]:
             OutboxJob.objects.filter(
                 status=OutboxJob.Status.PENDING, next_attempt_at__lte=now
             )
+            .select_for_update(skip_locked=True)
             .order_by("next_attempt_at", "id")
             .values_list("pk", flat=True)[:limit]
         )

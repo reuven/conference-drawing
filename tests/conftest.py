@@ -1,9 +1,9 @@
 """Shared test harness: environment, Hypothesis profiles, DB guards."""
 
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from django.apps import apps
@@ -38,19 +38,55 @@ else:
     settings.load_profile("dev")
 
 
-@pytest.fixture(scope="session")
-def django_db_modify_db_settings(
-    django_db_modify_db_settings: None, tmp_path_factory: pytest.TempPathFactory
-) -> None:
-    """Use a file-backed test DB so locking behaves as in production.
+_LOCAL_HOSTS = {"", "localhost", "127.0.0.1"}
+# Connection parameters that cannot point libpq at another server.
+_SAFE_OPTIONS = {"isolation_level", "server_side_binding", "client_encoding"}
+# libpq reads these when Django leaves a parameter empty.
+_REDIRECTING_ENV = ("PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE")
 
-    Django's default in-memory SQLite test DB uses shared-cache table locks,
-    which fail at once instead of honoring the busy timeout, so concurrency
-    tests against it would prove nothing.
+
+def _is_local_host(host: str) -> bool:
+    """A loopback name, or one unix-socket directory (no comma-separated list)."""
+    return host in _LOCAL_HOSTS or (host.startswith("/") and "," not in host)
+
+
+def check_test_database(
+    settings_dict: Mapping[str, Any], environ: Mapping[str, str]
+) -> None:
+    """Refuse to run tests unless they can only reach a PostgreSQL on this machine.
+
+    Why: pytest-django creates and drops ``test_<NAME>`` on whatever server the
+    settings name, so a stray CD_DB_HOST, OPTIONS entry or libpq variable must
+    never aim the test run at a real database (testing-lessons: guard the test
+    database). Raises ``pytest.UsageError`` naming the offending setting.
     """
-    default = cast(dict[str, Any], django_settings.DATABASES["default"])
-    test_db = cast(dict[str, Any], default.setdefault("TEST", {}))
-    test_db["NAME"] = str(tmp_path_factory.mktemp("db") / "test.sqlite3")
+    if settings_dict["ENGINE"] != "django.db.backends.postgresql":
+        raise pytest.UsageError(
+            f"tests need PostgreSQL, ENGINE is {settings_dict['ENGINE']!r}"
+        )
+    host = str(settings_dict.get("HOST") or "")
+    if not _is_local_host(host):
+        raise pytest.UsageError(f"test database HOST {host!r} is not local")
+    unsafe = sorted(set(settings_dict.get("OPTIONS") or {}) - _SAFE_OPTIONS)
+    if unsafe:
+        raise pytest.UsageError(f"test database OPTIONS may redirect: {unsafe}")
+    for name in _REDIRECTING_ENV:
+        if environ.get(name):
+            raise pytest.UsageError(f"unset {name} before running the tests")
+    if not _is_local_host(environ.get("PGHOST", "")):
+        raise pytest.UsageError("PGHOST is not local")
+    test_name = (settings_dict.get("TEST") or {}).get("NAME")
+    if test_name and not str(test_name).startswith("test_"):
+        raise pytest.UsageError(f"TEST NAME {test_name!r} must start with test_")
+
+
+@pytest.fixture(scope="session")
+def django_db_modify_db_settings(django_db_modify_db_settings: None) -> None:
+    """Check the database settings before pytest-django creates the test DB."""
+    try:
+        check_test_database(django_settings.DATABASES["default"], os.environ)
+    except pytest.UsageError as exc:
+        pytest.exit(f"refusing to run: {exc}", returncode=4)
 
 
 @pytest.fixture(scope="session")

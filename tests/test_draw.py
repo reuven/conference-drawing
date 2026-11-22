@@ -356,10 +356,10 @@ def test_not_here_twice_draws_one_replacement(
 def test_concurrent_not_here_from_two_phones_draws_one_replacement(
     conf: Conference, drawing: Drawing, entrants: list[int]
 ) -> None:
-    """Two threads, two connections, one file-backed DB: the second waits its turn.
+    """Two threads, two PostgreSQL connections: the second waits its turn.
 
-    BEGIN IMMEDIATE makes the loser block until the winner commits, then re-read
-    the pick and refuse; without it the loser fails with "database is locked".
+    The drawing's `select_for_update()` row lock makes the loser block until the
+    winner commits; it then re-reads the pick, sees it marked, and refuses.
     """
     [pick] = started_single(drawing)
     barrier = threading.Barrier(2)

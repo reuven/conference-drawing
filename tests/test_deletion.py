@@ -3,9 +3,7 @@
 import datetime
 import logging
 import random
-import sqlite3
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -84,11 +82,9 @@ def populated(conference: Conference) -> dict[str, Any]:
 def _dump_database() -> str:
     """Every row of every table, Django's own included, as one string."""
     with connection.cursor() as cur:
-        cur.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        tables = [r[0] for r in cur.fetchall()]
         parts = []
-        for table in tables:
-            cur.execute(f'SELECT * FROM "{table}"')  # noqa: S608
+        for table in connection.introspection.table_names(cur):
+            cur.execute(f"SELECT * FROM {connection.ops.quote_name(table)}")  # noqa: S608
             parts.append(f"{table}: {cur.fetchall()!r}")
     return "\n".join(parts)
 
@@ -250,6 +246,7 @@ def test_deleting_twice_is_refused(
     assert conference.deleted_entrant_count == 3
 
 
+@pytest.mark.django_db(transaction=True)
 def test_scrub_failure_is_logged_by_class_only(
     conference: Conference,
     populated: dict[str, Any],
@@ -257,7 +254,7 @@ def test_scrub_failure_is_logged_by_class_only(
 ) -> None:
     fake = MagicMock()
     fake.cursor.return_value.__enter__.return_value.execute.side_effect = (
-        OperationalError("database is locked")
+        OperationalError("could not obtain lock on relation")
     )
     with (
         caplog.at_level(logging.INFO),
@@ -267,37 +264,54 @@ def test_scrub_failure_is_logged_by_class_only(
     assert Entrant.objects.count() == 0
     text = caplog.text
     assert "OperationalError" in text
+    assert "lock" not in text  # the class name only, never the message
     assert SECRET_MAIL not in text
     assert "Zelda" not in text
     assert f"conference={conference.pk}" in text
 
 
-@pytest.mark.django_db(transaction=True)
-def test_deleted_bytes_are_gone_from_the_database_file(
-    conference_factory: Callable[..., Conference],
-) -> None:
-    conf = conference_factory(slug="solo", wrapped_up_at=NOW)
-    needle = f"needle-42@{SECRET_MAIL}".encode()
-    factories.make_entrant(conf, name="Zelda Quux", email=needle.decode())
-    path = Path(connection.settings_dict["NAME"])
+# The tables that held personal data, which VACUUM FULL must rewrite.
+SCRUBBED = (Entrant, Pick, OutboxJob, CouponCode, LogEntry)
+
+
+def _filenodes() -> dict[str, int]:
     with connection.cursor() as cur:
-        cur.execute("PRAGMA journal_mode=WAL")
-        cur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    # A second connection (the Drip worker's stand-in) keeps the WAL alive on
-    # disk, as in production, so we can read it after the scrub.
-    other = sqlite3.connect(path)
-    try:
-        other.execute("SELECT count(*) FROM raffle_entrant").fetchall()
-        assert needle in path.read_bytes()
-        delete_entrants(conf, now=NOW)
-        wal = Path(f"{path}-wal")
-        raw = path.read_bytes() + (wal.read_bytes() if wal.exists() else b"")
-        assert needle not in raw
-        assert b"Zelda Quux" not in raw
-    finally:
-        other.close()
-        with connection.cursor() as cur:
-            cur.execute("PRAGMA journal_mode=DELETE")
+        nodes = {}
+        for model in SCRUBBED:
+            table = model._meta.db_table
+            cur.execute("SELECT pg_relation_filenode(%s::regclass)", [table])
+            nodes[table] = cur.fetchone()[0]
+    return nodes
+
+
+@pytest.mark.django_db(transaction=True)
+def test_deletion_rewrites_the_tables_that_held_personal_data(
+    conference: Conference, populated: dict[str, Any]
+) -> None:
+    """VACUUM FULL writes each table to a new file, leaving dead tuples behind.
+
+    A plain DELETE only marks tuples dead; their bytes stay in the old file
+    until it is rewritten. A new filenode proves the rewrite happened.
+    """
+    before = _filenodes()
+    delete_entrants(conference, now=NOW)
+    after = _filenodes()
+    assert {t: before[t] != after[t] for t in before} == dict.fromkeys(before, True)
+
+
+def test_scrub_waits_for_the_commit(
+    conference: Conference, populated: dict[str, Any]
+) -> None:
+    """Inside a caller's transaction the VACUUM is deferred, never attempted.
+
+    VACUUM cannot run in a transaction block; trying would abort the caller's
+    transaction. The deletion itself still happens.
+    """
+    before = _filenodes()
+    with transaction.atomic():
+        delete_entrants(conference, now=NOW)
+    assert Entrant.objects.count() == 0
+    assert _filenodes() == before
 
 
 # --- view --------------------------------------------------------------------

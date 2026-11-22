@@ -2,18 +2,16 @@
 
 import io
 import os
-import sqlite3
 import stat
 import subprocess
 import sys
-from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.db import connection
+from django.db import OperationalError, connection
 from dotenv import dotenv_values
 from hypothesis import example, given
 from hypothesis import strategies as st
@@ -325,46 +323,98 @@ def test_env_file_is_created_0600_from_the_start(
 # --- real bootstrap: no .env, no secret key, fresh data dir --------------------
 
 
-def test_init_bootstraps_from_nothing_in_a_fresh_process(tmp_path: Path) -> None:
-    exe = Path(sys.executable).parent / "conference-drawing"
+def _fresh_env(tmp_path: Path, **db: str) -> dict[str, str]:
+    """A child environment with no DJANGO_/CD_/DRIP_ settings, then `db`'s."""
     env = {
         k: v
         for k, v in os.environ.items()
         if not k.startswith(("DJANGO_", "CD_", "DRIP_"))
     }
-    env |= {
+    return env | {
         "CD_DATA_DIR": str(tmp_path / "fresh-data"),
         "CD_ENV_FILE": str(tmp_path / "fresh.env"),
         "HOME": str(tmp_path / "home"),
         "DJANGO_SUPERUSER_USERNAME": "admin",
         "DJANGO_SUPERUSER_EMAIL": "admin@example.com",
         "DJANGO_SUPERUSER_PASSWORD": SUPERUSER_PASSWORD,
+        **db,
     }
 
-    def run(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(  # noqa: S603
-            [str(exe), "init", "--non-interactive", *args],
-            env=env,
-            capture_output=True,
-            text=True,
-            cwd=tmp_path,
-            timeout=50,
-            check=False,
-        )
 
-    result = run("--domain", "raffle.example.com")
-    assert result.returncode == 0, result.stderr
-    secret = dotenv_values(tmp_path / "fresh.env")["DJANGO_SECRET_KEY"] or ""
-    assert secret not in result.stdout + result.stderr
-    assert SUPERUSER_PASSWORD not in result.stdout + result.stderr
-    with closing(sqlite3.connect(tmp_path / "fresh-data" / "db.sqlite3")) as db:
-        tables = {r[0] for r in db.execute("select name from sqlite_master")}
-        assert {"cd_cache", "raffle_installsettings"} <= tables
-        count = db.execute("select count(*) from raffle_installsettings").fetchone()
-        assert count == (1,)
-        assert db.execute("select username from auth_user").fetchall() == [("admin",)]
-    again = run()
-    assert again.returncode == 0, again.stderr
+def _run_init(
+    tmp_path: Path, env: dict[str, str], *args: str
+) -> subprocess.CompletedProcess[str]:
+    exe = Path(sys.executable).parent / "conference-drawing"
+    return subprocess.run(  # noqa: S603
+        [str(exe), "init", "--non-interactive", *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        timeout=50,
+        check=False,
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_init_bootstraps_from_nothing_in_a_fresh_process(tmp_path: Path) -> None:
+    """No .env, no secret key, no cache table: a fresh process sets it all up.
+
+    The child is pointed at pytest-django's test database (never another),
+    whose tables this transactional test flushes afterwards.
+    """
+    db = connection.settings_dict
+    env = _fresh_env(
+        tmp_path,
+        CD_DB_NAME=db["NAME"],
+        CD_DB_USER=db["USER"],
+        CD_DB_PASSWORD=db["PASSWORD"],
+        CD_DB_HOST=db["HOST"],
+        CD_DB_PORT=str(db["PORT"]),
+    )
+    with connection.cursor() as cur:
+        cur.execute("DROP TABLE cd_cache")
+    try:
+        result = _run_init(tmp_path, env, "--domain", "raffle.example.com")
+        assert result.returncode == 0, result.stderr
+        secret = dotenv_values(tmp_path / "fresh.env")["DJANGO_SECRET_KEY"] or ""
+        assert secret not in result.stdout + result.stderr
+        assert SUPERUSER_PASSWORD not in result.stdout + result.stderr
+        assert "cd_cache" in connection.introspection.table_names()
+        assert InstallSettings.objects.count() == 1
+        users = get_user_model().objects.values_list("username", flat=True)
+        assert list(users) == ["admin"]
+        again = _run_init(tmp_path, env)
+        assert again.returncode == 0, again.stderr
+    finally:
+        call_command("createcachetable", verbosity=0)
+
+
+def test_init_stops_with_a_clear_message_when_the_database_is_unreachable(
+    tmp_path: Path,
+) -> None:
+    """The connection is checked before migrate; the message names the settings.
+
+    The socket directory does not exist, so nothing anywhere is contacted.
+    """
+    password = "pw-never-shown-9f2c"  # noqa: S105
+    nowhere = tmp_path / "no-socket"
+    nowhere.mkdir()
+    env = _fresh_env(
+        tmp_path,
+        CD_DB_HOST=str(nowhere),
+        CD_DB_NAME="conference_drawing",
+        CD_DB_PASSWORD=password,
+    )
+    result = _run_init(tmp_path, env, "--domain", "raffle.example.com")
+    assert result.returncode == 2
+    out = result.stdout + result.stderr
+    assert "cannot connect to the database" in result.stderr
+    assert "CD_DB_HOST" in result.stderr
+    assert "CD_DB_PASSWORD" in result.stderr  # named, never shown
+    assert password not in out
+    assert "Traceback" not in out
+    assert "Applying" not in out  # migrate never ran
 
 
 @pytest.mark.django_db
@@ -400,3 +450,27 @@ def test_interactive_existing_superuser_is_a_noop(
 
     monkeypatch.setattr(cli, "call_command", refuse)
     assert main(["init", "--env-file", str(env_file), "--domain", "a.example.com"]) == 0
+
+
+@pytest.mark.parametrize("password", ["", "pw-in-the-message-31d"])
+def test_connection_failure_message_redacts_the_password(
+    env_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    password: str,
+) -> None:
+    """Even if a driver echoed the password back, init would not print it."""
+
+    def refuse() -> None:
+        raise OperationalError(f'FATAL: role "x" rejected password "{password}"')
+
+    monkeypatch.setitem(connection.settings_dict, "PASSWORD", password)
+    monkeypatch.setitem(connection.settings_dict, "HOST", "")
+    monkeypatch.setattr(connection, "ensure_connection", refuse)
+    assert _init(env_file, "--domain", "a.example.com") == 2
+    err = capsys.readouterr().err
+    assert "on the local socket (OperationalError: FATAL" in err
+    assert "Check CD_DB_NAME, CD_DB_USER, CD_DB_HOST" in err
+    if password:
+        assert password not in err
+        assert '"***"' in err

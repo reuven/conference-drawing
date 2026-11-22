@@ -8,6 +8,8 @@ from django.core.exceptions import ImproperlyConfigured
 
 from conference_drawing import settings as cd_settings
 
+_DB_VARS = ("CD_DB_NAME", "CD_DB_USER", "CD_DB_HOST", "CD_DB_PORT", "CD_DB_PASSWORD")
+
 
 @pytest.fixture(autouse=True)
 def _restore_settings_module() -> Iterator[None]:
@@ -74,15 +76,57 @@ def test_env_file_is_read_without_polluting_environ(
     assert "DJANGO_SECRET_KEY" not in os.environ
 
 
-def test_data_dir_drives_database_and_media(
+def test_data_dir_drives_media_and_static(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("CD_DATA_DIR", str(tmp_path))
     importlib.reload(cd_settings)
-    assert Path(str(cd_settings.DATABASES["default"]["NAME"])) == (
-        tmp_path / "db.sqlite3"
-    )
     assert Path(cd_settings.MEDIA_ROOT) == tmp_path / "media"
+    assert Path(cd_settings.STATIC_ROOT) == tmp_path / "static"
+
+
+def test_database_defaults_to_peer_auth_over_the_local_socket(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for name in _DB_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CD_ENV_FILE", str(tmp_path / "absent.env"))
+    monkeypatch.setenv("DJANGO_SECRET_KEY", "k")
+    importlib.reload(cd_settings)
+    db = cd_settings.DATABASES["default"]
+    assert db["ENGINE"] == "django.db.backends.postgresql"
+    assert db["NAME"] == "conference_drawing"
+    assert db["USER"] == "conference-drawing"
+    assert db["HOST"] == ""  # empty: the local unix socket
+    assert db["PORT"] == ""
+    assert db["PASSWORD"] == ""  # empty: peer auth, no password anywhere
+    assert db["CONN_MAX_AGE"] == 60
+    assert db["CONN_HEALTH_CHECKS"] is True
+    assert "OPTIONS" not in db
+    assert cd_settings.DATABASES["default"].get("ATOMIC_REQUESTS", False) is False
+
+
+def test_database_comes_from_env_and_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env = tmp_path / "x.env"
+    env.write_text("DJANGO_SECRET_KEY=k\nCD_DB_PASSWORD=from-file\n")
+    monkeypatch.setenv("CD_ENV_FILE", str(env))
+    monkeypatch.delenv("CD_DB_PASSWORD", raising=False)
+    monkeypatch.setenv("CD_DB_NAME", "raffle")
+    monkeypatch.setenv("CD_DB_USER", "booth")
+    monkeypatch.setenv("CD_DB_HOST", "/var/run/postgresql")
+    monkeypatch.setenv("CD_DB_PORT", "5433")
+    importlib.reload(cd_settings)
+    db = cd_settings.DATABASES["default"]
+    assert (db["NAME"], db["USER"], db["HOST"], db["PORT"]) == (
+        "raffle",
+        "booth",
+        "/var/run/postgresql",
+        "5433",
+    )
+    assert db["PASSWORD"] == "from-file"  # noqa: S105
+    assert "CD_DB_PASSWORD" not in os.environ
 
 
 def test_cache_is_database_backed() -> None:

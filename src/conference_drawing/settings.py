@@ -93,15 +93,22 @@ TEMPLATES = [
     },
 ]
 
+# PostgreSQL only. On the server the app's OS user maps to the role of the same
+# name by peer auth over the unix socket (empty HOST), so no password exists;
+# CD_DB_PASSWORD is for a TCP setup such as CI's service container.
+# select_for_update() takes real row locks, which is what serializes two phones
+# tapping the same pick (see draw.py). ATOMIC_REQUESTS stays off: services open
+# their own short transactions, and deletion must VACUUM outside one.
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": DATA_DIR / "db.sqlite3",
-        # BEGIN IMMEDIATE takes the write lock when a transaction starts, so a
-        # second phone's tap waits for the first to commit (up to `timeout`
-        # seconds) and then sees its result, instead of failing mid-transaction
-        # with "database is locked". SQLite ignores select_for_update.
-        "OPTIONS": {"transaction_mode": "IMMEDIATE", "timeout": 20},
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": _env("CD_DB_NAME", "conference_drawing"),
+        "USER": _env("CD_DB_USER", "conference-drawing"),
+        "PASSWORD": _env("CD_DB_PASSWORD"),
+        "HOST": _env("CD_DB_HOST"),
+        "PORT": _env("CD_DB_PORT"),
+        "CONN_MAX_AGE": 60,
+        "CONN_HEALTH_CHECKS": True,
     }
 }
 

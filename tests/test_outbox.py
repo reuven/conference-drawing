@@ -5,6 +5,8 @@ import logging
 import os
 import random
 import signal
+import threading
+import time
 from collections.abc import Callable, Iterator
 from io import StringIO
 from typing import Any
@@ -14,7 +16,7 @@ import pytest
 import respx
 from django.contrib.auth.models import User
 from django.core.management import call_command
-from django.db import connection
+from django.db import connection, transaction
 from django.test import Client
 from django.urls import reverse
 from pydantic import SecretStr
@@ -307,6 +309,44 @@ def test_claimed_job_is_leased_and_due_again_if_the_worker_dies(
     assert outbox.process_due(drip, now=later).sent == 1
     job.refresh_from_db()
     assert (job.status, job.attempts) == (J.Status.SENT, 2)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_claim_skips_a_job_another_worker_has_locked(
+    conference_factory: Callable[..., Conference],
+) -> None:
+    """A second worker takes the next job at once instead of waiting its turn.
+
+    Another connection holds a row lock on the first job (as a concurrent
+    claim would); `skip_locked` makes this claim pass over it without blocking.
+    """
+    conference = conference_factory()
+    first, second = _job(conference), _job(conference)
+    locked, release = threading.Event(), threading.Event()
+
+    def hold_lock() -> None:
+        try:
+            with transaction.atomic():
+                OutboxJob.objects.select_for_update().get(pk=first.pk)
+                locked.set()
+                release.wait(timeout=5)
+        finally:
+            connection.close()
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert locked.wait(timeout=5)
+        started = time.monotonic()
+        claimed = outbox.claim_due(now=NOW, limit=20)
+        waited = time.monotonic() - started
+    finally:
+        release.set()
+        holder.join()
+    assert claimed == [second.pk]
+    assert waited < 2
+    first.refresh_from_db()
+    assert first.attempts == 0  # untouched: still due for whoever comes next
 
 
 @pytest.mark.django_db(transaction=True)

@@ -10,7 +10,9 @@ the key lives in the file ``init`` is about to create):
    been imported yet, so no settings module has been evaluated.
 2. Export ``CD_ENV_FILE`` so ``settings.py`` reads exactly that file, then set up
    Django. Settings now import with the freshly written secret key.
-3. ``migrate``, ``createcachetable``, the superuser, and ``InstallSettings``.
+3. Check that the PostgreSQL database answers (it must already exist; on the
+   server ``install.sh`` creates it), then ``migrate``, ``createcachetable``,
+   the superuser, and ``InstallSettings``.
 """
 
 import argparse
@@ -168,6 +170,36 @@ def _ensure_superuser(non_interactive: bool) -> int:
     return 0
 
 
+_DB_SETTINGS = "CD_DB_NAME, CD_DB_USER, CD_DB_HOST, CD_DB_PORT and CD_DB_PASSWORD"
+
+
+def _check_database() -> bool:
+    """Connect once before migrating; on failure explain which settings to check.
+
+    Why: a missing role or a wrong socket directory otherwise surfaces as a long
+    traceback from inside ``migrate``. The message names the database, role and
+    host, and the settings to check, but never the password.
+    """
+    from django.db import DatabaseError, connection
+
+    try:
+        connection.ensure_connection()
+    except DatabaseError as exc:
+        db = connection.settings_dict
+        where = db["HOST"] or "the local socket"
+        detail = str(exc).strip()
+        if db["PASSWORD"]:
+            detail = detail.replace(db["PASSWORD"], "***")
+        print(
+            f"error: cannot connect to the database {db['NAME']!r} as "
+            f"{db['USER']!r} on {where} ({type(exc).__name__}: {detail}). "
+            f"Check {_DB_SETTINGS}.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def _init(args: argparse.Namespace) -> int:
     """Run first-time setup; safe to run again."""
     path = resolve_env_file(args.env_file)
@@ -216,6 +248,8 @@ def _init(args: argparse.Namespace) -> int:
 
     from django.conf import settings
 
+    if not _check_database():
+        return 2
     Path(settings.DATA_DIR).mkdir(parents=True, exist_ok=True)
     call_command("migrate", interactive=False, verbosity=1)
     call_command("createcachetable", verbosity=0)

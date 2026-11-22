@@ -13,26 +13,33 @@ Refuses with `DrawingError` (reused rather than adding a new class) unless the
 conference is wrapped up, has not already been deleted, and has no pending
 Drip jobs, because a pending job still needs its payload to be sent.
 
-SQLite keeps deleted rows in free pages and the write-ahead log, so after the
-commit we VACUUM and then checkpoint-truncate the WAL, best effort and outside the
-transaction. The hourly snapshots (Task 16) still hold the data until they age
-out, 48 hours later.
+PostgreSQL's DELETE only marks tuples dead; their bytes stay in the table files
+until something rewrites them. So once the deleting transaction commits we run
+`VACUUM (FULL, ANALYZE)` on the tables that held personal data, best effort and
+outside any transaction (VACUUM refuses to run inside one). VACUUM FULL writes
+each table to a new file and drops the old one, but it cannot guarantee the
+bytes are gone everywhere: WAL segments keep the deleted rows until they are
+recycled, an old snapshot can keep them alive until it ends, and the hourly
+pg_dump snapshots (Task 16) hold the data until they age out, 48 hours later.
+VACUUM FULL takes an exclusive lock on each table while it rewrites it, so the
+booth waits a moment; the tables are small.
 
 Logs carry ids and counts only.
 """
 
 import datetime
+import functools
 import logging
 
 from django.contrib.admin.models import LogEntry
 from django.contrib.contenttypes.models import ContentType
-from django.db import OperationalError, connection, transaction
+from django.db import DatabaseError, connection, transaction
 from django.db.models import CharField
 from django.db.models.functions import Cast
 
 from .draw import DrawingError
 from .drip.outbox import pending_count
-from .models import Conference, Entrant, OutboxJob
+from .models import Conference, CouponCode, Entrant, OutboxJob, Pick
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +66,7 @@ def delete_entrants(conference: Conference, *, now: datetime.datetime) -> int:
         count = entrants.count()
         # Admin edits log each entrant's name (and sometimes email) in the
         # admin history; drop those rows with the people they describe.
-        # A subquery, so a big conference cannot hit SQLite's variable limit.
+        # A subquery, so a big conference never builds a huge IN list.
         LogEntry.objects.filter(
             content_type=ContentType.objects.get_for_model(Entrant),
             object_id__in=entrants.annotate(oid=Cast("pk", CharField())).values("oid"),
@@ -73,23 +80,31 @@ def delete_entrants(conference: Conference, *, now: datetime.datetime) -> int:
         jobs.update(payload={"redacted": True})
         locked.deleted_entrant_count = count
         locked.save(update_fields=["deleted_entrant_count"])
+        # After the outermost commit, outside any transaction, even when a
+        # caller wraps this in its own atomic block.
+        transaction.on_commit(functools.partial(_vacuum_full, locked.pk))
     conference.deleted_entrant_count = count
-    _scrub_sqlite(locked.pk)
     logger.info("deleted entrants conference=%s count=%s", locked.pk, count)
     return count
 
 
-def _scrub_sqlite(conference_id: int) -> None:
-    """VACUUM, then checkpoint-truncate the WAL, so deleted rows leave the files.
+# Every table that held an entrant's name, email or answers.
+_SCRUBBED_MODELS = (Entrant, Pick, OutboxJob, CouponCode, LogEntry)
 
-    The order matters: in WAL mode VACUUM writes the rebuilt pages into the WAL,
-    so only a checkpoint after it copies them over the old pages in the main file.
+
+def _vacuum_full(conference_id: int) -> None:
+    """Rewrite the tables that held personal data, so dead tuples leave the files.
+
+    Runs from `on_commit`, in autocommit mode: VACUUM cannot run in a
+    transaction block. The app role owns these tables (it ran migrate), which
+    VACUUM FULL requires. A failure is logged by exception class only.
     """
     try:
         with connection.cursor() as cursor:
-            cursor.execute("VACUUM")
-            cursor.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    except OperationalError as exc:
+            for model in _SCRUBBED_MODELS:
+                table = connection.ops.quote_name(model._meta.db_table)
+                cursor.execute(f"VACUUM (FULL, ANALYZE) {table}")
+    except DatabaseError as exc:
         logger.warning(
             "deletion scrub failed conference=%s error=%s",
             conference_id,

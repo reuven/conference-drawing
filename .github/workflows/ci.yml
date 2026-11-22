@@ -16,10 +16,30 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        # TODO: pin by digest (postgres:18@sha256:...) like the actions below;
+        # the digest could not be looked up without contacting the registry.
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       CI: "1"
       # django-stubs imports the settings module, which requires a key.
       DJANGO_SECRET_KEY: ci-only-not-a-secret
+      # The service container above; pytest-django creates test_conference_drawing.
+      CD_DB_HOST: localhost
+      CD_DB_PORT: "5432"
+      CD_DB_USER: postgres
+      CD_DB_PASSWORD: ci-only-not-a-secret
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
