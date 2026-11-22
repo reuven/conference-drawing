@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.urls import path
 
 from conference_drawing import ops
-from conference_drawing.raffle.views import booth, public
+from conference_drawing.raffle.views import booth, display, public
 
 urlpatterns = [
     path("health", ops.health, name="health"),
@@ -10,6 +10,8 @@ urlpatterns = [
     path("c/<slug:slug>/", public.entry, name="entry"),
     path("c/<slug:slug>/thanks/", public.thanks, name="thanks"),
     path("privacy/", public.privacy, name="privacy"),
+    path("display/<str:token>/", display.display, name="display"),
+    path("display/<str:token>/panel/", display.panel, name="display-panel"),
     path("booth/", booth.home, name="booth-home"),
     path("booth/drawing/<int:pk>/", booth.drawing_page, name="booth-drawing"),
     path("booth/drawing/<int:pk>/start/", booth.start, name="booth-start"),

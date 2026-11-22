@@ -3,6 +3,7 @@
 {% block content %}
 <p><a href="{% url 'booth-home' %}">All conferences</a></p>
 <h1>{{ conference.name }}</h1>
+<p><a href="{% url 'display' conference.display_token %}">Booth display link</a></p>
 <ul class="booth-list">
   {% for drawing, when in drawings %}
   <li>

@@ -1,0 +1,11 @@
+{% extends "raffle/base.html" %}
+{% load static %}
+{% block title %}{{ conference.name }}{% endblock %}
+{% block scripts %}<link rel="stylesheet" href="{% static 'raffle/display.css' %}">
+{% include "raffle/_htmx.html" %}{% endblock %}
+{% block body_attrs %} class="display"{% endblock %}
+{% block content %}
+<div id="panel" hx-get="{% url 'display-panel' token %}" hx-trigger="every 2s" hx-swap="innerHTML">
+  {% include "raffle/display/_panel.html" %}
+</div>
+{% endblock %}

@@ -1,0 +1,54 @@
+/* Booth monitor: large type, high contrast, readable across an aisle. */
+body.display {
+  margin: 0;
+  padding: 2vmin 4vmin;
+  min-height: 100vh;
+  background: #000;
+  color: #fff;
+  font: 700 4vmin/1.3 system-ui, sans-serif;
+  text-align: center;
+}
+
+body.display footer {
+  display: none;
+}
+
+.display h1 {
+  margin: 0 0 2vmin;
+  font-size: 7vmin;
+  color: #ffd84d;
+}
+
+.display h2 {
+  margin: 3vmin 0 1vmin;
+  font-size: 5vmin;
+  color: #8fd3ff;
+}
+
+.display ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.display li {
+  font-size: 9vmin;
+  line-height: 1.2;
+}
+
+.display li.none {
+  font-size: 4vmin;
+  color: #c8c8c8;
+}
+
+.display .label {
+  margin: 4vmin 0 0;
+  font-size: 4vmin;
+  color: #c8c8c8;
+}
+
+.display .big {
+  margin: 0;
+  font-size: 12vmin;
+  line-height: 1.1;
+}

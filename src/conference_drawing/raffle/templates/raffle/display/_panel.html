@@ -1,0 +1,21 @@
+{% if mode == "winners" %}
+<h1>{% if is_open %}Drawing now{% else %}Winners{% endif %}</h1>
+{% for line in lines %}
+<section class="book">
+  <h2>{{ line.title }}</h2>
+  <ul>
+    {% for name in line.names %}<li>{{ name }}</li>{% empty %}<li class="none">No winner yet</li>{% endfor %}
+  </ul>
+</section>
+{% endfor %}
+{% else %}
+<h1>{{ conference.name }}</h1>
+{% if next_label %}
+<p class="label">Next drawing</p>
+<p class="big">{{ next_label }}</p>
+{% else %}
+<p class="label">No drawings scheduled</p>
+{% endif %}
+<p class="label">Entries so far</p>
+<p class="big">{{ entry_count }}</p>
+{% endif %}

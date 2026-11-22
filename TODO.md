@@ -12,7 +12,7 @@ Spec: `docs/superpowers/specs/2026-11-22-conference-raffle-design.md`
 - [x] 5. Coupon codes and prize URLs
 - [x] 6. Public entry flow
 - [x] 7. Booth drawing screen (phone-first, HTMX)
-- [ ] 8. Display view
+- [x] 8. Display view
 - [ ] 9. Flyer
 - [ ] 10. Admin setup screens
 - [ ] 11. CSV export
