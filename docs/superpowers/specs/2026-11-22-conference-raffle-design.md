@@ -116,9 +116,11 @@ Self-hosted, one owner per install.
   out of the pool for the rest of that drawing.
 - Duplicate entries are impossible: email (normalized) is unique per
   conference. *(My call, changed after review: a re-submission with an
-  existing email does **not** modify the entry — it shows "You're already
-  entered." Otherwise anyone could overwrite a stranger's name or consent by
-  typing their email.)*
+  existing email does **not** modify the entry. Otherwise anyone could
+  overwrite a stranger's name or consent by typing their email.)* *(Further
+  call, recorded in Task 1: a repeat entry shows the same thanks page as a new
+  one, "Thanks — you're in the drawing.", not "You're already entered", so the
+  form cannot be used to test whether an email has entered.)*
 - Entry cutoff: an entry is in a drawing only if it was created before the
   drawing's cutoff. *(Builder's precise rule, my call: cutoff = the earlier of
   the scheduled time and the moment the owner presses Start, so someone who

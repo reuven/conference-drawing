@@ -110,11 +110,13 @@ def test_health_get_and_head(client):
     assert client.get("/health").json() == {"status": "ok"}
     assert client.head("/health").status_code == 200
 
+
 def test_version_has_all_keys_and_never_500s(client, monkeypatch):
     monkeypatch.delenv("CD_COMMIT", raising=False)
     body = client.get("/version").json()
     assert set(body) == {"version", "commit", "commit_short", "built_at", "branch"}
     assert body["commit"] == ""
+
 
 def test_html_responses_carry_default_headers(client):
     r = client.get("/admin/login/")
@@ -122,12 +124,20 @@ def test_html_responses_carry_default_headers(client):
     assert r["X-Robots-Tag"] == "noindex, nofollow"
     assert "script-src 'self'" in r["Content-Security-Policy"]
 
+
 # tests/test_settings.py
-def test_settings_refuse_missing_secret_key_when_not_debug(monkeypatch): ...  # ImproperlyConfigured
-def test_settings_never_read_home_env(monkeypatch, tmp_path): ...  # HOME=tmp_path with .env containing DJANGO_SECRET_KEY → not used
+def test_settings_refuse_missing_secret_key_when_not_debug(
+    monkeypatch,
+): ...  # ImproperlyConfigured
+def test_settings_never_read_home_env(
+    monkeypatch, tmp_path
+): ...  # HOME=tmp_path with .env containing DJANGO_SECRET_KEY → not used
+
 
 # tests/test_conftest_profiles.py
-def test_ci_profile_runs_200_examples(monkeypatch): ...  # CI=1, reload → settings().max_examples == 200
+def test_ci_profile_runs_200_examples(
+    monkeypatch,
+): ...  # CI=1, reload → settings().max_examples == 200
 ```
 
 - [ ] **Step 3: Run, watch fail.** `testslot -- uv run pytest tests/test_ops.py tests/test_settings.py tests/test_conftest_profiles.py -q` → FAIL (no module / 404).

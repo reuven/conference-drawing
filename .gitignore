@@ -42,3 +42,6 @@ mutants/
 .claude/worktrees/
 .superpowers/
 backups/
+
+# Local runtime data
+var/
