@@ -62,9 +62,10 @@ def test_book_str_and_blank_optional_fields(book_factory: Factory) -> None:
     assert book.link == ""
 
 
-def test_book_title_rejects_newline() -> None:
+@pytest.mark.parametrize("bad", ["a\nb", "x\n", "\nx", " x", "x "])
+def test_book_title_rejects_newlines_and_unstripped_values(bad: str) -> None:
     with pytest.raises(ValidationError):
-        Book(title="a\nb").full_clean()
+        Book(title=bad).full_clean()
 
 
 # --- Conference ------------------------------------------------------------

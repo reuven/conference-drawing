@@ -26,7 +26,7 @@ def test_normalize_email_idempotent_on_any_text(raw: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "bad", ["a\nb", "a\rb", "x‮y", "z\x00", "n" * 201, "a​b", "", "   "]
+    "bad", ["a\n", "\nb", "a\nb", "a\rb", "x‮y", "z\x00", "n" * 201, "a​b", "", "   "]
 )
 def test_label_rejects(bad: str) -> None:
     with pytest.raises(ValidationError):

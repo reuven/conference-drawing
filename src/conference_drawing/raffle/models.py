@@ -37,6 +37,10 @@ def validate_time_zone(value: str) -> None:
 def validate_label(value: str) -> None:
     """Model-field adapter: run `validate_single_line_label`, discard its result."""
     validate_single_line_label(value)
+    if value != value.strip():
+        raise ValidationError(
+            "Remove leading or trailing whitespace.", code="untrimmed"
+        )
 
 
 def new_display_token() -> str:

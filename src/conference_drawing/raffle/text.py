@@ -33,7 +33,8 @@ def validate_single_line_label(value: str, max_len: int = 200) -> str:
         raise ValidationError(
             f"Ensure this value has at most {max_len} characters.", code="max_length"
         )
-    if any(unicodedata.category(ch) in _FORBIDDEN_CATEGORIES for ch in stripped):
+    # Check the raw value: stripping first would hide a leading/trailing newline.
+    if any(unicodedata.category(ch) in _FORBIDDEN_CATEGORIES for ch in value):
         raise ValidationError(
             "Remove line breaks and invisible or control characters.",
             code="invalid_characters",
