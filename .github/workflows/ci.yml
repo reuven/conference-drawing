@@ -18,9 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        # TODO: pin by digest (postgres:18@sha256:...) like the actions below;
-        # the digest could not be looked up without contacting the registry.
-        image: postgres:18
+        # Tag postgres:18, pinned by digest (the multi-arch index, looked up
+        # 2026-11-22) like the actions below. To move it, run
+        # `docker buildx imagetools inspect postgres:18` and paste the new digest.
+        image: postgres:18@sha256:eb63372c1e05c755f55fa30cbd07aecc443676fc6c0fa90b9002d01537841e1a
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: ci-only-not-a-secret
