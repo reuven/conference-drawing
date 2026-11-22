@@ -1,10 +1,10 @@
-"""Operational endpoints: liveness and build identity."""
+"""Operational endpoints: liveness, build identity and robots.txt."""
 
 import json
 import os
 from pathlib import Path
 
-from django.http import HttpRequest, JsonResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.views.decorators.http import require_safe
 
 from conference_drawing import __version__
@@ -33,6 +33,14 @@ def version_info() -> dict[str, str]:
 def version_context(request: HttpRequest) -> dict[str, dict[str, str]]:
     """Template context processor exposing build identity to the footer."""
     return {"cd_version": version_info()}
+
+
+@require_safe
+def robots_txt(request: HttpRequest) -> HttpResponse:
+    """Ask every crawler to stay out; pages also send X-Robots-Tag noindex."""
+    return HttpResponse(
+        "User-agent: *\nDisallow: /\n", content_type="text/plain; charset=utf-8"
+    )
 
 
 @require_safe

@@ -16,6 +16,7 @@ admin_login = ratelimit(key=public.client_ip, rate="10/m", method="POST", block=
 )
 
 urlpatterns = [
+    path("robots.txt", ops.robots_txt, name="robots-txt"),
     path("health", ops.health, name="health"),
     path("version", ops.version, name="version"),
     path("c/<slug:slug>/", public.entry, name="entry"),

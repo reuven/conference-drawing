@@ -69,6 +69,15 @@ def test_html_responses_carry_default_headers(client: Client) -> None:
     assert "frame-ancestors 'none'" in csp
 
 
+def test_robots_txt_disallows_everything(client: Client) -> None:
+    r = client.get("/robots.txt")
+    assert r.status_code == 200
+    assert r["Content-Type"] == "text/plain; charset=utf-8"
+    assert r.content.decode() == "User-agent: *\nDisallow: /\n"
+    assert client.head("/robots.txt").status_code == 200
+    assert client.post("/robots.txt").status_code == 405
+
+
 def test_non_html_responses_keep_their_own_headers(client: Client) -> None:
     assert "X-Robots-Tag" not in client.get("/health")
 
