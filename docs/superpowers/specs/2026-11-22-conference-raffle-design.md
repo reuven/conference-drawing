@@ -381,7 +381,9 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
       that sets `DJANGO_DEBUG` to a true value (1, true, yes, on), so a server
       never runs with DEBUG on;
       install or upgrade, optional restore of a previous backup, then a smoke
-      check of `/health`, `/version`, and the entry page over HTTPS.
+      check of `/health`, `/version`, and `/privacy/` over HTTPS (a page
+      that renders a template and reads the database, yet exists before any
+      conference does).
     - `deploy/backup.sh <host>` — pulls a consistent backup to the laptop:
       `db.dump` (`pg_dump -Fc` run as the app user, read back fully) plus
       media; root only receives the tar stream.

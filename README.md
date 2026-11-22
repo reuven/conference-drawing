@@ -154,6 +154,21 @@ email, and password. If your checkout's `.env` has `DRIP_API_KEY` and
 `DRIP_ACCOUNT_ID`, they are copied to the server. Run it again to upgrade; a
 snapshot of the database is taken before each migration.
 
+An upgrade only **adds** keys the server's `.env` lacks; it never changes one
+that is already there. So rotating the Drip key, or moving to another domain,
+through `up.sh` does nothing to those settings. To change an existing key,
+edit the server's file by hand and restart the app:
+
+```sh
+ssh you@server
+sudo -u conference-drawing "${EDITOR:-nano}" /srv/conference-drawing/data/.env
+#   change DRIP_API_KEY / DRIP_ACCOUNT_ID, or DJANGO_ALLOWED_HOSTS for a new domain
+sudo systemctl restart conference-drawing-web conference-drawing-drip
+```
+
+A new domain also needs a new Caddy site file, so for that, run `up.sh` with
+the new domain after editing `.env`.
+
 `--restore` loads a backup into a fresh install, so a new conference starts
 with the last one's books, prizes, and codes. It needs a fresh install, so run
 `down.sh` first if one is there. A backup is a full database dump: restoring
