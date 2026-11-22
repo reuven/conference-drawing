@@ -226,7 +226,7 @@ and add your ssh key).
    chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg
    chmod o+r /etc/apt/sources.list.d/caddy-stable.list
    apt update
-   apt install -y caddy
+   apt install --yes caddy
    ```
 
 3. Add the line that lets the app add its own site, then check and reload:
