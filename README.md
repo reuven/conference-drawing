@@ -153,7 +153,11 @@ snapshot of the database is taken before each migration.
 
 `--restore` loads a backup into a fresh install, so a new conference starts
 with the last one's books, prizes, and codes. It needs a fresh install, so run
-`down.sh` first if one is there.
+`down.sh` first if one is there. A backup is a full database dump: restoring
+one brings back **every entrant who was not deleted before `down.sh` took
+it**, with their names, emails, answers, and consent records. Delete the old
+conference's entrants first (see "Backups still hold what you deleted" below),
+or restore from a backup taken after you did.
 
 The other operator commands:
 
@@ -196,11 +200,13 @@ and add your ssh key).
 2. ssh in as root and install Caddy from its official apt repository:
 
    ```sh
-   apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+   apt install --yes debian-keyring debian-archive-keyring apt-transport-https curl
    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
      | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
      > /etc/apt/sources.list.d/caddy-stable.list
+   chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+   chmod o+r /etc/apt/sources.list.d/caddy-stable.list
    apt update
    apt install -y caddy
    ```
@@ -228,7 +234,7 @@ with mode 0600.
 |---|---|---|
 | `DJANGO_SECRET_KEY` | none | Required unless `DJANGO_DEBUG` is on. `init` generates it. |
 | `DJANGO_ALLOWED_HOSTS` | empty (`localhost` and friends in debug) | Comma-separated hostnames the site answers to. `init --domain` writes it. |
-| `DJANGO_DEBUG` | off | `1` for local development only. Never on a server. |
+| `DJANGO_DEBUG` | off | `1` for local development only. `up.sh` refuses to install if the server's `.env` turns it on (1, true, yes, or on), so a server cannot run with it. |
 | `CD_DB_NAME` | `conference_drawing` | PostgreSQL database name. |
 | `CD_DB_USER` | `conference-drawing` | PostgreSQL role. |
 | `CD_DB_HOST` | empty (the local socket) | Host or socket directory. Homebrew: `/tmp`. |
@@ -257,8 +263,15 @@ only locks the conference.
   cannot be used to find out who has entered.
 - **Who sees names.** Winner names appear on your phone and on the booth
   display, whose address contains a secret token. The flyer and entry pages
-  never show them. Every page tells search engines not to index it. Logs
-  carry ids and counts only, never names, emails, answers, or codes.
+  never show them. Every page tells search engines not to index it. The
+  app's own logs carry ids and counts only, never names, emails, answers, or
+  codes.
+- **Server access log.** Caddy, the web server in front of the app, keeps its
+  own access log for this site (`/var/log/caddy/conference-drawing.access.log`).
+  It records each visitor's IP address and the page they asked for. Display
+  addresses have their token replaced by `REDACTED`, query strings are dropped,
+  and no request or response headers are logged. The log is rotated and kept
+  for up to 14 days, and `down.sh` deletes it with the site.
 - **What goes to Drip, and when.** Nothing goes to Drip while people enter.
   When a digital prize is drawn, the winner's email gets a `Won raffle prize`
   event with the book title, code, prize URL, and conference name. At wrap-up
@@ -271,9 +284,13 @@ only locks the conference.
 - **Deleting.** "Delete entrants" removes every entrant of the conference, and
   with them their picks, the admin-history rows about them, and any failed
   Drip jobs; the remaining Drip jobs keep a row but lose their contents. It
-  then rewrites the affected database tables so the deleted rows leave the
-  files. It does not touch Drip: what is in Drip is managed in Drip. The
-  drawings, prizes, and counts stay.
+  then tries to rewrite the affected database tables so the deleted rows leave
+  the files. That rewrite is best effort: it gives up (and only logs it) if a
+  table stays locked for more than 5 seconds, and even when it runs, the
+  database's write-ahead log files can still hold the rows until they are
+  recycled, and older snapshots hold them until they age out (next point). It
+  does not touch Drip: what is in Drip is managed in Drip. The drawings,
+  prizes, and counts stay.
 - **Backups still hold what you deleted.** Anything saved **before** a
   deletion still contains the deleted people until it ages out or you delete
   it. On the server, hourly database snapshots and the one taken before each

@@ -51,7 +51,8 @@ uv run pytest --cov=conference_drawing -m "not e2e"
 - Use `uv add` and `uv run`, not `pip`. Dependencies are pinned in `uv.lock`.
 - US English in code, comments, and docs.
 - Mutation testing (`uv run mutmut run`) audits the tests of
-  `raffle/eligibility.py`, `draw.py`, `codes.py`, and `text.py`. Run it on
+  `src/conference_drawing/raffle/eligibility.py`, `draw.py`, `codes.py`, and
+  `text.py`. Run it on
   modules you change, and close real survivors with tests.
 - One logical change per commit.
 

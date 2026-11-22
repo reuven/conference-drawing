@@ -372,15 +372,23 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
     failure):
     - `deploy/up.sh <host> <domain>` — preflight (refuses if any systemd unit is
       failed, Caddy invalid, or the domain's DNS doesn't point at the host),
+      `install.sh` also refuses, before changing anything, a server `.env`
+      that sets `DJANGO_DEBUG` to a true value (1, true, yes, on), so a server
+      never runs with DEBUG on;
       install or upgrade, optional restore of a previous backup, then a smoke
       check of `/health`, `/version`, and the entry page over HTTPS.
     - `deploy/backup.sh <host>` — pulls a consistent backup to the laptop:
       `db.dump` (`pg_dump -Fc` run as the app user, read back fully) plus
       media; root only receives the tar stream.
-    - `deploy/down.sh <host>` — **refuses** while Drip outbox jobs are pending
-      or if no backup newer than the last write exists; then removes the units,
-      the Caddy site file (validate + reload), the database and role, and
-      `/srv/conference-drawing`. It purges `postgresql` and
+    - `deploy/down.sh <host>` — **refuses** while Drip outbox jobs are pending.
+      Otherwise it stops the web app and the snapshot timer, checks the outbox
+      once more (nothing new can be queued now; if a job slipped in, the app
+      is started again and it refuses), then stops the Drip worker. It then
+      takes a fresh backup itself (the same as `backup.sh`) and aborts, with
+      the app left stopped and the command to start it again printed, if the
+      backup fails or comes back empty. Only then does it remove the units,
+      the Caddy site file (validate + reload) and its access log, the database
+      and role, and `/srv/conference-drawing`. It purges `postgresql` and
       `postgresql-<major>` only when all of these hold: the marker exists;
       `pg_lsclusters` shows exactly one cluster, `<major> main`; no database
       but `postgres`, `template0` and `template1` remains; `postgres` and
