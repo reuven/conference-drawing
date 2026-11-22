@@ -1,0 +1,39 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Editor and OS cruft
+\#*#
+.#*
+*~
+*.swp
+.DS_Store
+
+# Data and secrets -- never commit
+data/
+*.csv
+*.tsv
+*.parquet
+*.xlsx
+*.dta
+*.sav
+.env
+.env.*
+*.sqlite3
+media/
+
+# Tool caches
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+mutants/
