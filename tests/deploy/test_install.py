@@ -290,6 +290,50 @@ def test_install_refuses_a_wheel_that_fails_its_checksum(server: Server) -> None
     assert not any("--no-deps" in line for line in server.log())
 
 
+# --- DEBUG must never be on a server --------------------------------------------
+
+DEBUG_ON = [
+    "DJANGO_DEBUG=1",
+    "DJANGO_DEBUG=true",
+    "DJANGO_DEBUG=True",
+    "DJANGO_DEBUG='yes'",
+    'DJANGO_DEBUG="ON"',
+    "export DJANGO_DEBUG=1",
+    "  DJANGO_DEBUG = 1",
+    "DJANGO_DEBUG=0\nDJANGO_DEBUG=1",
+]
+DEBUG_OFF = [
+    "DJANGO_DEBUG=0",
+    "DJANGO_DEBUG=false",
+    "DJANGO_DEBUG=",
+    "# DJANGO_DEBUG=1",
+]
+
+
+def _write_env(server: Server, text: str) -> None:
+    server.data.mkdir(parents=True)
+    (server.data / ".env").write_text(f"DJANGO_SECRET_KEY='do-not-print-me'\n{text}\n")
+
+
+@pytest.mark.parametrize("line", DEBUG_ON)
+def test_install_refuses_a_server_env_with_debug_on(server: Server, line: str) -> None:
+    _write_env(server, line)
+    result = server.install()
+    assert result.returncode != 0
+    assert "DJANGO_DEBUG" in result.stderr
+    assert "do-not-print-me" not in result.stderr + result.stdout
+    # Refused before anything changed, and the file is left for the operator.
+    assert not any(c.startswith(("useradd", "apt-get")) for c in server.log())
+    assert not _venvs(server)
+    assert line.split("\n")[-1] in (server.data / ".env").read_text()
+
+
+@pytest.mark.parametrize("line", DEBUG_OFF)
+def test_install_accepts_a_server_env_with_debug_off(server: Server, line: str) -> None:
+    _write_env(server, line)
+    assert server.install().returncode == 0
+
+
 def test_install_is_idempotent_for_drip_keys(server: Server) -> None:
     stdin = "DRIP_API_KEY=key-1\n"
     assert server.install(stdin=stdin).returncode == 0

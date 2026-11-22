@@ -317,6 +317,39 @@ app_table_count() {
 		-c "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'"
 }
 
+# settings.py turns DEBUG on for 1, true, yes or on (any case) in DJANGO_DEBUG;
+# the last assignment in the .env wins. DEBUG shows tracebacks with settings to
+# visitors and drops the Secure flag from cookies, so a server never runs it.
+# Refuse rather than edit: the file is the operator's. Never print the file.
+refuse_debug_env() {
+	local line value
+	[ -e "$ENV_FILE" ] || return 0
+	no_symlink "$ENV_FILE"
+	[ -f "$ENV_FILE" ] || return 0
+	line=$(grep -E '^[[:space:]]*(export[[:space:]]+)?DJANGO_DEBUG[[:space:]]*=' "$ENV_FILE" | tail -n 1 || true)
+	[ -n "$line" ] || return 0
+	value=${line#*=}
+	value=${value#"${value%%[![:space:]]*}"}
+	case $value in
+	\'*)
+		value=${value#\'}
+		value=${value%%\'*}
+		;;
+	\"*)
+		value=${value#\"}
+		value=${value%%\"*}
+		;;
+	*) value=${value%%[[:space:]]#*} ;;
+	esac
+	value=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+	case $value in
+	1 | true | yes | on)
+		die "$ENV_FILE sets DJANGO_DEBUG to a true value. A server must never run with DEBUG on. Remove or blank that line, then run up.sh again."
+		;;
+	esac
+}
+refuse_debug_env
+
 say "packages and users"
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
 	useradd --system --user-group --home-dir "$APP_DIR" --no-create-home \
