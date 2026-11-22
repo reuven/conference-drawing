@@ -7,11 +7,17 @@ over HTTP with no transaction open, then record each outcome.
 
 There is no "in flight" status. Claiming instead pushes `next_attempt_at` out by
 `LEASE` and counts the attempt, so a worker that dies mid-send simply has its
-jobs come due again once the lease runs out.
+jobs come due again once the lease runs out. Recording an outcome is
+conditional on still holding that lease, so a slow worker cannot overwrite a
+newer worker's result.
+
+Delivery is at-least-once: a read timeout after Drip accepted an event is
+retried, so the event can arrive twice.
 """
 
 import datetime
 import logging
+from collections.abc import Callable
 from typing import NamedTuple
 
 import httpx
@@ -28,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 BACKOFF_SECONDS = (60, 300, 1800, 7200)
 MAX_ATTEMPTS = 8
+# httpx timeouts apply per phase (connect/write/read/pool), so one request can
+# block for about 4 x 10 s; jobs are claimed one at a time, so this covers it.
 LEASE = datetime.timedelta(minutes=2)
 
 
@@ -61,9 +69,21 @@ def enqueue_won_prize(pick: Pick, *, now: datetime.datetime) -> OutboxJob | None
     if drip_settings() is None:
         return None
     conference = pick.prize_line.drawing.conference
-    return enqueue(
-        conference, OutboxJob.Kind.EVENT, won_prize_event(pick).to_json(), now=now
-    )
+    try:
+        payload = won_prize_event(pick).to_json()
+    except ValidationError:
+        # Entry validates emails the same way, so this should not happen; if it
+        # does, the drawing must still stand. Log the pick id only.
+        logger.warning("outbox: could not build the event for pick %s", pick.pk)
+        return OutboxJob.objects.create(
+            conference=conference,
+            kind=OutboxJob.Kind.EVENT,
+            payload={},
+            status=OutboxJob.Status.FAILED,
+            last_error_class="ValidationError",
+            next_attempt_at=now,
+        )
+    return enqueue(conference, OutboxJob.Kind.EVENT, payload, now=now)
 
 
 def pending_count(conference: Conference | None = None) -> int:
@@ -100,8 +120,15 @@ def claim_due(*, now: datetime.datetime, limit: int) -> list[int]:
     One short transaction: select the due pending ids, then push each job's
     `next_attempt_at` out by `LEASE` and count the attempt. SQLite's IMMEDIATE
     transactions serialize this against the booth's writes and other workers.
+    A job whose lease lapsed after its last attempt (a crash mid-send) is
+    retired as failed rather than claimed again, so a poison job cannot loop.
     """
     with transaction.atomic():
+        OutboxJob.objects.filter(
+            status=OutboxJob.Status.PENDING,
+            next_attempt_at__lte=now,
+            attempts__gte=MAX_ATTEMPTS,
+        ).update(status=OutboxJob.Status.FAILED, last_error_class="LeaseExpired")
         ids = list(
             OutboxJob.objects.filter(
                 status=OutboxJob.Status.PENDING, next_attempt_at__lte=now
@@ -126,8 +153,12 @@ def _send(client: DripClient, job: OutboxJob) -> None:
 
 def _record_failure(
     job: OutboxJob, exc: Exception, *, permanent: bool, now: datetime.datetime
-) -> bool:
-    """Save a failed attempt; return True if the job is now permanently failed."""
+) -> bool | None:
+    """Save a failed attempt, if this worker still holds the lease.
+
+    Returns True if the job is now permanently failed, False if it will be
+    retried, and None if the lease was lost (another worker owns the job).
+    """
     give_up = permanent or job.attempts >= MAX_ATTEMPTS
     fields: dict[str, object] = {"last_error_class": type(exc).__name__}
     if give_up:
@@ -135,7 +166,8 @@ def _record_failure(
     else:
         wait = BACKOFF_SECONDS[min(job.attempts, len(BACKOFF_SECONDS)) - 1]
         fields["next_attempt_at"] = now + datetime.timedelta(seconds=wait)
-    OutboxJob.objects.filter(pk=job.pk).update(**fields)
+    if not _still_leased(job, now).update(**fields):
+        return None
     logger.warning(
         "outbox job %s attempt %s failed: %s (%s)",
         job.pk,
@@ -146,35 +178,58 @@ def _record_failure(
     return give_up
 
 
+def _still_leased(job: OutboxJob, now: datetime.datetime) -> QuerySet[OutboxJob]:
+    """Select the job only if it is exactly as this worker's claim left it."""
+    return OutboxJob.objects.filter(
+        pk=job.pk,
+        status=OutboxJob.Status.PENDING,
+        attempts=job.attempts,
+        next_attempt_at=now + LEASE,
+    )
+
+
 def process_due(
-    client: DripClient, *, now: datetime.datetime, limit: int = 20
+    client: DripClient,
+    *,
+    now: datetime.datetime,
+    limit: int = 20,
+    should_stop: Callable[[], bool] = lambda: False,
 ) -> ProcessResult:
     """Send due jobs and record each outcome; never holds a transaction over HTTP.
 
-    A 4xx other than 429 (and a payload that no longer validates) is permanent.
+    Jobs are claimed one at a time, so a stop request (`should_stop`) between
+    jobs leaves the rest untouched and due, and each lease only has to outlast
+    one request. A 4xx other than 429 is permanent, as is any unexpected error
+    (a payload that no longer validates, a bug): those must not loop forever.
     Throttling, 5xx and network errors back off, and fail after `MAX_ATTEMPTS`.
     Only exception class names are recorded and logged.
     """
     sent = retried = failed = 0
     error: Exception
-    permanent: bool
-    for job in OutboxJob.objects.filter(pk__in=claim_due(now=now, limit=limit)):
+    for _ in range(limit):
+        if should_stop():
+            break
+        ids = claim_due(now=now, limit=1)
+        if not ids:
+            break
+        job = OutboxJob.objects.get(pk=ids[0])
         try:
             _send(client, job)
         except DripError as exc:
             permanent, error = not exc.retryable, exc
         except httpx.HTTPError as exc:
             permanent, error = False, exc
-        except (ValidationError, KeyError) as exc:
+        except Exception as exc:  # noqa: BLE001 - retire poison jobs, never loop
             permanent, error = True, exc
         else:
-            OutboxJob.objects.filter(pk=job.pk).update(
+            if _still_leased(job, now).update(
                 status=OutboxJob.Status.SENT, sent_at=now
-            )
-            sent += 1
+            ):
+                sent += 1
             continue
-        if _record_failure(job, error, permanent=permanent, now=now):
+        outcome = _record_failure(job, error, permanent=permanent, now=now)
+        if outcome is True:
             failed += 1
-        else:
+        elif outcome is False:
             retried += 1
     return ProcessResult(sent=sent, retried=retried, failed=failed)

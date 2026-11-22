@@ -20,7 +20,7 @@ from django.urls import reverse
 from pydantic import SecretStr
 
 from conference_drawing.raffle.drip import outbox
-from conference_drawing.raffle.drip.client import DripClient
+from conference_drawing.raffle.drip.client import TIMEOUT_SECONDS, DripClient
 from conference_drawing.raffle.drip.config import DripSettings
 from conference_drawing.raffle.drip.payloads import EventPayload, SubscriberPayload
 from conference_drawing.raffle.management.commands import drip_worker
@@ -626,3 +626,146 @@ def test_worker_loop_idles_when_unconfigured_until_sigterm(
     call_command("drip_worker", stdout=StringIO())
     job.refresh_from_db()
     assert job.status == J.Status.PENDING
+
+
+# --- fix round 1 --------------------------------------------------------------
+
+
+def test_winner_with_an_address_drip_rejects_does_not_break_the_drawing(
+    owner: Client,
+    conference: Conference,
+    drawing_factory: Callable[..., Drawing],
+    prize_line_factory: Callable[..., PrizeLine],
+    entrant_factory: Callable[..., Entrant],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    drawing = drawing_factory(conference)
+    prize_line_factory(
+        drawing, kind=PrizeLine.Kind.DIGITAL, url_template="https://example.com/s"
+    )
+    entrant_factory(conference, email="a@localhost")
+    with caplog.at_level(logging.DEBUG):
+        response = owner.post(reverse("booth-start", args=[drawing.pk]))
+    assert response.status_code == 302
+    drawing.refresh_from_db()
+    assert drawing.status != Drawing.Status.SCHEDULED
+    pick = Pick.objects.get(status=Pick.Status.DIGITAL)
+    (job,) = OutboxJob.objects.all()
+    assert (job.status, job.last_error_class) == (J.Status.FAILED, "ValidationError")
+    assert "localhost" not in caplog.text
+    assert str(pick.pk) in caplog.text
+
+
+def test_stale_worker_cannot_overwrite_a_newer_failure_result(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    job = _job(conference)
+
+    def other_worker_wins(request: httpx.Request) -> httpx.Response:
+        OutboxJob.objects.filter(pk=job.pk).update(
+            status=J.Status.SENT, attempts=2, sent_at=NOW
+        )
+        return httpx.Response(500)
+
+    respx_mock.post(EVENTS).mock(side_effect=other_worker_wins)
+    assert outbox.process_due(drip, now=NOW) == outbox.ProcessResult(0, 0, 0)
+    job.refresh_from_db()
+    assert (job.status, job.attempts) == (J.Status.SENT, 2)
+    assert job.last_error_class == ""
+
+
+def test_stale_worker_cannot_overwrite_a_newer_success_result(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    job = _job(conference)
+
+    def other_worker_reclaims(request: httpx.Request) -> httpx.Response:
+        OutboxJob.objects.filter(pk=job.pk).update(
+            attempts=2, next_attempt_at=NOW + datetime.timedelta(hours=1)
+        )
+        return httpx.Response(204)
+
+    respx_mock.post(EVENTS).mock(side_effect=other_worker_reclaims)
+    assert outbox.process_due(drip, now=NOW).sent == 0
+    job.refresh_from_db()
+    assert (job.status, job.attempts) == (J.Status.PENDING, 2)
+
+
+def test_lease_outlasts_one_requests_worst_case() -> None:
+    # httpx's timeout applies per phase (connect, write, read, pool).
+    assert outbox.LEASE.total_seconds() > 4 * TIMEOUT_SECONDS
+
+
+def test_stop_request_mid_pass_leaves_unreached_jobs_untouched(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    stop = {"now": False}
+
+    def send_then_stop(request: httpx.Request) -> httpx.Response:
+        stop["now"] = True
+        return httpx.Response(204)
+
+    route = respx_mock.post(EVENTS).mock(side_effect=send_then_stop)
+    jobs = [_job(conference) for _ in range(3)]
+    result = outbox.process_due(drip, now=NOW, should_stop=lambda: stop["now"])
+    assert result.sent == 1
+    assert route.call_count == 1
+    rest = OutboxJob.objects.filter(pk__in=[j.pk for j in jobs[1:]])
+    assert {(j.status, j.attempts, j.next_attempt_at) for j in rest} == {
+        (J.Status.PENDING, 0, NOW)
+    }
+
+
+def test_unexpected_error_retires_the_job_with_its_class_name(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post(EVENTS).mock(side_effect=RuntimeError("boom winner@example.com"))
+    job = _job(conference)
+    assert outbox.process_due(drip, now=NOW).failed == 1
+    job.refresh_from_db()
+    assert (job.status, job.last_error_class) == (J.Status.FAILED, "RuntimeError")
+
+
+def test_non_list_subscribers_payload_is_a_permanent_failure(
+    conference: Conference, drip: DripClient
+) -> None:
+    job = OutboxJob.objects.create(
+        conference=conference,
+        kind=J.Kind.SUBSCRIBERS,
+        payload={"subscribers": 5},
+        next_attempt_at=NOW,
+    )
+    assert outbox.process_due(drip, now=NOW).failed == 1
+    job.refresh_from_db()
+    assert (job.status, job.last_error_class) == (J.Status.FAILED, "TypeError")
+
+
+def test_jobs_out_of_attempts_are_never_claimed(conference: Conference) -> None:
+    job = _job(conference, attempts=outbox.MAX_ATTEMPTS)
+    assert outbox.claim_due(now=NOW, limit=20) == []
+    job.refresh_from_db()  # retired, so it cannot sit pending forever
+    assert (job.status, job.last_error_class) == (J.Status.FAILED, "LeaseExpired")
+
+
+def test_worker_survives_a_failing_pass_and_logs_only_the_class(
+    conference: Conference,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    passes: list[int] = []
+
+    def flaky(*args: Any, **kwargs: Any) -> outbox.ProcessResult:
+        passes.append(1)
+        if len(passes) == 1:
+            raise RuntimeError("secret@example.com")
+        os.kill(os.getpid(), signal.SIGTERM)
+        return outbox.ProcessResult(0, 0, 0)
+
+    monkeypatch.setattr(drip_worker, "INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(outbox, "process_due", flaky)
+    monkeypatch.setattr(drip_worker, "close_old_connections", lambda: None)
+    with caplog.at_level(logging.DEBUG):
+        call_command("drip_worker", stdout=StringIO())
+    assert len(passes) == 2
+    assert "RuntimeError" in caplog.text
+    assert "secret@example.com" not in caplog.text

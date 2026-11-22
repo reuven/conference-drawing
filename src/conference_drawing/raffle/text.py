@@ -3,6 +3,7 @@
 import unicodedata
 
 from django.core.exceptions import ValidationError
+from email_validator import EmailNotValidError, validate_email
 
 # Control, format (zero-width and bidi overrides), and line/paragraph separators.
 _FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
@@ -34,6 +35,21 @@ def normalize_email(raw: str) -> str:
     what makes `Alice@Example.COM ` and `alice@example.com` match.
     """
     return unicodedata.normalize("NFC", raw.strip()).lower()
+
+
+def validate_deliverable_email(value: str) -> str:
+    """Return `value` if Drip's payload validation will accept it, else raise.
+
+    Django's `EmailField` is more lenient than the `email-validator` library
+    behind pydantic's `EmailStr` (it allows `a@localhost`, `a@x.test`, ...).
+    Entry must refuse anything the Drip payload would later reject, so both
+    sides use this one rule; no DNS lookup is made.
+    """
+    try:
+        validate_email(value, check_deliverability=False)
+    except EmailNotValidError:
+        raise ValidationError("Please enter a valid email address.") from None
+    return value
 
 
 def validate_single_line_label(value: str, max_len: int = 200) -> str:

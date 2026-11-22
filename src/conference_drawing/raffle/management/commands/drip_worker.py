@@ -1,5 +1,6 @@
 """The Drip outbox worker: send due jobs every few seconds until told to stop."""
 
+import logging
 import signal
 import threading
 from types import FrameType
@@ -15,6 +16,7 @@ from ...drip.client import DripClient
 from ...drip.config import drip_settings
 
 INTERVAL_SECONDS = 5
+logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
@@ -42,13 +44,22 @@ class Command(BaseCommand):
             with httpx.Client() as http:
                 while True:
                     if config is not None:
-                        result = outbox.process_due(
-                            DripClient(config, http), now=timezone.now()
-                        )
-                        self.stdout.write(
-                            f"sent={result.sent} retried={result.retried} "
-                            f"failed={result.failed}"
-                        )
+                        try:
+                            result = outbox.process_due(
+                                DripClient(config, http),
+                                now=timezone.now(),
+                                should_stop=stop.is_set,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - keep the worker up
+                            # Class name only: messages can carry emails.
+                            logger.error(
+                                "drip worker pass failed: %s", type(exc).__name__
+                            )
+                        else:
+                            self.stdout.write(
+                                f"sent={result.sent} retried={result.retried} "
+                                f"failed={result.failed}"
+                            )
                     # An interruptible sleep: a signal sets `stop` and wakes us.
                     if options["once"] or stop.wait(INTERVAL_SECONDS):
                         break

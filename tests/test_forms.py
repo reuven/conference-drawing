@@ -47,6 +47,17 @@ def test_form_requires_name_email_and_ack(conference: Conference) -> None:
     assert set(form.errors) == {"name", "email", "followup_ack"}
 
 
+@pytest.mark.parametrize(
+    "email", ["a@localhost", "a@[127.0.0.1]", "a@foo.test", "a@x.local", "a@x.invalid"]
+)
+def test_form_rejects_addresses_drip_would_refuse(
+    conference: Conference, email: str
+) -> None:
+    form = EntryForm(conference, _data(email=email))
+    assert not form.is_valid()
+    assert form.errors["email"] == ["Please enter a valid email address."]
+
+
 def test_bd_optin_unchecked_by_default(conference: Conference) -> None:
     html = str(EntryForm(conference)["bd_optin"])
     assert "checkbox" in html

@@ -8,7 +8,12 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
 from .models import Conference, Entrant, InstallSettings, Question
-from .text import has_forbidden_chars, normalize_email, validate_single_line_label
+from .text import (
+    has_forbidden_chars,
+    normalize_email,
+    validate_deliverable_email,
+    validate_single_line_label,
+)
 
 FREE_TEXT_MAX_LEN = 1000
 
@@ -39,7 +44,10 @@ class EntryForm(forms.Form):
     """
 
     name = forms.CharField(max_length=200)
-    email = forms.EmailField(max_length=254)
+    email = forms.EmailField(
+        max_length=254,
+        error_messages={"invalid": "Please enter a valid email address."},
+    )
     followup_ack = forms.BooleanField(required=True)
     bd_optin = forms.BooleanField(required=False, initial=False)
     # Honeypot: hidden from people by CSS, irresistible to form-filling bots.
@@ -88,7 +96,7 @@ class EntryForm(forms.Form):
         return validate_single_line_label(self.cleaned_data["name"])
 
     def clean_email(self) -> str:
-        return normalize_email(self.cleaned_data["email"])
+        return normalize_email(validate_deliverable_email(self.cleaned_data["email"]))
 
     def clean(self) -> dict[str, Any]:
         cleaned = super().clean() or {}

@@ -120,7 +120,7 @@ def test_invalid_post_redisplays_form_with_errors(
 ) -> None:
     response = _post(client, conference, email="not-an-email")
     assert response.status_code == 200
-    assert "Enter a valid email address." in response.content.decode()
+    assert "Please enter a valid email address." in response.content.decode()
     assert Entrant.objects.count() == 0
 
 
