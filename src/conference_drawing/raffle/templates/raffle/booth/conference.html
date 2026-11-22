@@ -25,4 +25,9 @@
   <li class="note">No drawings scheduled.</li>
   {% endfor %}
 </ul>
+{% if conference.wrapped_up_at %}
+<p class="note">Wrapped up. Entries are closed.</p>
+{% else %}
+<p><a class="tap" href="{% url 'booth-wrapup' conference.slug %}">Wrap up</a></p>
+{% endif %}
 {% endblock %}

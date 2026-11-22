@@ -23,6 +23,7 @@ urlpatterns = [
     path("booth/pick/<int:pk>/undo/", booth.undo, name="booth-undo"),
     path("booth/<slug:slug>/export.csv", export.export_csv, name="booth-export"),
     path("booth/<slug:slug>/flyer/", flyer.flyer, name="booth-flyer"),
+    path("booth/<slug:slug>/wrap-up/", booth.wrapup_page, name="booth-wrapup"),
     path(
         "booth/<slug:slug>/retry-failed/",
         booth.retry_failed,

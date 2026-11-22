@@ -1,0 +1,27 @@
+{% extends "raffle/booth/base.html" %}
+{% block title %}Wrap up {{ conference.name }}{% endblock %}
+{% block content %}
+<p><a href="{% url 'booth-conference' conference.slug %}">{{ conference.name }}</a></p>
+<h1>Wrap up</h1>
+{% for message in messages %}<p class="note" role="status">{{ message }}</p>{% endfor %}
+{% if conference.wrapped_up_at %}
+<p class="note">This conference is already wrapped up.</p>
+{% else %}
+<dl>
+  <dt>Entrants</dt><dd>{{ counts.entrants }}</dd>
+  <dt>Winners</dt><dd>{{ counts.winners }}</dd>
+  <dt>Nonwinners</dt><dd>{{ counts.nonwinners }}</dd>
+  <dt>Better Developers opt-ins</dt><dd>{{ counts.optins }}</dd>
+</dl>
+<p>Wrapping up closes entries and stops new drawings. It can't be undone.</p>
+{% if drip_on %}
+<p>Every entrant will be handed to Drip with tags, plus an "Entered raffle" event.</p>
+{% else %}
+<p class="note">Drip is not configured. Nothing will be sent to Drip.</p>
+{% endif %}
+<form method="post" action="{% url 'booth-wrapup' conference.slug %}">
+  {% csrf_token %}
+  <button class="tap" type="submit">Wrap up</button>
+</form>
+{% endif %}
+{% endblock %}

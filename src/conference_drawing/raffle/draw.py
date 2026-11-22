@@ -16,11 +16,10 @@ from collections.abc import Callable
 from django.db import transaction
 from django.db.models import Sum
 
-from .eligibility import eligible_entrant_ids
-from .models import AuditEvent, CouponCode, Drawing, Pick, PrizeLine
+from .eligibility import WINNING_STATUSES, eligible_entrant_ids
+from .models import AuditEvent, Conference, CouponCode, Drawing, Pick, PrizeLine
 
 _SYSTEM_RNG = secrets.SystemRandom()
-_WON = (Pick.Status.CLAIMED, Pick.Status.DIGITAL)
 
 
 class DrawingError(Exception):
@@ -125,7 +124,7 @@ def _set_finished(drawing: Drawing, now: datetime.datetime) -> None:
     drawing.status = Drawing.Status.FINISHED
     drawing.closed_at = now
     drawing.awarded_count = Pick.objects.filter(
-        prize_line__drawing=drawing, status__in=_WON
+        prize_line__drawing=drawing, status__in=WINNING_STATUSES
     ).count()
     drawing.save(update_fields=["status", "closed_at", "awarded_count"])
 
@@ -146,6 +145,10 @@ def start_drawing(
     the pick.
     """
     drawing = _lock(drawing.pk)
+    if Conference.objects.filter(
+        pk=drawing.conference_id, wrapped_up_at__isnull=False
+    ).exists():
+        raise DrawingError("This conference has been wrapped up.")
     if drawing.status != Drawing.Status.SCHEDULED:
         raise DrawingError("This drawing has already started.")
     if _another_open(drawing):

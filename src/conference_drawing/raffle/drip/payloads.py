@@ -49,9 +49,28 @@ class SubscriberPayload(BaseModel):
         return self.model_dump(mode="json", exclude_none=True)
 
     @classmethod
-    def from_entrant(cls, entrant: Entrant, *, tags: list[str]) -> Self:
-        """Build a payload from an entrant, using the first word of their name."""
-        return cls(email=entrant.email, first_name=entrant.name.split()[0], tags=tags)
+    def from_entrant(
+        cls,
+        entrant: Entrant,
+        *,
+        tags: list[str],
+        consent_message: str | None = None,
+    ) -> Self:
+        """Build a payload from an entrant, using the first word of their name.
+
+        A blank or whitespace-only name (the form requires one, but admin edits
+        and old rows may not) gives an empty `first_name` rather than an error.
+        Pass `consent_message` only for an entrant who opted in: it records the
+        EU consent grant with that wording. Without it no consent fields are set.
+        """
+        words = entrant.name.split()
+        return cls(
+            email=entrant.email,
+            first_name=words[0] if words else "",
+            tags=tags,
+            eu_consent="granted" if consent_message is not None else None,
+            eu_consent_message=consent_message,
+        )
 
 
 def won_prize_event(pick: Pick) -> EventPayload:

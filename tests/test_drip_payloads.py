@@ -177,3 +177,24 @@ def test_subscriber_from_entrant_uses_first_name_and_tags(
     assert sub.first_name == "Ada"
     assert sub.email == "ada@example.com"
     assert sub.tags == ["pycon-raffle"]
+
+
+def test_subscriber_from_entrant_blank_name_gives_empty_first_name(
+    conference_factory: Callable[..., Conference],
+    entrant_factory: Callable[..., Entrant],
+) -> None:
+    entrant = entrant_factory(conference_factory(), name="Ada")
+    entrant.name = "   "
+    sub = SubscriberPayload.from_entrant(entrant, tags=["t"])
+    assert sub.first_name == ""
+    assert "eu_consent" not in sub.to_json()
+
+
+def test_subscriber_from_entrant_with_consent_message(
+    conference_factory: Callable[..., Conference],
+    entrant_factory: Callable[..., Entrant],
+) -> None:
+    entrant = entrant_factory(conference_factory(), name="Ada")
+    sub = SubscriberPayload.from_entrant(entrant, tags=["t"], consent_message="OK")
+    assert sub.to_json()["eu_consent"] == "granted"
+    assert sub.to_json()["eu_consent_message"] == "OK"

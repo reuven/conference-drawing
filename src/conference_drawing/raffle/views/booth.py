@@ -20,7 +20,7 @@ from django.shortcuts import get_object_or_404, render
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from ..codes import render_prize_url
 from ..draw import (
@@ -35,6 +35,7 @@ from ..drip.config import drip_settings
 from ..drip.outbox import enqueue_won_prize, failed_count, pending_count, requeue_failed
 from ..models import Conference, CouponCode, Drawing, OutboxJob, Pick, PrizeLine
 from ..timezones import to_local
+from ..wrapup import counts, wrap_up
 
 _ACTIVE = (Pick.Status.PENDING, Pick.Status.CLAIMED, Pick.Status.DIGITAL)
 
@@ -247,6 +248,40 @@ def retry_failed(request: HttpRequest, slug: str) -> HttpResponse:
     )
     messages.success(request, f"Requeued {count} failed Drip job(s).")
     return HttpResponseRedirect(reverse("booth-conference", args=[conf.slug]))
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def wrapup_page(request: HttpRequest, slug: str) -> HttpResponse:
+    """Confirm the wrap-up (GET, read-only) and run it (POST).
+
+    GET only counts; nothing is queued until the owner posts. A refusal comes
+    back as a message on the same page, never a 500.
+    """
+    conf = get_object_or_404(Conference, slug=slug)
+    drip_on = drip_settings() is not None
+    if request.method == "POST":
+        try:
+            result = wrap_up(conf, now=timezone.now())
+        except DrawingError as exc:
+            messages.error(request, str(exc))
+            return HttpResponseRedirect(reverse("booth-wrapup", args=[conf.slug]))
+        sent = (
+            f"{result.jobs} Drip job(s) queued."
+            if drip_on
+            else "Nothing was sent to Drip: it is not configured."
+        )
+        messages.success(
+            request,
+            f"Wrapped up: {result.entrants} entrants, {result.winners} winners. {sent}",
+        )
+        return HttpResponseRedirect(reverse("booth-conference", args=[conf.slug]))
+    summary = counts(conf)
+    return render(
+        request,
+        "raffle/booth/wrapup.html",
+        {"conference": conf, "counts": summary, "drip_on": drip_on},
+    )
 
 
 @login_required

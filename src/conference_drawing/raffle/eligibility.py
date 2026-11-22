@@ -1,6 +1,22 @@
 """Who may be drawn: the fairness rules every pick relies on."""
 
-from .models import Drawing, Entrant, Pick
+from django.db.models import QuerySet
+
+from .models import Conference, Drawing, Entrant, Pick
+
+WINNING_STATUSES = (Pick.Status.CLAIMED, Pick.Status.DIGITAL)
+
+
+def winning_picks(conference: Conference) -> QuerySet[Pick]:
+    """Return the picks that make someone a winner in `conference`.
+
+    The one definition of "winner" (a claimed or digital pick; pending, not-here
+    and void picks don't count), shared by the pool, the CSV export and the
+    wrap-up tags so the three cannot disagree.
+    """
+    return Pick.objects.filter(
+        prize_line__drawing__conference=conference, status__in=WINNING_STATUSES
+    )
 
 
 def eligible_entrant_ids(drawing: Drawing) -> list[int]:
@@ -17,10 +33,7 @@ def eligible_entrant_ids(drawing: Drawing) -> list[int]:
     if drawing.cutoff_at is None:
         raise ValueError("Drawing has no cutoff_at; open it before computing a pool.")
     conference = drawing.conference
-    won = Pick.objects.filter(
-        prize_line__drawing__conference=conference,
-        status__in=[Pick.Status.CLAIMED, Pick.Status.DIGITAL],
-    ).values("entrant_id")
+    won = winning_picks(conference).values("entrant_id")
     picked_here = Pick.objects.filter(
         prize_line__drawing=drawing,
         status__in=[

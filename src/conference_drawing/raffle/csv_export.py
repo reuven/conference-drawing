@@ -22,11 +22,11 @@ from django.db.models import Prefetch
 from pydantic import BaseModel, Field
 
 from .codes import render_prize_url
+from .eligibility import WINNING_STATUSES
 from .models import Conference, Entrant, Pick, PrizeLine, Question
 from .timezones import to_local
 
 _FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
-_WINNING = (Pick.Status.CLAIMED, Pick.Status.DIGITAL)
 _JOIN = "; "
 
 
@@ -81,7 +81,7 @@ def _prize_cells(pick: Pick) -> tuple[str, str, str]:
 def export_rows(conference: Conference) -> list[CsvRow]:
     """Build one row per entrant, in entry order, with a fixed number of queries."""
     tz = conference.time_zone
-    winning = Pick.objects.filter(status__in=_WINNING).select_related(
+    winning = Pick.objects.filter(status__in=WINNING_STATUSES).select_related(
         "prize_line__book", "couponcode"
     )
     entrants = (
