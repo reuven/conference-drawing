@@ -4,7 +4,7 @@ from django.contrib import admin
 from django.urls import path
 
 from conference_drawing import ops
-from conference_drawing.raffle.views import booth, display, flyer, public
+from conference_drawing.raffle.views import booth, display, export, flyer, public
 
 urlpatterns = [
     path("health", ops.health, name="health"),
@@ -21,6 +21,7 @@ urlpatterns = [
     path("booth/pick/<int:pk>/claim/", booth.claim, name="booth-claim"),
     path("booth/pick/<int:pk>/not-here/", booth.not_here, name="booth-not-here"),
     path("booth/pick/<int:pk>/undo/", booth.undo, name="booth-undo"),
+    path("booth/<slug:slug>/export.csv", export.export_csv, name="booth-export"),
     path("booth/<slug:slug>/flyer/", flyer.flyer, name="booth-flyer"),
     path("booth/<slug:slug>/", booth.conference_page, name="booth-conference"),
     path("admin/", admin.site.urls),
