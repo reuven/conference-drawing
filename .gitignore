@@ -37,3 +37,8 @@ htmlcov/
 .pytest_cache/
 .hypothesis/
 mutants/
+
+# Agent workspaces
+.claude/worktrees/
+.superpowers/
+backups/
