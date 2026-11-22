@@ -3,7 +3,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from hypothesis import settings
+from hypothesis import HealthCheck, settings
 
 from tests import conftest
 
@@ -46,3 +46,11 @@ def test_mutants_directory_selects_mutmut_profile(
     monkeypatch.delenv("CI", raising=False)
     importlib.reload(conftest)
     assert settings.get_current_profile_name() == "mutmut"
+
+
+def test_mutmut_profile_suppresses_differing_executors() -> None:
+    # mutmut runs pytest twice in one process; see the profile's comment.
+    profile = settings.get_profile("mutmut")
+    assert HealthCheck.differing_executors in profile.suppress_health_check
+    ci = settings.get_profile("ci")
+    assert HealthCheck.differing_executors not in ci.suppress_health_check
