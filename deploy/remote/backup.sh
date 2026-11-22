@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 # Server half of deploy/backup.sh. Runs as root from
-# /tmp/conference-drawing-<commit>/remote/. Prints the tarball's path as its
+# /tmp/conference-drawing-<commit>-backup-<random>/remote/. Prints the tarball's path as its
 # last line; the laptop downloads it and then deletes the directory.
+#
+# Root reads the app user's directory here, so it refuses a database or media
+# directory that is a symbolic link (tar stores links inside media/ as links).
 set -euo pipefail
 # shellcheck source=deploy/remote/common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 require_root
+no_symlink "$DATA_DIR"
+no_symlink "$DATA_DIR/db.sqlite3"
+no_symlink "$DATA_DIR/media"
 [ -f "$DATA_DIR/db.sqlite3" ] || die "no database at $DATA_DIR/db.sqlite3"
 umask 077
 out=$(mktemp -d /tmp/conference-drawing-backup.XXXXXXXX)
@@ -21,10 +27,5 @@ if [ -d "$DATA_DIR/media" ]; then
 else
 	tar -czf "$out/backup.tar.gz" -C "$out" db.sqlite3
 fi
-# A fingerprint of what was backed up. (PRAGMA data_version only counts
-# commits seen by one open connection, so it cannot compare two runs.)
-printf 'backed_up_at=%s\nsha256=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-	"$(sha256sum "$out/db.sqlite3" | cut -d' ' -f1)" >"$DATA_DIR/last_backup"
-chown "$APP_USER:" "$DATA_DIR/last_backup"
 rm -f "$out/db.sqlite3"
 printf '%s\n' "$out/backup.tar.gz"

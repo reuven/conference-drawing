@@ -7,6 +7,8 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DEPLOY="$REPO/deploy"
 SSH_USER=${CD_SSH_USER:-root}
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15)
+# Must match remote/common.sh; deploy/uv-$UV_VERSION.sha256 holds its hashes.
+UV_VERSION=0.13.9
 
 say() { printf '==> %s\n' "$*" >&2; }
 die() {
@@ -43,14 +45,30 @@ remote_stdin() { ssh "${SSH_OPTS[@]}" "$TARGET" "$1" <"$2"; }
 local_commit() {
 	COMMIT=$(git -C "$REPO" rev-parse HEAD)
 	[[ $COMMIT =~ ^[0-9a-f]{40}$ ]] || die "unexpected commit id from git"
-	RDIR="/tmp/conference-drawing-$COMMIT"
 }
 
-# Copy files to a fresh /tmp/conference-drawing-<commit>/ on the server. Remote
-# scripts always run from there, never from a directory an install is changing.
+# Copy files to a new /tmp/conference-drawing-<commit>-<name>-<random>/ on the
+# server, one per run, so two runs (or down.sh and the backup.sh it calls)
+# never share or delete each other's files. mkdir fails if the name exists,
+# so nothing planted in /tmp is reused. Remote scripts always run from there,
+# never from a directory an install is changing.
 stage() {
-	remote "rm -rf $RDIR && mkdir -m 700 $RDIR"
+	local name=$1 suffix
+	shift
+	suffix=$(od -An -N4 -tx4 /dev/urandom | tr -d ' \n')
+	[[ $suffix =~ ^[0-9a-f]{8}$ ]] || die "could not make a staging name"
+	RDIR="/tmp/conference-drawing-$COMMIT-$name-$suffix"
+	remote "mkdir -m 700 $RDIR"
 	scp -q -r "${SSH_OPTS[@]}" "$@" "$TARGET:$RDIR/"
+}
+
+# Print the sha256 of file $1 (coreutils on Linux, shasum on macOS).
+sha256_of() {
+	if command -v sha256sum >/dev/null; then
+		sha256sum "$1" | cut -d' ' -f1
+	else
+		shasum -a 256 "$1" | cut -d' ' -f1
+	fi
 }
 
 unstage() { remote "rm -rf $RDIR"; }

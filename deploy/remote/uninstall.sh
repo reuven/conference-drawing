@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Remove conference-drawing from the server (down.sh runs it after a backup).
-# Runs as root from /tmp/conference-drawing-<commit>/remote/, never from
+# Runs as root from /tmp/conference-drawing-<commit>-down-<random>/remote/, never from
 # /srv/conference-drawing, which it deletes.
 #
 # /srv/conference-drawing goes only after every unit is confirmed stopped.
@@ -9,6 +9,10 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 require_root
+# Wait for a running backup or snapshot, and keep new ones out.
+if [ -e "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
+	take_lock 600
+fi
 units=("$SNAPSHOT_TIMER" "$SNAPSHOT_SERVICE" "$WEB_UNIT" "$DRIP_UNIT")
 for unit in "${units[@]}"; do
 	if [ -e "$UNIT_DIR/$unit" ]; then

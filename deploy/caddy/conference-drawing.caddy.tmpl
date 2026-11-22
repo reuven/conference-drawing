@@ -11,13 +11,13 @@ __DOMAIN__ {
 
 	# Access log without secrets: display tokens become REDACTED (any case,
 	# repeated slashes, %-escaped letters or slashes), and every query string
-	# is dropped (entry pages under /c/, admin searches). The Referer header
-	# repeats the page URL, so it gets the same treatment.
+	# is dropped (entry pages under /c/, admin searches). No header is logged
+	# at all: Referer, htmx's HX-Current-URL and a redirect's Location all
+	# repeat a page URL, and a new header must not leak one unreviewed.
 	#
-	# Caddy's error log (upstream down, e.g. during an upgrade) still records
-	# the raw URI, and only global options can filter it; the logger is named
-	# so an operator can do that in the shared Caddyfile, e.g.
-	#   log default { exclude http.log.error.conference-drawing }
+	# Caddy's error log ignores these filters, so a failed upstream (the app
+	# restarting during an upgrade) is answered by handle_errors below; Caddy
+	# then logs the error at DEBUG only, and the raw URI never reaches a log.
 	log conference-drawing {
 		output file /var/log/caddy/conference-drawing.access.log {
 			roll_keep 5
@@ -28,11 +28,13 @@ __DOMAIN__ {
 				regexp "(?i)((?:/|%2f)+(?:d|%64)(?:i|%69)(?:s|%73)(?:p|%70)(?:l|%6c)(?:a|%61)(?:y|%79)(?:/|%2f)+)[^/?#]+" "${1}REDACTED"
 				regexp "\?.*" ""
 			}
-			request>headers>Referer multi_regexp {
-				regexp "(?i)((?:/|%2f)+(?:d|%64)(?:i|%69)(?:s|%73)(?:p|%70)(?:l|%6c)(?:a|%61)(?:y|%79)(?:/|%2f)+)[^/?#]+" "${1}REDACTED"
-				regexp "\?.*" ""
-			}
+			request>headers delete
+			resp_headers delete
 		}
+	}
+
+	handle_errors 5xx {
+		respond "Temporarily unavailable" 503
 	}
 
 	handle /static/* {

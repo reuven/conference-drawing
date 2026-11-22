@@ -4,9 +4,10 @@ Every laptop script runs with ``tests/deploy/fakes`` first on a PATH that holds
 no real network tool, against the host ``example.invalid``. The server-side
 scripts run only in pieces that are safe on a laptop: the Caddy-site step and
 the snapshot job, in a temp root (``CD_ROOT``) with fake ``caddy``,
-``systemctl`` and ``flock``.
+``systemctl`` and ``flock``. test_install.py runs install.sh and uninstall.sh.
 """
 
+import hashlib
 import re
 import shutil
 import sqlite3
@@ -22,8 +23,9 @@ from tests.deploy.conftest import (
     DOMAIN,
     HOST,
     HOST_IP,
-    RDIR,
     REMOTE_BACKUP,
+    STAGE,
+    STAGE_RE,
     Entry,
     Fakes,
     make_backup_tarball,
@@ -43,6 +45,8 @@ OWNER_INPUT = (
 )
 DRIP_KEY = "drip-SECRET-key-5678"
 DRIP_ACCOUNT = "acct-SECRET-9012"
+UV_TARBALL = "uv-x86_64-unknown-linux-gnu.tar.gz"
+UV_URL = f"https://github.com/astral-sh/uv/releases/download/0.13.9/{UV_TARBALL}"
 
 
 def _git() -> list[Entry]:
@@ -56,9 +60,9 @@ def _git() -> list[Entry]:
 
 def _staging_ssh() -> list[Entry]:
     return [
-        {"match": f"rm -rf {RDIR} && mkdir -m 700 {RDIR}"},
+        {"match": f"mkdir -m 700 {STAGE}"},
         {"match": "rm -rf /tmp/conference-drawing-backup.Ab12Cd34"},
-        {"match": f"rm -rf {RDIR}"},
+        {"match": f"rm -rf {STAGE}"},
     ]
 
 
@@ -66,13 +70,20 @@ def _scp(tarball: Path | None = None) -> list[Entry]:
     entries: list[Entry] = []
     if tarball is not None:
         entries.append({"match": "conference-drawing-backup", "file": str(tarball)})
-    entries.append({"match": f"{HOST}:{RDIR}/"})
+    entries.append({"match": f"{HOST}:{STAGE}"})
     return entries
 
 
 @pytest.fixture
 def up(fakes: Fakes) -> Fakes:
     """Canned responses for a clean first install of DOMAIN on HOST."""
+    uv_tarball = fakes.root / "canned" / UV_TARBALL
+    uv_tarball.parent.mkdir()
+    uv_tarball.write_bytes(b"pretend uv release")
+    digest = hashlib.sha256(uv_tarball.read_bytes()).hexdigest()
+    hashes = fakes.root / "uv.sha256"
+    hashes.write_text(f"{digest}  {UV_TARBALL}\n{'1' * 64}  uv-aarch64-x.tar.gz\n")
+    fakes.extra_env["CD_UV_SHA256_FILE"] = str(hashes)
     fakes.set("git", _git())
     fakes.set(
         "uv",
@@ -93,13 +104,22 @@ def up(fakes: Fakes) -> Fakes:
             {"match": "systemctl --failed", "stdout": ""},
             {"match": "caddy validate --config /etc/caddy/Caddyfile"},
             {"match": "/etc/caddy/sites/", "stdout": "", "exit": 0},
+            {"match": "getent group caddy", "stdout": "caddy:x:996:\n"},
             {"match": "hostname -I", "stdout": f"{HOST_IP} 10.10.0.5 2001:db8::5\n"},
+            {"match": "uname -m", "stdout": "x86_64\n"},
+            {"match": "/usr/local/bin/uv --version", "stdout": "uv 0.13.9 (a 2026)\n"},
             {"match": "test -e /srv/conference-drawing/data/.env", "stdout": "fresh\n"},
-            {"match": f"bash {RDIR}/remote/install.sh {DOMAIN}"},
+            {"match": f"/remote/install.sh {DOMAIN}"},
             *_staging_ssh(),
         ],
     )
-    fakes.set("dig", [{"match": f"+short {DOMAIN} A", "stdout": f"{HOST_IP}\n"}])
+    fakes.set(
+        "dig",
+        [
+            {"match": f"+short {DOMAIN} A", "exact": True, "stdout": f"{HOST_IP}\n"},
+            {"match": f"+short -t AAAA {DOMAIN}", "exact": True, "stdout": ""},
+        ],
+    )
     fakes.set("scp", _scp())
     fakes.set(
         "curl",
@@ -111,6 +131,7 @@ def up(fakes: Fakes) -> Fakes:
                 '"built_at": "", "branch": "main", "commit_short": "0123456"}',
             },
             {"match": f"https://{DOMAIN}/privacy/"},
+            {"match": UV_URL, "copy_to_flag": "-o", "file": str(uv_tarball)},
         ],
     )
     laptop_env = fakes.root / "laptop.env"
@@ -132,10 +153,10 @@ def down(fakes: Fakes) -> Fakes:
         "ssh",
         [
             *_staging_ssh()[:1],
-            {"match": f"bash {RDIR}/remote/outbox_status.sh", "stdout": "pending=0"},
-            {"match": f"bash {RDIR}/remote/stop.sh"},
-            {"match": f"bash {RDIR}/remote/backup.sh", "stdout": REMOTE_BACKUP + "\n"},
-            {"match": f"bash {RDIR}/remote/uninstall.sh"},
+            {"match": "/remote/outbox_status.sh", "stdout": "pending=0"},
+            {"match": "/remote/stop.sh"},
+            {"match": "/remote/backup.sh", "stdout": REMOTE_BACKUP + "\n"},
+            {"match": "/remote/uninstall.sh"},
             *_staging_ssh()[1:],
         ],
     )
@@ -144,10 +165,14 @@ def down(fakes: Fakes) -> Fakes:
     return fakes
 
 
-def _fail(
-    fakes: Fakes, tool: str, match: str, *, stdout: str = "", exact: bool = False
-) -> None:
-    fakes.prepend(tool, {"match": match, "exit": 1, "stdout": stdout, "exact": exact})
+def _fail(fakes: Fakes, tool: str, match: str, *, stdout: str = "") -> None:
+    fakes.prepend(tool, {"match": match, "exit": 1, "stdout": stdout})
+
+
+def _stage_of(key: str) -> str:
+    found = re.search(STAGE_RE, key)
+    assert found, key
+    return found[0]
 
 
 def _ssh_keys(fakes: Fakes) -> list[str]:
@@ -177,7 +202,9 @@ def test_up_happy_path_installs_then_smoke_tests(up: Fakes) -> None:
     ]
     positions = [next(i for i, k in enumerate(keys) if m in k) for m in order]
     assert positions == sorted(positions)
-    assert keys[-1] == f"rm -rf {RDIR}"
+    stage = _stage_of(keys[0 if "mkdir" in keys[0] else -1])
+    assert "-up-" in stage
+    assert keys[-1] == f"rm -rf {stage}"
     log = up.calls()
     scp_at = next(i for i, c in enumerate(log) if c.tool == "scp")
     install_at = next(i for i, c in enumerate(log) if "install.sh" in c.key)
@@ -209,9 +236,69 @@ def test_up_stages_everything_install_needs_in_one_copy(up: Fakes) -> None:
     assert (uploads / "remote" / "install.sh").exists()
     assert (uploads / "requirements.txt").read_text() == "django==6.1.3\n"
     (export,) = [c for c in up.calls("uv") if c.argv[0] == "export"]
-    assert {"--frozen", "--no-dev", "--no-hashes", "--no-emit-project"} <= set(
-        export.argv
+    assert {"--frozen", "--no-dev", "--no-emit-project"} <= set(export.argv)
+    assert "--no-hashes" not in export.argv  # the server installs --require-hashes
+    wheel = uploads / "conference_drawing-0.1.0-py3-none-any.whl"
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    assert (uploads / "wheel.sha256").read_text() == f"{digest}  {wheel.name}\n"
+    # The server already has the pinned uv, so none is downloaded or shipped.
+    assert not any(UV_URL in c.key for c in up.calls("curl"))
+    assert "uv.sha256" not in names
+
+
+def test_up_stages_each_run_in_its_own_directory(up: Fakes) -> None:
+    assert up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT).returncode == 0
+    assert up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT).returncode == 0
+    made = [_stage_of(k) for k in _ssh_keys(up) if k.startswith("mkdir")]
+    assert len(made) == 2 and made[0] != made[1]
+    assert all(
+        k == f"mkdir -m 700 {_stage_of(k)}" for k in _ssh_keys(up) if "mkdir" in k
     )
+
+
+def test_up_ships_the_pinned_uv_when_the_server_has_another(up: Fakes) -> None:
+    uploads = _uploads(up)
+    up.prepend("ssh", {"match": "/usr/local/bin/uv --version", "stdout": "uv 0.12.0\n"})
+    result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
+    assert result.returncode == 0, result.stderr
+    (download,) = [c for c in up.calls("curl") if UV_URL in c.key]
+    assert "--proto" in download.argv
+    assert (uploads / UV_TARBALL).read_bytes() == b"pretend uv release"
+    digest = hashlib.sha256(b"pretend uv release").hexdigest()
+    assert (uploads / "uv.sha256").read_text() == f"{digest}  {UV_TARBALL}\n"
+
+
+def test_up_refuses_a_uv_download_with_the_wrong_hash(up: Fakes) -> None:
+    up.prepend("ssh", {"match": "/usr/local/bin/uv --version", "stdout": ""})
+    (up.root / "canned" / UV_TARBALL).write_bytes(b"tampered")
+    result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
+    assert result.returncode != 0
+    assert "sha256" in result.stderr
+    _never_installed(up)
+
+
+def test_up_refuses_while_the_uv_hash_file_is_a_placeholder(up: Fakes) -> None:
+    del up.extra_env["CD_UV_SHA256_FILE"]  # the committed file
+    assert "PLACEHOLDER" in (DEPLOY / "uv-0.13.9.sha256").read_text()
+    result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
+    assert result.returncode != 0
+    assert "uv-0.13.9.sha256" in result.stderr
+    assert "releases" in result.stderr
+    assert up.calls() == []
+
+
+def test_up_refuses_an_unknown_server_architecture(up: Fakes) -> None:
+    up.prepend("ssh", {"match": "uname -m", "stdout": "riscv64\n"})
+    result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
+    assert result.returncode != 0
+    _never_installed(up)
+
+
+def test_uv_version_agrees_everywhere() -> None:
+    lib = (DEPLOY / "lib.sh").read_text()
+    common = (DEPLOY / "remote" / "common.sh").read_text()
+    assert "UV_VERSION=0.13.9\n" in lib
+    assert "UV_VERSION=0.13.9\n" in common
 
 
 def test_up_writes_version_json_for_the_version_endpoint(up: Fakes) -> None:
@@ -247,6 +334,14 @@ def test_up_refuses_when_caddy_invalid(up: Fakes) -> None:
     _never_installed(up)
 
 
+def test_up_refuses_when_there_is_no_caddy_group(up: Fakes) -> None:
+    _fail(up, "ssh", "getent group caddy")
+    result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
+    assert result.returncode != 0
+    assert "caddy" in result.stderr
+    _never_installed(up)
+
+
 def test_up_refuses_when_caddyfile_does_not_import_sites(up: Fakes) -> None:
     _fail(up, "ssh", "/etc/caddy/sites/")
     result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
@@ -261,11 +356,36 @@ def test_up_refuses_when_caddyfile_does_not_import_sites(up: Fakes) -> None:
     ids=["other-ip", "no-record", "one-of-two-elsewhere"],
 )
 def test_up_refuses_when_dns_mismatch(up: Fakes, dig_output: str) -> None:
-    up.prepend("dig", {"match": f"+short {DOMAIN} A", "stdout": dig_output})
+    up.prepend(
+        "dig", {"match": f"+short {DOMAIN} A", "exact": True, "stdout": dig_output}
+    )
     result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
     assert result.returncode != 0
     assert "DNS" in result.stderr
     _never_installed(up)
+
+
+def test_up_refuses_an_aaaa_record_elsewhere(up: Fakes) -> None:
+    up.prepend(
+        "dig",
+        {
+            "match": f"+short -t AAAA {DOMAIN}",
+            "exact": True,
+            "stdout": "2001:db8::99\n",
+        },
+    )
+    result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
+    assert result.returncode != 0
+    assert "2001:db8::99" in result.stderr
+    _never_installed(up)
+
+
+def test_up_accepts_an_aaaa_record_for_the_host(up: Fakes) -> None:
+    up.prepend(
+        "dig",
+        {"match": f"+short -t AAAA {DOMAIN}", "exact": True, "stdout": "2001:db8::5\n"},
+    )
+    assert up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT).returncode == 0
 
 
 def test_up_accepts_dns_through_a_cname(up: Fakes) -> None:
@@ -273,6 +393,7 @@ def test_up_accepts_dns_through_a_cname(up: Fakes) -> None:
         "dig",
         {
             "match": f"+short {DOMAIN} A",
+            "exact": True,
             "stdout": f"edge.example.invalid.\n{HOST_IP}\n",
         },
     )
@@ -312,8 +433,9 @@ def test_up_restore_copies_the_backup_and_skips_the_password(up: Fakes) -> None:
     assert result.returncode == 0, result.stderr
     assert (uploads / "restore.tar.gz").read_bytes() == backup.read_bytes()
     (install,) = [c for c in up.calls("ssh") if "install.sh" in c.key]
+    stage = _stage_of(install.key)
     assert install.key == (
-        f"bash {RDIR}/remote/install.sh {DOMAIN} --restore {RDIR}/restore.tar.gz"
+        f"bash {stage}/remote/install.sh {DOMAIN} --restore {stage}/restore.tar.gz"
     )
     assert "DJANGO_SUPERUSER_PASSWORD" not in install.stdin
 
@@ -482,22 +604,67 @@ def test_caddy_template_shape() -> None:
     assert "handle /media/* {" in text
     assert "root * /srv/conference-drawing/data" in text
     assert "reverse_proxy unix//run/conference-drawing/web.sock" in text
+    # A handled 5xx is logged at DEBUG, so Caddy's error log (which ignores
+    # the access-log filters) never records a display URL.
+    assert 'handle_errors 5xx {\n\t\trespond "Temporarily unavailable" 503\n\t}' in text
     # client_ip trusts the rightmost X-Forwarded-For entry, which holds only
     # while Caddy is the sole proxy and ignores client-sent X-Forwarded-For.
     assert not re.search(r"^\s*trusted_proxies", text, re.M)
 
 
-def _log_filters(text: str) -> dict[str, list[tuple[str, str]]]:
-    """Parse `<field> multi_regexp { regexp "<pattern>" "<replacement>" ... }`."""
-    filters: dict[str, list[tuple[str, str]]] = {}
-    for block in re.finditer(r"(\S+) multi_regexp \{\n(.*?)\n\t*\}", text, re.S):
-        ops = re.findall(r'regexp "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)"', block[2])
-        filters[block[1]] = ops
+def _log_filters(text: str) -> dict[str, list[tuple[str, str]] | str]:
+    """Parse the `format filter { ... }` block: field -> regexp ops, or "delete".
+
+    Anything else in the block (another filter type, an unknown field) fails,
+    so a new logged field cannot slip in unreviewed.
+    """
+    (block,) = re.findall(r"\n(\t+)format filter \{\n(.*?)\n\1\}", text, re.S)
+    lines = block[1].splitlines()
+    filters: dict[str, list[tuple[str, str]] | str] = {}
+    i = 0
+    while i < len(lines):
+        field, kind = lines[i].split()[:2]
+        if kind == "delete":
+            filters[field] = "delete"
+            i += 1
+            continue
+        assert kind == "multi_regexp", lines[i]
+        ops = []
+        i += 1
+        while lines[i].strip() != "}":
+            op = re.fullmatch(
+                r'\s*regexp "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)"', lines[i]
+            )
+            assert op, lines[i]
+            ops.append((op[1], op[2]))
+            i += 1
+        filters[field] = ops
+        i += 1
     return filters
 
 
-def _apply(ops: list[tuple[str, str]], value: str) -> str:
+def test_caddy_access_log_drops_every_header() -> None:
+    # htmx sends HX-Current-URL (the display URL) on every poll, and Django's
+    # APPEND_SLASH redirect puts it in Location: no header is logged at all.
+    filters = _log_filters(TEMPLATE.read_text())
+    assert filters == {
+        "request>uri": filters["request>uri"],
+        "request>headers": "delete",
+        "resp_headers": "delete",
+    }
+
+
+def test_log_filter_parser_rejects_unknown_fields() -> None:
+    text = TEMPLATE.read_text().replace(
+        "\t\t\tresp_headers delete", "\t\t\tresp_headers delete\n\t\t\tuser_id hash"
+    )
+    with pytest.raises(AssertionError):
+        _log_filters(text)
+
+
+def _apply(ops: list[tuple[str, str]] | str, value: str) -> str:
     """Apply Caddy's regexp replacements (RE2 `${1}` -> Python `\\g<1>`)."""
+    assert isinstance(ops, list)
     for pattern, replacement in ops:
         value = re.sub(pattern, re.sub(r"\$\{(\d+)\}", r"\\g<\1>", replacement), value)
     return value
@@ -522,13 +689,7 @@ def test_caddy_access_log_redacts_tokens_and_query_strings(
     uri: str, logged: str
 ) -> None:
     filters = _log_filters(TEMPLATE.read_text())
-    assert set(filters) == {"request>uri", "request>headers>Referer"}
     assert _apply(filters["request>uri"], uri) == logged
-    referer = f"https://{DOMAIN}{uri}"
-    assert (
-        _apply(filters["request>headers>Referer"], referer)
-        == f"https://{DOMAIN}{logged}"
-    )
     assert "Tok3n" not in _apply(filters["request>uri"], uri)
 
 
@@ -587,6 +748,13 @@ def test_services_set_paths_user_and_hardening(name: str) -> None:
 def test_web_unit_serves_gunicorn_on_the_socket() -> None:
     unit = _unit("conference-drawing-web.service")
     assert unit["Service.RuntimeDirectory"] == ["conference-drawing"]
+    # Only gunicorn's user and the caddy group may reach the socket: the
+    # directory is 0750 and handed to group caddy (caddy's primary group, so
+    # no Caddy restart) before gunicorn starts.
+    assert unit["Service.RuntimeDirectoryMode"] == ["0750"]
+    assert unit["Service.ExecStartPre"] == [
+        "+/usr/bin/chgrp caddy /run/conference-drawing"
+    ]
     (start,) = unit["Service.ExecStart"]
     assert start.startswith("/srv/conference-drawing/venv/bin/gunicorn ")
     assert "--bind unix:/run/conference-drawing/web.sock" in start
@@ -639,6 +807,38 @@ def test_snapshot_keeps_newest_48(fakes: Fakes) -> None:
         assert db.execute("select title from books").fetchall() == [("Python Workout",)]
     assert [c.argv[:2] for c in fakes.calls("flock")] == [["--wait", "600"]]
     assert os_mode(newest) & 0o077 == 0
+
+
+def _snapshot_root(fakes: Fakes, db: bytes | None) -> Path:
+    data = fakes.root / "root" / "srv" / "conference-drawing" / "data"
+    data.mkdir(parents=True)
+    (data / ".maintenance.lock").touch()
+    if db is not None:
+        (data / "db.sqlite3").write_bytes(db)
+    fakes.extra_env["CD_ROOT"] = str(fakes.root / "root")
+    fakes.set("flock", [{"match": "--wait"}])
+    return data
+
+
+def test_snapshot_removes_its_partial_file_on_failure(fakes: Fakes) -> None:
+    data = _snapshot_root(fakes, db=b"this is not a database" * 100)
+    result = fakes.run([SNAPSHOT])
+    assert result.returncode != 0
+    assert list((data / "snapshots").iterdir()) == []
+
+
+def test_snapshot_skips_the_lock_its_caller_already_holds(fakes: Fakes) -> None:
+    _snapshot_root(fakes, db=None)
+    with (
+        closing(
+            sqlite3.connect(fakes.root / "root/srv/conference-drawing/data/db.sqlite3")
+        ) as db,
+        db,
+    ):
+        db.execute("create table t (x)")
+    fakes.extra_env["CD_LOCK_HELD"] = "1"
+    assert fakes.run([SNAPSHOT]).returncode == 0
+    assert fakes.calls("flock") == []
 
 
 # --- .env lines written by install.sh ---------------------------------------
@@ -710,11 +910,13 @@ def test_backup_pulls_a_checked_tarball(down: Fakes) -> None:
     assert local.stat().st_size > 0
     assert os_mode(local) == 0o600
     keys = _ssh_keys(down)
+    stage = _stage_of(keys[0])
+    assert "-backup-" in stage
     assert keys == [
-        f"rm -rf {RDIR} && mkdir -m 700 {RDIR}",
-        f"bash {RDIR}/remote/backup.sh",
+        f"mkdir -m 700 {stage}",
+        f"bash {stage}/remote/backup.sh",
         "rm -rf /tmp/conference-drawing-backup.Ab12Cd34",
-        f"rm -rf {RDIR}",
+        f"rm -rf {stage}",
     ]
 
 
@@ -770,6 +972,27 @@ def test_down_runs_backup_before_uninstall(down: Fakes) -> None:
     assert len(backups) == 1 and backups[0].stat().st_size > 0
 
 
+def test_down_uses_its_own_staging_dir_apart_from_backups(down: Fakes) -> None:
+    assert down.run([DOWN, HOST]).returncode == 0
+    made = [_stage_of(k) for k in _ssh_keys(down) if k.startswith("mkdir")]
+    assert len(made) == 2
+    assert "-down-" in made[0] and "-backup-" in made[1]
+    (uninstall,) = [k for k in _ssh_keys(down) if "uninstall.sh" in k]
+    assert uninstall == f"bash {made[0]}/remote/uninstall.sh"
+
+
+def test_down_says_the_app_is_stopped_when_the_backup_fails(down: Fakes) -> None:
+    _fail(down, "ssh", "/remote/backup.sh")
+    result = down.run([DOWN, HOST])
+    assert result.returncode != 0
+    assert "stopped" in result.stderr
+    assert (
+        "systemctl start conference-drawing-web.service "
+        "conference-drawing-drip.service conference-drawing-snapshot.timer"
+    ) in result.stderr
+    assert not any("uninstall.sh" in k for k in _ssh_keys(down))
+
+
 def test_down_refuses_an_empty_backup(down: Fakes) -> None:
     empty = down.root / "canned" / "empty.tar.gz"
     empty.write_bytes(b"")
@@ -790,28 +1013,32 @@ UP_STEPS: list[tuple[str, str]] = [
     ("ssh", "systemctl --failed"),
     ("ssh", "caddy validate"),
     ("ssh", "/etc/caddy/sites/"),
+    ("ssh", "getent group caddy"),
     ("ssh", "hostname -I"),
-    ("dig", "+short"),
+    ("dig", f"-t AAAA {DOMAIN}"),
+    ("dig", f"{DOMAIN} A"),
+    ("ssh", "uname -m"),
+    ("ssh", "uv --version"),
     ("ssh", "test -e /srv"),
     ("ssh", "mkdir -m 700"),
-    ("scp", f"{HOST}:{RDIR}/"),
+    ("scp", f"{HOST}:{STAGE}"),
     ("ssh", "remote/install.sh"),
     ("curl", "/health"),
     ("curl", "/version"),
     ("curl", "/privacy/"),
-    ("ssh", f"rm -rf {RDIR}"),
+    ("ssh", f"rm -rf {STAGE}"),
 ]
 DOWN_STEPS: list[tuple[str, str]] = [
     ("git", "rev-parse HEAD"),
     ("ssh", "mkdir -m 700"),
-    ("scp", f"{HOST}:{RDIR}/"),
+    ("scp", f"{HOST}:{STAGE}"),
     ("ssh", "remote/outbox_status.sh"),
     ("ssh", "remote/stop.sh"),
     ("ssh", "remote/backup.sh"),
     ("scp", "conference-drawing-backup"),
     ("ssh", "rm -rf /tmp/conference-drawing-backup."),
     ("ssh", "remote/uninstall.sh"),
-    ("ssh", f"rm -rf {RDIR}"),
+    ("ssh", f"rm -rf {STAGE}"),
 ]
 
 
@@ -844,8 +1071,7 @@ def _check_failure_stops_the_run(
     if backups.exists():  # one-second timestamps would collide
         shutil.rmtree(backups)
     tool, match = steps[failed]
-    # The cleanup command is also the start of the staging command.
-    _fail(fakes, tool, match, exact=match == f"rm -rf {RDIR}")
+    _fail(fakes, tool, match)
     result = fakes.run(args, stdin=stdin)
     assert result.returncode != 0
     assert _sequence(fakes, steps) == happy[: happy.index(failed) + 1]

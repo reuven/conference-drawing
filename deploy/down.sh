@@ -12,7 +12,8 @@
 #      reload), /srv/conference-drawing, and the system user.
 #
 # Because the app is stopped before the backup, nothing can be written
-# between the backup and the removal.
+# between the backup and the removal. If the backup fails, the app stays
+# stopped and the error says how to start it again.
 set -euo pipefail
 # shellcheck source=deploy/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -23,20 +24,23 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 }
 set_target "$1"
 local_commit
+start_again="ssh $TARGET systemctl start conference-drawing-web.service conference-drawing-drip.service conference-drawing-snapshot.timer"
 
-stage "$DEPLOY/remote"
+stage down "$DEPLOY/remote"
 say "checking the Drip outbox on $HOST"
 remote "bash $RDIR/remote/outbox_status.sh" >&2 ||
 	die "Drip jobs are still pending on $HOST; wait for the worker to send them, then run down.sh again"
 say "stopping conference-drawing on $HOST"
 remote "bash $RDIR/remote/stop.sh" >&2
 
-tarball=$("$DEPLOY/backup.sh" "$HOST" | tail -n 1)
-[ -s "$tarball" ] || die "backup.sh did not leave a backup here; nothing was removed"
+# backup.sh stages into its own directory, so this run's is still there.
+if ! tarball=$("$DEPLOY/backup.sh" "$HOST" | tail -n 1) || [ ! -s "$tarball" ]; then
+	die "the backup failed, so nothing was removed. conference-drawing is stopped
+on $HOST (web, Drip worker and snapshots). Fix the backup and run down.sh again, or start the app with:
+    $start_again"
+fi
 say "backup kept at $tarball"
 
-# backup.sh removed its staging directory, so stage again for uninstall.
-stage "$DEPLOY/remote"
 say "uninstalling from $HOST"
 remote "bash $RDIR/remote/uninstall.sh" >&2
 unstage

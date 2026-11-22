@@ -1,0 +1,10 @@
+# sha256 of the uv 0.13.9 release tarballs up.sh may ship to a server, one
+# "<sha256>  <file name>" line each, as sha256sum prints them.
+#
+# PLACEHOLDER: fill these in before the first deploy, and up.sh refuses until
+# then. Copy each line from the release's .sha256 asset, e.g.
+#   https://github.com/astral-sh/uv/releases/download/0.13.9/uv-x86_64-unknown-linux-gnu.tar.gz.sha256
+#   https://github.com/astral-sh/uv/releases/download/0.13.9/uv-aarch64-unknown-linux-gnu.tar.gz.sha256
+# then delete this paragraph.
+PLACEHOLDER  uv-x86_64-unknown-linux-gnu.tar.gz
+PLACEHOLDER  uv-aarch64-unknown-linux-gnu.tar.gz

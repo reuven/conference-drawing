@@ -9,6 +9,9 @@
 # (git-ignored, mode 0600: it holds personal data until entrants are
 # deleted). The local path is the last line on stdout, for down.sh.
 #
+# The tarball is NOT encrypted: keep backups/ on an encrypted disk, and delete
+# old ones once entrants are deleted. (Encrypting with age is deferred.)
+#
 # Run it during a conference as often as you like, and after it. Test hook:
 # CD_BACKUP_DIR overrides the backups/ directory.
 set -euo pipefail
@@ -28,7 +31,7 @@ local_file="$backups/$HOST-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
 [ ! -e "$local_file" ] || die "$local_file already exists"
 
 local_commit
-stage "$DEPLOY/remote"
+stage backup "$DEPLOY/remote"
 say "backing up $HOST"
 remote_file=$(remote "bash $RDIR/remote/backup.sh")
 remote_file=$(printf '%s\n' "$remote_file" | tail -n 1)

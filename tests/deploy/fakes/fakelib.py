@@ -8,12 +8,15 @@ command for ``ssh`` and the joined arguments for everything else. Anything
 unmatched exits 97, so a script step the test did not expect fails loudly
 instead of reaching a real machine.
 
-``ssh`` and ``scp`` also refuse every host but ``$FAKE_HOST`` (exit 97).
+``ssh`` and ``scp`` also refuse every host but ``$FAKE_HOST`` (exit 97). An
+entry with ``"passthrough": true`` runs the command after ``--`` instead (the
+fake ``runuser`` runs shell helpers this way, as the current user).
 """
 
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -75,6 +78,19 @@ def _touch_after(entry: dict[str, Any], args: list[str]) -> None:
     (directory / name).write_text("fake build output\n")
 
 
+def _copy_to_flag(entry: dict[str, Any], args: list[str]) -> None:
+    """Copy the canned ``file`` to the path after ``copy_to_flag`` (``curl -o``)."""
+    flag = entry.get("copy_to_flag")
+    if flag:
+        shutil.copyfile(entry["file"], args[args.index(flag) + 1])
+
+
+def _passthrough(args: list[str]) -> int:
+    """Run the command after ``--`` as the current user (fake ``runuser``)."""
+    command = args[args.index("--") + 1 :]
+    return subprocess.run(command, check=False).returncode  # noqa: S603
+
+
 def main() -> None:
     tool = Path(sys.argv[0]).name
     args = sys.argv[1:]
@@ -111,9 +127,14 @@ def main() -> None:
         if entry.get("exact") and entry["match"] != key:
             continue
         if entry["match"] in key:
+            if entry.get("passthrough"):
+                sys.exit(_passthrough(args))
             if tool == "scp":
                 _scp(entry, args)
             _touch_after(entry, args)
+            _copy_to_flag(entry, args)
+            if entry.get("mkdir_last"):  # `uv venv <dir>` creates <dir>
+                Path(args[-1]).mkdir(parents=True, exist_ok=True)
             sys.stdout.write(entry.get("stdout", ""))
             sys.stderr.write(entry.get("stderr", ""))
             sys.exit(int(entry.get("exit", 0)))

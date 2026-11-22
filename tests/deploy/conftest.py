@@ -28,15 +28,17 @@ HOST = "example.invalid"
 DOMAIN = "raffle.example.invalid"
 HOST_IP = "203.0.113.10"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
-# Paths on the (fake) server, never touched on this machine.
-RDIR = f"/tmp/conference-drawing-{COMMIT}"  # noqa: S108
+# Paths on the (fake) server, never touched on this machine. Each run stages
+# into its own /tmp/conference-drawing-<commit>-<script>-<8 hex>.
+STAGE = f"/tmp/conference-drawing-{COMMIT}-"  # noqa: S108
+STAGE_RE = rf"/tmp/conference-drawing-{COMMIT}-(up|backup|down)-[0-9a-f]{{8}}"  # noqa: S108
 REMOTE_BACKUP = "/tmp/conference-drawing-backup.Ab12Cd34/backup.tar.gz"  # noqa: S108
 
 # Host tools the scripts and fakes may use. Nothing here can reach a network.
 ALLOWED_TOOLS = (
     "awk basename bash cat chmod cp cut date dirname env find grep gzip head id "
-    "ls mkdir mktemp mv rm sed sh sleep sort sqlite3 stat tail tar tee touch tr "
-    "uname wc xargs"
+    "install ln ls mkdir mktemp mv od readlink rm sed sh sha256sum sleep sort "
+    "sqlite3 stat tail tar tee touch tr uname wc xargs"
 ).split()
 NETWORK_TOOLS = {"ssh", "scp", "curl", "dig", "uv", "git", "wget", "rsync", "nc"}
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"

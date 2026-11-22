@@ -3,7 +3,13 @@
 # Shared constants and steps for the server-side scripts. Sourced, not run.
 #
 # CD_ROOT prefixes every path. It is empty on a real server; the tests set it to
-# a temp dir to run single steps (the Caddy site, the snapshot job) on a laptop.
+# a temp dir to run whole scripts on a laptop, with fakes for every privileged
+# command.
+#
+# Root never writes through a path the app user controls: the data directory
+# belongs to the app user, who could plant a symbolic link there. Writes inside
+# it run as the app user (as_app), root's own steps refuse symlinks, and
+# chown is always chown -h.
 
 ROOT=${CD_ROOT:-}
 APP_USER=conference-drawing
@@ -12,7 +18,7 @@ DATA_DIR="$APP_DIR/data"
 VENV="$APP_DIR/venv"
 ENV_FILE="$DATA_DIR/.env"
 # One lock for every job that copies or rewrites the database from a shell:
-# backup.sh and the hourly snapshot. (Entrant deletion's VACUUM runs inside
+# install.sh, uninstall.sh, backup.sh and the hourly snapshot. (Entrant deletion's VACUUM runs inside
 # the app and relies on SQLite's own locking instead.)
 LOCK_FILE="$DATA_DIR/.maintenance.lock"
 CADDY_MAIN="$ROOT/etc/caddy/Caddyfile"
@@ -41,15 +47,42 @@ valid_domain() {
 	[[ ${#1} -le 253 && $1 =~ ^($label\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
 
-# Run a conference-drawing management command as the app user, with the same
-# environment the systemd units set.
-run_app() {
+# Run a command as the app user, from / (never a directory root is changing).
+as_app() {
 	(
 		cd /
-		CD_ENV_FILE="$ENV_FILE" CD_DATA_DIR="$DATA_DIR" \
-			CD_VERSION_FILE="$APP_DIR/version.json" \
-			runuser -u "$APP_USER" -- "$VENV/bin/conference-drawing" "$@"
+		runuser -u "$APP_USER" -- "$@"
 	)
+}
+
+# Run a conference-drawing management command as the app user, with the same
+# environment the systemd units set. APP_VENV picks another venv (install.sh
+# runs the new release before switching to it).
+run_app() {
+	CD_ENV_FILE="$ENV_FILE" CD_DATA_DIR="$DATA_DIR" \
+		CD_VERSION_FILE="$APP_DIR/version.json" \
+		as_app "${APP_VENV:-$VENV}/bin/conference-drawing" "$@"
+}
+
+# Refuse a symbolic link at $1 (root is about to act on that path).
+no_symlink() {
+	[ ! -L "$1" ] || die "$1 is a symbolic link; remove it and run again"
+}
+
+# Check that backup tarball $1 is safe to unpack into the data directory: it
+# holds db.sqlite3, and otherwise only plain files and directories under
+# media/ (no links, no absolute paths, no "..", nothing else).
+check_restore_tarball() {
+	local names types
+	names=$(tar -tzf "$1") || die "cannot read the restore tarball"
+	types=$(tar -tvzf "$1" | cut -c1) || die "cannot read the restore tarball"
+	printf '%s\n' "$names" | grep -x 'db.sqlite3' >/dev/null ||
+		die "the restore tarball has no db.sqlite3"
+	if printf '%s\n' "$names" | grep -Ev '^(db\.sqlite3|media/?|media/[A-Za-z0-9._/-]+)$' >/dev/null ||
+		printf '%s\n' "$names" | grep -E '(^|/)\.\.(/|$)' >/dev/null ||
+		printf '%s\n' "$types" | grep -v '^[-d]$' >/dev/null; then
+		die "the restore tarball holds unexpected entries (links, other paths or ..)"
+	fi
 }
 
 # Print one KEY='value' line that python-dotenv reads back unchanged, the way
@@ -134,6 +167,7 @@ remove_caddy_site() {
 
 # Hold the maintenance lock on fd 9 for the rest of the calling script.
 take_lock() {
+	no_symlink "$LOCK_FILE"
 	exec 9<"$LOCK_FILE"
-	flock --wait "$1" 9 || die "another backup or snapshot holds $LOCK_FILE"
+	flock --wait "$1" 9 || die "another install, backup or snapshot holds $LOCK_FILE"
 }

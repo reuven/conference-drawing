@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install or upgrade conference-drawing. Runs as root from
-# /tmp/conference-drawing-<commit>/remote/, started by deploy/up.sh:
+# Install or upgrade conference-drawing. Runs as root from the release that
+# deploy/up.sh staged in /tmp/conference-drawing-<commit>-up-<random>/:
 #
 #   bash remote/install.sh <domain> [--restore <backup.tar.gz>]
 #
@@ -8,14 +8,34 @@
 # DJANGO_SUPERUSER_USERNAME/EMAIL/PASSWORD), never in argv. Safe to run again:
 # init only fills in what is missing, then migrates and runs createcachetable.
 #
-# Layout and permissions (Caddy runs as "caddy" and reaches the app without
-# joining any group, so no Caddy restart is needed):
-#   /srv/conference-drawing             root 0755: venv/, python/, bin/, version.json
+# Upgrades keep the old release serving for as long as possible:
+#   1. a new venv, venv-<UTC time>-<commit>, is built beside the live one
+#      (uv pip install --require-hashes, the wheel's sha256 checked first),
+#      and collectstatic runs from it, while the old units still run;
+#   2. only then are the running units stopped, a snapshot is taken (under
+#      the maintenance lock, which this script holds throughout), init
+#      migrates, and the venv symlink is switched to the new venv;
+#   3. the units start again. If anything fails after they were stopped, the
+#      EXIT trap starts the ones this run stopped, on the old venv.
+# The previous venv is kept for one release. To roll back by hand:
+#   ln -sfn venv-<previous> /srv/conference-drawing/venv
+#   systemctl restart conference-drawing-web conference-drawing-drip
+# and, if the new release migrated the schema, first put back the snapshot
+# taken just before migrate (data/snapshots/, newest) as data/db.sqlite3.
+#
+# up.sh stays attached over ssh for the whole run. If the connection drops
+# mid-run, the script gets SIGHUP; the trap still restarts stopped units, but
+# check `systemctl status conference-drawing-web` and rerun up.sh.
+#
+# Layout and permissions (Caddy runs as "caddy"):
+#   /srv/conference-drawing             root 0755: venv -> venv-*/, python/,
+#                                       bin/, version.json
 #   /srv/conference-drawing/data        app user 0711: others may pass through,
 #                                       not list. The only writable path.
 #     .env 0600, db.sqlite3 0660 (UMask=007), snapshots/ 0700
 #     static/, media/, media/covers/    app user 0755, files 0644 (public anyway)
-#   /run/conference-drawing/web.sock    gunicorn's socket, 0777 in a 0755 dir
+#   /run/conference-drawing/web.sock    gunicorn's socket, in a 0750 directory
+#                                       of group caddy (see the web unit)
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 release=$(dirname "$here")
@@ -36,14 +56,107 @@ if [ $# -eq 3 ]; then
 fi
 require_root
 
+new_venv=""
+switched=0
+stopped=()
+on_exit() {
+	local status=$?
+	rm -rf "$work"
+	[ "$status" -ne 0 ] || return 0
+	if [ -n "$new_venv" ] && [ "$switched" -eq 0 ]; then
+		rm -rf -- "$new_venv"
+	fi
+	if [ "${#stopped[@]}" -gt 0 ]; then
+		say "the install failed; starting the units it stopped: ${stopped[*]}"
+		systemctl start "${stopped[@]}" || true
+	fi
+}
 umask 077
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap on_exit EXIT
 : >"$work/secrets"
 [ -t 0 ] || cat >"$work/secrets"
 read_secrets "$work/secrets"
 rm -f "$work/secrets"
 umask 022
+
+uv="$ROOT/usr/local/bin/uv"
+uv_version() {
+	{ "$uv" --version 2>/dev/null || true; } | cut -d' ' -f2
+}
+
+# Put the pinned uv in /usr/local/bin, from the tarball up.sh downloaded and
+# checked, unless the right version is already there.
+ensure_uv() {
+	local name dir
+	[ "$(uv_version)" != "$UV_VERSION" ] || return 0
+	[ -f "$release/uv.sha256" ] ||
+		die "uv $UV_VERSION is not installed and up.sh shipped no uv tarball"
+	name=$(awk 'NR == 1 { print $2 }' "$release/uv.sha256")
+	[[ $name =~ ^uv-(x86_64|aarch64)-unknown-linux-gnu\.tar\.gz$ ]] ||
+		die "unexpected uv tarball name: $name"
+	(cd "$release" && sha256sum -c --quiet uv.sha256) >&2 ||
+		die "the uv tarball failed its sha256 check"
+	say "installing uv $UV_VERSION"
+	mkdir "$work/uv"
+	tar -xzf "$release/$name" -C "$work/uv"
+	dir="$work/uv/${name%.tar.gz}"
+	install -d -m 0755 "$ROOT/usr/local/bin"
+	install -m 0755 "$dir/uv" "$dir/uvx" "$ROOT/usr/local/bin/"
+	[ "$(uv_version)" = "$UV_VERSION" ] || die "the new uv does not report $UV_VERSION"
+}
+
+# Create the data directory and, as the app user, everything in it. Root only
+# makes the top directory (in root's /srv/conference-drawing, where the app
+# user cannot plant a link) and hands it over.
+prepare_data_dir() {
+	no_symlink "$DATA_DIR"
+	mkdir -p "$DATA_DIR"
+	chown -h "$APP_USER:$APP_USER" "$DATA_DIR"
+	chmod 0711 "$DATA_DIR"
+	# shellcheck disable=SC2016  # expanded by the app user's bash
+	as_app bash -c '
+		set -euo pipefail
+		data=$1
+		for p in snapshots static media media/covers .maintenance.lock .env; do
+			if [ -L "$data/$p" ]; then
+				echo "error: $data/$p is a symbolic link; remove it and run again" >&2
+				exit 1
+			fi
+		done
+		mkdir -p "$data/snapshots" "$data/static" "$data/media/covers"
+		chmod 0700 "$data/snapshots"
+		find -P "$data/static" "$data/media" ! -type l -type d -exec chmod 0755 {} +
+		find -P "$data/static" "$data/media" ! -type l -type f -exec chmod 0644 {} +
+		[ -e "$data/.maintenance.lock" ] || : >"$data/.maintenance.lock"
+		chmod 0600 "$data/.maintenance.lock"
+		[ ! -e "$data/db.sqlite3" ] || chmod 0660 "$data/db.sqlite3"
+	' _ "$DATA_DIR"
+}
+
+# Append the Drip keys the operator sent that .env does not have yet. Root
+# renders the lines; the app user writes the file.
+write_env_keys() {
+	local lines=""
+	[ -z "$drip_api_key" ] || lines+="$(env_line DRIP_API_KEY "$drip_api_key")"$'\n'
+	[ -z "$drip_account_id" ] || lines+="$(env_line DRIP_ACCOUNT_ID "$drip_account_id")"$'\n'
+	[ -n "$lines" ] || return 0
+	# shellcheck disable=SC2016  # expanded by the app user's bash
+	printf '%s' "$lines" | as_app bash -c '
+		set -euo pipefail
+		env=$1
+		[ ! -L "$env" ] || { echo "error: $env is a symbolic link" >&2; exit 1; }
+		umask 077
+		while IFS= read -r line; do
+			key=${line%%=*}
+			if ! grep -q "^$key=" "$env" 2>/dev/null; then
+				printf "%s\n" "$line" >>"$env"
+				echo "==> wrote $key" >&2
+			fi
+		done
+		chmod 0600 "$env"
+	' _ "$ENV_FILE"
+}
 
 say "packages and users"
 if ! command -v sqlite3 >/dev/null; then
@@ -53,76 +166,62 @@ if ! id -u "$APP_USER" >/dev/null 2>&1; then
 	useradd --system --user-group --home-dir "$APP_DIR" --no-create-home \
 		--shell /usr/sbin/nologin "$APP_USER"
 fi
-if [ ! -x /usr/local/bin/uv ]; then
-	say "installing uv $UV_VERSION"
-	curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" |
-		env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
-fi
-uv=/usr/local/bin/uv
-
-# Stop the old version before replacing its code; started again below.
-for unit in "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_TIMER"; do
-	if [ -e "$UNIT_DIR/$unit" ]; then
-		systemctl stop "$unit"
-	fi
-done
-
-say "python and the app"
-install -d -m 0755 -o root -g root "$APP_DIR" "$APP_DIR/bin"
-export UV_PYTHON_INSTALL_DIR="$APP_DIR/python" UV_CACHE_DIR="$APP_DIR/.cache/uv"
-export UV_PYTHON_PREFERENCE=only-managed
-if [ ! -x "$VENV/bin/python" ]; then
-	"$uv" venv --quiet --python 3.14 "$VENV"
-fi
-"$uv" pip install --quiet --python "$VENV/bin/python" -r "$release/requirements.txt"
-wheels=("$release"/*.whl)
-[ "${#wheels[@]}" -eq 1 ] || die "expected exactly one wheel in $release"
-"$uv" pip install --quiet --python "$VENV/bin/python" --no-deps --reinstall "${wheels[0]}"
-install -m 0644 "$release/version.json" "$APP_DIR/version.json"
-install -m 0755 "$here/common.sh" "$here/snapshot.sh" "$APP_DIR/bin/"
+ensure_uv
 
 say "data directory"
-install -d -m 0711 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR"
-install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR/snapshots"
+no_symlink "$APP_DIR"
+install -d -m 0755 "$APP_DIR" "$APP_DIR/bin"
+prepare_data_dir
+take_lock 600
 if [ -n "$restore" ]; then
+	check_restore_tarball "$restore"
 	[ ! -e "$DATA_DIR/db.sqlite3" ] || die "refusing to restore over an existing database"
-	# Only db.sqlite3 and plain files and directories under media/.
-	if tar -tzf "$restore" | grep -Ev '^(db\.sqlite3|media/?|media/[A-Za-z0-9._/-]+)$' >/dev/null ||
-		tar -tzf "$restore" | grep -E '(^|/)\.\.(/|$)' >/dev/null ||
-		tar -tvzf "$restore" | cut -c1 | grep -v '^[-d]$' >/dev/null; then
-		die "the restore tarball holds unexpected entries"
-	fi
-	tar -xzf "$restore" --no-same-owner --no-same-permissions -C "$DATA_DIR"
-	[ "$(sqlite3 "$DATA_DIR/db.sqlite3" "PRAGMA integrity_check")" = ok ] ||
+	as_app tar -xzf - -C "$DATA_DIR" <"$restore"
+	[ "$(as_app sqlite3 "$DATA_DIR/db.sqlite3" "PRAGMA integrity_check")" = ok ] ||
 		die "the restored database failed integrity_check"
-	chown "$APP_USER:$APP_USER" "$DATA_DIR/db.sqlite3"
-	chmod 0660 "$DATA_DIR/db.sqlite3"
+	prepare_data_dir
 	say "restored $(basename "$restore")"
 fi
-install -d -m 0755 -o "$APP_USER" -g "$APP_USER" \
-	"$DATA_DIR/static" "$DATA_DIR/media" "$DATA_DIR/media/covers"
-chown -R "$APP_USER:$APP_USER" "$DATA_DIR/media"
-find "$DATA_DIR/media" -type d -exec chmod 0755 {} +
-find "$DATA_DIR/media" -type f -exec chmod 0644 {} +
-if [ ! -e "$LOCK_FILE" ]; then
-	install -m 0600 -o "$APP_USER" -g "$APP_USER" /dev/null "$LOCK_FILE"
+write_env_keys
+
+say "building the new release beside the running one"
+wheels=("$release"/*.whl)
+[ "${#wheels[@]}" -eq 1 ] && [ -f "${wheels[0]}" ] || die "expected exactly one wheel in $release"
+[ "$(awk '{ print $2 }' "$release/wheel.sha256")" = "$(basename "${wheels[0]}")" ] ||
+	die "wheel.sha256 does not name the shipped wheel"
+(cd "$release" && sha256sum -c --quiet wheel.sha256) >&2 || die "the wheel failed its sha256 check"
+commit=$(sed -n 's/.*"commit": "\([0-9a-f]\{12\}\)[0-9a-f]*".*/\1/p' "$release/version.json")
+[ -n "$commit" ] || die "no commit in version.json"
+[ ! -e "$VENV" ] || [ -L "$VENV" ] || die "$VENV is a directory, not a link to a venv-* directory"
+new_venv="$APP_DIR/venv-$(date -u +%Y%m%dT%H%M%SZ)-$commit"
+while [ -e "$new_venv" ]; do # a second run within the same second
+	sleep 1
+	new_venv="$APP_DIR/venv-$(date -u +%Y%m%dT%H%M%SZ)-$commit"
+done
+export UV_PYTHON_INSTALL_DIR="$APP_DIR/python" UV_CACHE_DIR="$APP_DIR/.cache/uv"
+export UV_PYTHON_PREFERENCE=only-managed
+"$uv" venv --quiet --python 3.14 "$new_venv"
+"$uv" pip install --require-hashes --quiet --python "$new_venv/bin/python" \
+	-r "$release/requirements.txt"
+"$uv" pip install --no-deps --quiet --python "$new_venv/bin/python" "${wheels[0]}"
+APP_VENV=$new_venv
+collected=0
+if [ -e "$ENV_FILE" ]; then # an upgrade: settings exist, the old app keeps serving
+	run_app collectstatic --noinput --verbosity 0
+	collected=1
 fi
 
-say "settings and database"
-umask 077
-for pair in "DRIP_API_KEY:$drip_api_key" "DRIP_ACCOUNT_ID:$drip_account_id"; do
-	key=${pair%%:*}
-	value=${pair#*:}
-	if [ -n "$value" ] && ! grep -q "^$key=" "$ENV_FILE" 2>/dev/null; then
-		env_line "$key" "$value" >>"$ENV_FILE"
-		say "wrote $key"
+say "switching to the new release"
+for unit in "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_TIMER"; do
+	if systemctl is-active --quiet "$unit"; then
+		systemctl stop "$unit"
+		stopped+=("$unit")
 	fi
 done
-if [ -e "$ENV_FILE" ]; then
-	chown "$APP_USER:$APP_USER" "$ENV_FILE"
-	chmod 0600 "$ENV_FILE"
+install -m 0755 "$here/common.sh" "$here/snapshot.sh" "$APP_DIR/bin/"
+if [ -e "$DATA_DIR/db.sqlite3" ]; then
+	as_app env CD_LOCK_HELD=1 "$APP_DIR/bin/snapshot.sh"
 fi
-umask 022
 # init writes the secret key and allowed host on the first run, then (every
 # run) migrates, creates the cache table, the superuser if missing, and the
 # install settings. The superuser variables are set only in init's
@@ -131,7 +230,12 @@ DJANGO_SUPERUSER_USERNAME=$su_username DJANGO_SUPERUSER_EMAIL=$su_email \
 	DJANGO_SUPERUSER_PASSWORD=$su_password \
 	run_app init --non-interactive --domain "$domain"
 su_password=""
-run_app collectstatic --noinput --verbosity 0
+[ "$collected" -eq 1 ] || run_app collectstatic --noinput --verbosity 0
+previous=""
+[ ! -L "$VENV" ] || previous=$(readlink "$VENV")
+ln -sfn "$(basename "$new_venv")" "$VENV"
+switched=1
+install -m 0644 "$release/version.json" "$APP_DIR/version.json"
 
 say "systemd units"
 for unit in "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_SERVICE" "$SNAPSHOT_TIMER"; do
@@ -139,13 +243,26 @@ for unit in "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_SERVICE" "$SNAPSHOT_TIMER"; do
 done
 systemctl daemon-reload
 systemctl enable --now "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_TIMER"
+stopped=()
+# Keep the new venv and the one it replaced; drop older ones.
+for dir in "$APP_DIR"/venv-*; do
+	name=$(basename "$dir")
+	if [ "$dir" != "$new_venv" ] && [ "$name" != "$previous" ]; then
+		rm -rf -- "$dir"
+	fi
+done
 
 say "caddy site for $domain"
 install -d -m 0755 "$ROOT/etc/caddy/sites"
 # Create the access log as caddy before `caddy validate` (run as root) could.
-[ -d "$CADDY_LOG_DIR" ] || install -d -m 0755 -o caddy -g caddy "$CADDY_LOG_DIR"
-if [ ! -e "$CADDY_LOG_DIR/conference-drawing.access.log" ]; then
-	install -m 0640 -o caddy -g caddy /dev/null "$CADDY_LOG_DIR/conference-drawing.access.log"
+access_log="$CADDY_LOG_DIR/conference-drawing.access.log"
+if [ ! -d "$CADDY_LOG_DIR" ]; then
+	install -d -m 0755 "$CADDY_LOG_DIR"
+	chown -h caddy:caddy "$CADDY_LOG_DIR"
+fi
+if [ ! -e "$access_log" ] && [ ! -L "$access_log" ]; then
+	install -m 0640 /dev/null "$access_log"
+	chown -h caddy:caddy "$access_log"
 fi
 install_caddy_site "$domain" "$release/caddy/conference-drawing.caddy.tmpl"
 say "installed $(cat "$APP_DIR/version.json")"
