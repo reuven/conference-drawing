@@ -231,7 +231,10 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
 - **Wrap up** (button, at conference end): create/update every entrant as a
   Drip subscriber (email and name only; no `status`) and apply the tags
   above. Drip workflows send the follow-up and consolation message; the app
-  never knows the consolation code.
+  never knows the consolation code. Entrants whose normalized email is on the
+  conference's exclusion list (the owner's and staff's own test entries) are
+  **not** sent: no subscriber, tags or event. The wrap-up page and result count
+  them separately as "excluded".
 - **Better Developers** (Reuven chose option A). Better Developers in Drip has
   no double opt-in, and Reuven's habit is to notify people before adding them.
   So:
@@ -264,10 +267,15 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
 ### Data export and deletion
 - CSV export per conference: name, email, answers, entry time, winner /
   non-winner (and what they won), consent flags and timestamps.
-- "Delete this conference's entrants" removes entrant rows and their picks,
-  and redacts any outbox rows that hold their emails. It is refused while
-  Drip jobs for that conference are still pending. It does **not** touch Drip
-  — what lives in Drip is managed in Drip. *(My call.)*
+- "Delete this conference's entrants" removes the entrant rows and, by
+  cascade, their picks; the coupon and audit links to those picks become NULL
+  (a used coupon code stays `used`, so it is never handed out twice). It also
+  deletes the admin-history (`LogEntry`) rows about those entrants, deletes
+  the conference's FAILED outbox jobs (a redacted one could be retried and
+  fail as poison), and replaces every remaining job's payload with
+  `{"redacted": true}`. It is refused unless the conference is wrapped up and
+  not already deleted, and while Drip jobs for it are still pending. It does
+  **not** touch Drip: what lives in Drip is managed in Drip. *(My call.)*
   *(My call: keep the conference, drawings, and aggregate counts — pool size,
   number of winners — so history survives without personal data.)*
 - PostgreSQL's `DELETE` only marks tuples dead; their bytes stay in the table
@@ -282,6 +290,14 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
   until PostgreSQL recycles them, an old snapshot (a long transaction) can
   keep them alive until it ends, and the hourly pg_dump snapshots hold them
   until they age out, 48 hours later. The owner's privacy note should say so.
+- **Backup retention.** On the server, `data/snapshots/` keeps the newest 48
+  `pg_dump` files: the hourly ones and the one taken just before each
+  migrate share that count. Anything taken **before** a deletion still holds
+  the deleted entrants until it ages out of those 48. Backups pulled to the
+  laptop by `deploy/backup.sh` (and the one `down.sh` takes) are never aged
+  out by the app: they hold personal data until the operator deletes them.
+  Deleting entrants before `down.sh` keeps personal data out of that last
+  backup.
 
 ### Randomness and audit
 - Picks use Python's `secrets` module (`secrets.SystemRandom`).
