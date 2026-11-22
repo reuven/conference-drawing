@@ -187,7 +187,7 @@ def test_post_without_csrf_token_is_refused(conference: Conference) -> None:
 def test_post_rate_limited_per_ip(client: Client, conference: Conference) -> None:
     kwargs: dict[str, Any] = {"REMOTE_ADDR": "203.0.113.5"}
     url = reverse("entry", args=[conference.slug])
-    statuses = [client.post(url, {}, **kwargs).status_code for _ in range(10)]
+    statuses = [client.post(url, {}, **kwargs).status_code for _ in range(60)]
     assert set(statuses) == {200}
     blocked = client.post(url, {}, **kwargs)
     assert blocked.status_code == 429
@@ -202,7 +202,7 @@ def test_rate_limit_uses_rightmost_forwarded_for(
     client: Client, conference: Conference
 ) -> None:
     url = reverse("entry", args=[conference.slug])
-    for i in range(10):
+    for i in range(60):
         spoof: dict[str, Any] = {"HTTP_X_FORWARDED_FOR": f"10.0.0.{i}, 198.51.100.7"}
         assert client.post(url, {}, **spoof).status_code == 200
     spoof = {"HTTP_X_FORWARDED_FOR": "10.9.9.9, 198.51.100.7"}

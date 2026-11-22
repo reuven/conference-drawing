@@ -189,3 +189,13 @@ def test_unrelated_integrity_error_is_not_swallowed(
 def test_honeypot_detection(conference: Conference) -> None:
     assert not EntryForm(conference, _data()).honeypot_filled()
     assert EntryForm(conference, _data(website="http://spam")).honeypot_filled()
+
+
+def test_answer_and_name_accept_zwj_emoji(conference: Conference) -> None:
+    entrant = _enter(
+        conference,
+        name="Dev 👩\u200d💻",
+        q_want_to_learn="I want to learn 👩\u200d💻 agents",
+    )
+    assert entrant is not None
+    assert entrant.answers == {"want_to_learn": "I want to learn 👩\u200d💻 agents"}

@@ -6,6 +6,24 @@ from django.core.exceptions import ValidationError
 
 # Control, format (zero-width and bidi overrides), and line/paragraph separators.
 _FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+# Format characters real text needs: ZWJ glues emoji sequences (woman + laptop),
+# ZWNJ is required by Persian and Indic scripts. Neither can reorder text.
+_ALLOWED_FORMAT_CHARS = frozenset({"\u200c", "\u200d"})
+
+
+def has_forbidden_chars(value: str, allow_newline: bool = False) -> bool:
+    """True if `value` has control, invisible-format or separator characters.
+
+    Rejects Cc, Zl/Zp and every Cf (bidi overrides, zero-width space, BOM,
+    soft hyphen) except ZWJ and ZWNJ. Newlines are allowed only on request,
+    for free-text answers; single-line labels never allow them.
+    """
+    return any(
+        unicodedata.category(ch) in _FORBIDDEN_CATEGORIES
+        and ch not in _ALLOWED_FORMAT_CHARS
+        and not (allow_newline and ch == "\n")
+        for ch in value
+    )
 
 
 def normalize_email(raw: str) -> str:
@@ -34,7 +52,7 @@ def validate_single_line_label(value: str, max_len: int = 200) -> str:
             f"Ensure this value has at most {max_len} characters.", code="max_length"
         )
     # Check the raw value: stripping first would hide a leading/trailing newline.
-    if any(unicodedata.category(ch) in _FORBIDDEN_CATEGORIES for ch in value):
+    if has_forbidden_chars(value):
         raise ValidationError(
             "Remove line breaks and invisible or control characters.",
             code="invalid_characters",

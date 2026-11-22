@@ -1,7 +1,6 @@
 """The public entry form."""
 
 import datetime
-import unicodedata
 from typing import Any
 
 from django import forms
@@ -9,10 +8,9 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
 from .models import Conference, Entrant, InstallSettings, Question
-from .text import normalize_email, validate_single_line_label
+from .text import has_forbidden_chars, normalize_email, validate_single_line_label
 
 FREE_TEXT_MAX_LEN = 1000
-_FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
 
 
 def clean_free_text(value: str) -> str:
@@ -24,9 +22,7 @@ def clean_free_text(value: str) -> str:
     plain LF. The length cap lives on the form field.
     """
     text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
-    if any(
-        ch != "\n" and unicodedata.category(ch) in _FORBIDDEN_CATEGORIES for ch in text
-    ):
+    if has_forbidden_chars(text, allow_newline=True):
         raise ValidationError(
             "Remove tabs and invisible or control characters.",
             code="invalid_characters",

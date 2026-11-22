@@ -49,3 +49,39 @@ def test_label_strips_and_honors_max_len() -> None:
 )
 def test_label_accepts_printable_single_line(s: str) -> None:
     assert validate_single_line_label(s) == s.strip()
+
+
+@pytest.mark.parametrize(
+    "ok", ["Ali\u200cرضا", "Dev 👩\u200d💻", "🏳️\u200d🌈", "❤️\u200d🔥"]
+)
+def test_label_accepts_zwj_and_zwnj_text(ok: str) -> None:
+    assert validate_single_line_label(ok) == ok
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "a\u061cb",
+        "a\u200eb",
+        "a\u200fb",
+        "a\u2066b",
+        "a\ufeffb",
+        "a\u00adb",
+        "a\u2028b",
+    ],
+)
+def test_label_still_rejects_bidi_bom_and_separators(bad: str) -> None:
+    with pytest.raises(ValidationError):
+        validate_single_line_label(bad)
+
+
+@given(
+    st.lists(
+        st.sampled_from(["a", "é", "👩", "\u200d", "💻", "\u200c", "ر", " "]),
+        min_size=1,
+        max_size=50,
+    ).filter(lambda parts: "".join(parts).strip() != "")
+)
+def test_label_accepts_text_with_zwj_and_zwnj(parts: list[str]) -> None:
+    s = "".join(parts)
+    assert validate_single_line_label(s) == s.strip()

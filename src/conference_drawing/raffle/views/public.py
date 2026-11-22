@@ -99,7 +99,7 @@ def _schedule_context(conference: Conference) -> dict[str, object]:
 _limit_posts: Callable[
     [Callable[..., HttpResponseBase]], Callable[..., HttpResponseBase]
 ]
-_limit_posts = ratelimit(key=client_ip, rate="10/m", method="POST", block=True)
+_limit_posts = ratelimit(key=client_ip, rate="60/m", method="POST", block=True)
 
 
 @require_http_methods(["GET", "HEAD", "POST"])
