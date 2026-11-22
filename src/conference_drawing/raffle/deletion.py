@@ -22,7 +22,11 @@ bytes are gone everywhere: WAL segments keep the deleted rows until they are
 recycled, an old snapshot can keep them alive until it ends, and the hourly
 pg_dump snapshots (Task 16) hold the data until they age out, 48 hours later.
 VACUUM FULL takes an exclusive lock on each table while it rewrites it, so the
-booth waits a moment; the tables are small.
+booth waits a moment; the tables are small. It also has to wait for every
+reader of a table, such as a running pg_dump snapshot, so it gives up after
+`LOCK_TIMEOUT` instead of stalling the request: that is logged as a scrub
+failure (exception class only), the deletion itself stands, and the dead
+tuples stay until autovacuum or the next VACUUM FULL.
 
 Logs carry ids and counts only.
 """
@@ -90,6 +94,8 @@ def delete_entrants(conference: Conference, *, now: datetime.datetime) -> int:
 
 # Every table that held an entrant's name, email or answers.
 _SCRUBBED_MODELS = (Entrant, Pick, OutboxJob, CouponCode, LogEntry)
+# How long VACUUM FULL may wait for a table lock (a PostgreSQL interval).
+LOCK_TIMEOUT = "5s"
 
 
 def _vacuum_full(conference_id: int) -> None:
@@ -97,13 +103,21 @@ def _vacuum_full(conference_id: int) -> None:
 
     Runs from `on_commit`, in autocommit mode: VACUUM cannot run in a
     transaction block. The app role owns these tables (it ran migrate), which
-    VACUUM FULL requires. A failure is logged by exception class only.
+    VACUUM FULL requires. Each table lock is waited for at most
+    `LOCK_TIMEOUT`; the setting is reset afterwards because the connection is
+    reused (CONN_MAX_AGE). A failure is logged by exception class only.
     """
     try:
         with connection.cursor() as cursor:
-            for model in _SCRUBBED_MODELS:
-                table = connection.ops.quote_name(model._meta.db_table)
-                cursor.execute(f"VACUUM (FULL, ANALYZE) {table}")
+            cursor.execute(
+                "SELECT set_config('lock_timeout', %s, false)", [LOCK_TIMEOUT]
+            )
+            try:
+                for model in _SCRUBBED_MODELS:
+                    table = connection.ops.quote_name(model._meta.db_table)
+                    cursor.execute(f"VACUUM (FULL, ANALYZE) {table}")
+            finally:
+                cursor.execute("RESET lock_timeout")
     except DatabaseError as exc:
         logger.warning(
             "deletion scrub failed conference=%s error=%s",

@@ -3,6 +3,8 @@
 import datetime
 import logging
 import random
+import threading
+import time
 from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -15,6 +17,7 @@ from django.db import IntegrityError, OperationalError, connection, transaction
 from django.test import Client
 from django.urls import reverse
 
+from conference_drawing.raffle import deletion
 from conference_drawing.raffle.deletion import delete_entrants
 from conference_drawing.raffle.draw import DrawingError, start_drawing
 from conference_drawing.raffle.drip.outbox import requeue_failed
@@ -254,7 +257,7 @@ def test_scrub_failure_is_logged_by_class_only(
 ) -> None:
     fake = MagicMock()
     fake.cursor.return_value.__enter__.return_value.execute.side_effect = (
-        OperationalError("could not obtain lock on relation")
+        OperationalError(f"message-sentinel-3f9c {SECRET_MAIL}")
     )
     with (
         caplog.at_level(logging.INFO),
@@ -264,7 +267,7 @@ def test_scrub_failure_is_logged_by_class_only(
     assert Entrant.objects.count() == 0
     text = caplog.text
     assert "OperationalError" in text
-    assert "lock" not in text  # the class name only, never the message
+    assert "message-sentinel-3f9c" not in text  # the class name only
     assert SECRET_MAIL not in text
     assert "Zelda" not in text
     assert f"conference={conference.pk}" in text
@@ -312,6 +315,60 @@ def test_scrub_waits_for_the_commit(
         delete_entrants(conference, now=NOW)
     assert Entrant.objects.count() == 0
     assert _filenodes() == before
+
+
+@pytest.mark.django_db(transaction=True)
+def test_scrub_runs_only_after_the_outer_transaction_commits(
+    conference: Conference, populated: dict[str, Any]
+) -> None:
+    before = _filenodes()
+    with transaction.atomic():
+        delete_entrants(conference, now=NOW)
+        assert _filenodes() == before  # still inside: nothing rewritten yet
+    after = _filenodes()
+    assert {t: before[t] != after[t] for t in before} == dict.fromkeys(before, True)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_blocked_vacuum_gives_up_instead_of_stalling_the_request(
+    conference: Conference,
+    populated: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A pg_dump (or any reader) holding ACCESS SHARE on a table makes VACUUM
+    FULL wait; lock_timeout turns that wait into the class-name warning."""
+    monkeypatch.setattr(deletion, "LOCK_TIMEOUT", "200ms")
+    locked, release = threading.Event(), threading.Event()
+
+    def hold_access_share() -> None:
+        try:
+            with transaction.atomic():
+                list(Entrant.objects.values_list("pk", flat=True)[:1])
+                locked.set()
+                release.wait(timeout=10)
+        finally:
+            connection.close()
+
+    holder = threading.Thread(target=hold_access_share)
+    holder.start()
+    try:
+        assert locked.wait(timeout=5)
+        started = time.monotonic()
+        with caplog.at_level(logging.WARNING):
+            assert delete_entrants(conference, now=NOW) == 3
+        waited = time.monotonic() - started
+    finally:
+        release.set()
+        holder.join()
+    assert waited < 5
+    assert "deletion scrub failed" in caplog.text
+    assert "error=OperationalError" in caplog.text
+    assert Entrant.objects.count() == 0
+    # The connection is usable afterwards, with the timeout reset.
+    with connection.cursor() as cur:
+        cur.execute("SHOW lock_timeout")
+        assert cur.fetchone() == ("0",)
 
 
 # --- view --------------------------------------------------------------------
