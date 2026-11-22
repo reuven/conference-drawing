@@ -86,6 +86,11 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": DATA_DIR / "db.sqlite3",
+        # BEGIN IMMEDIATE takes the write lock when a transaction starts, so a
+        # second phone's tap waits for the first to commit (up to `timeout`
+        # seconds) and then sees its result, instead of failing mid-transaction
+        # with "database is locked". SQLite ignores select_for_update.
+        "OPTIONS": {"transaction_mode": "IMMEDIATE", "timeout": 20},
     }
 }
 

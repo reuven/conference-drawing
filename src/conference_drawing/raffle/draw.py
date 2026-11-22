@@ -196,6 +196,8 @@ def _mark(
     """Lock, verify the pick is still pending, and move it to `status`."""
     drawing, pick = _lock_for_pick(pick)
     _require_open(drawing)
+    if pick.status in (Pick.Status.DIGITAL, Pick.Status.VOID):
+        raise DrawingError("This pick can't be marked.")
     if pick.status != Pick.Status.PENDING:
         raise DrawingError("Already marked.")
     pick.status = status
@@ -231,19 +233,33 @@ def mark_not_here(
 
 
 def _allow_undo(drawing: Drawing, pick: Pick) -> None:
-    """Undo works while open, or to reverse the claim that auto-finished it."""
+    """Undo works while open, or to reverse the claim that auto-finished it.
+
+    Reopening is refused once a later drawing has started: that drawing's pool
+    was computed with this winner already counted, so reopening would be unfair.
+    """
     if drawing.status == Drawing.Status.OPEN:
         return
-    latest = AuditEvent.objects.filter(drawing=drawing).latest("id")
+    if drawing.closed_by_owner:
+        raise DrawingError("This drawing was closed.")
     auto_finished = (
-        drawing.status == Drawing.Status.FINISHED
-        and latest.kind != AuditEvent.Kind.CLOSED
-        and pick.status == Pick.Status.CLAIMED
+        drawing.status == Drawing.Status.FINISHED and pick.status == Pick.Status.CLAIMED
     )
     if not auto_finished:
         raise DrawingError("This drawing isn't open.")
     if _another_open(drawing):
         raise DrawingError("Another drawing is open. Close it first.")
+    later_started = (
+        Drawing.objects.filter(
+            conference_id=drawing.conference_id, started_at__gte=drawing.closed_at
+        )
+        .exclude(pk=drawing.pk)
+        .exists()
+    )
+    if later_started:
+        raise DrawingError(
+            "A later drawing has already started, so this one can't be reopened."
+        )
     drawing.status = Drawing.Status.OPEN
     drawing.closed_at = None
     drawing.awarded_count = 0
@@ -292,5 +308,7 @@ def close_drawing(drawing: Drawing, *, now: datetime.datetime) -> None:
     )
     if pending.exists():
         raise DrawingError("Mark every pick Claimed or Not here first.")
+    drawing.closed_by_owner = True
+    drawing.save(update_fields=["closed_by_owner"])
     _set_finished(drawing, now)
     _audit(drawing, AuditEvent.Kind.CLOSED, now, awarded_count=drawing.awarded_count)

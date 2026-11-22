@@ -3,11 +3,13 @@
 import datetime
 import json
 import random
+import threading
 from collections import Counter
 from collections.abc import Callable
 from typing import Any
 
 import pytest
+from django.db import connection
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from hypothesis.extra.django import TestCase
@@ -284,6 +286,7 @@ def test_claiming_last_physical_finishes_drawing(
     assert drawing.status == Drawing.Status.FINISHED
     assert drawing.closed_at == LATER
     assert drawing.awarded_count == 3
+    assert drawing.closed_by_owner is False
     assert K.CLOSED not in kinds(drawing)
 
 
@@ -292,6 +295,18 @@ def test_claim_twice_refused(drawing: Drawing, entrants: list[int]) -> None:
     mark_claimed(pick, now=LATER)
     with pytest.raises(DrawingError, match=r"^Already marked\.$"):
         mark_claimed(pick, now=LATER)
+
+
+@pytest.mark.parametrize("status", [S.DIGITAL, S.VOID])
+def test_marking_digital_or_void_pick_refused(
+    drawing: Drawing, entrants: list[int], status: Pick.Status
+) -> None:
+    pick = started_single(drawing, quantity=2)[0]
+    Pick.objects.filter(pk=pick.pk).update(status=status)
+    with pytest.raises(DrawingError, match=r"^This pick can't be marked\.$"):
+        mark_claimed(pick, now=LATER)
+    with pytest.raises(DrawingError, match=r"^This pick can't be marked\.$"):
+        mark_not_here(pick, now=LATER, rng=rng())
 
 
 def test_marking_requires_open_drawing(drawing: Drawing, entrants: list[int]) -> None:
@@ -335,6 +350,42 @@ def test_not_here_twice_draws_one_replacement(
         mark_not_here(stale_b, now=LATER, rng=rng())
     assert Pick.objects.filter(replaces=pick).count() == 1
     assert Pick.objects.count() == 2
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_not_here_from_two_phones_draws_one_replacement(
+    conf: Conference, drawing: Drawing, entrants: list[int]
+) -> None:
+    """Two threads, two connections, one file-backed DB: the second waits its turn.
+
+    BEGIN IMMEDIATE makes the loser block until the winner commits, then re-read
+    the pick and refuse; without it the loser fails with "database is locked".
+    """
+    [pick] = started_single(drawing)
+    barrier = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def tap() -> None:
+        stale = Pick.objects.get(pk=pick.pk)
+        try:
+            barrier.wait()
+            outcomes.append(mark_not_here(stale, now=LATER, rng=rng()))
+        except Exception as exc:  # recorded for the assertion below
+            outcomes.append(exc)
+        finally:
+            connection.close()
+
+    threads = [threading.Thread(target=tap) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    errors = [o for o in outcomes if isinstance(o, Exception)]
+    replacements = [o for o in outcomes if isinstance(o, Pick)]
+    assert len(replacements) == 1
+    assert [type(e) for e in errors] == [DrawingError]
+    assert str(errors[0]) == "Already marked."
+    assert Pick.objects.filter(replaces=pick).count() == 1
 
 
 def test_not_here_with_empty_pool_reports_exhausted(
@@ -454,6 +505,33 @@ def test_undo_after_auto_finish_refused_when_another_drawing_open(
     assert pick.status == S.CLAIMED
 
 
+def test_undo_after_auto_finish_refused_when_later_drawing_started(
+    conf: Conference, drawing: Drawing, entrants: list[int]
+) -> None:
+    [pick] = started_single(drawing)
+    mark_claimed(pick, now=LATER)
+    later = factories.make_drawing(conf, scheduled_at=SCHEDULED)
+    digital_line(later)
+    start_drawing(later, now=LATER, rng=rng())  # digital-only: finishes at once
+    later.refresh_from_db()
+    assert later.status == Drawing.Status.FINISHED
+    with pytest.raises(DrawingError, match=r"^A later drawing has already started"):
+        undo_last(pick, now=LATER)
+    pick.refresh_from_db()
+    assert pick.status == S.CLAIMED
+
+
+def test_undo_after_auto_finish_allowed_when_earlier_drawing_exists(
+    conf: Conference, drawing: Drawing, entrants: list[int]
+) -> None:
+    earlier = factories.make_drawing(conf, scheduled_at=BEFORE)
+    digital_line(earlier)
+    start_drawing(earlier, now=BEFORE, rng=rng())
+    [pick] = started_single(drawing)
+    mark_claimed(pick, now=LATER)
+    assert undo_last(pick, now=LATER).status == S.PENDING
+
+
 def test_undo_refused_after_close_drawing(
     drawing: Drawing, entrants: list[int]
 ) -> None:
@@ -461,7 +539,7 @@ def test_undo_refused_after_close_drawing(
     mark_claimed(first, now=LATER)
     dismiss_pending(drawing)
     close_drawing(drawing, now=LATER)
-    with pytest.raises(DrawingError, match="isn't open"):
+    with pytest.raises(DrawingError, match=r"^This drawing was closed\.$"):
         undo_last(first, now=LATER)
 
 
@@ -501,6 +579,7 @@ def test_close_counts_claimed_and_digital_and_audits(
     assert drawing.status == Drawing.Status.FINISHED
     assert drawing.closed_at == LATER
     assert drawing.awarded_count == 2
+    assert drawing.closed_by_owner is True
     closed = AuditEvent.objects.get(kind=K.CLOSED)
     assert closed.detail == {"awarded_count": 2}
 

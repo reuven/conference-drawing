@@ -239,6 +239,9 @@ class Drawing(models.Model):
     cutoff_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
     awarded_count = models.PositiveIntegerField(default=0)
+    # True only when the owner closed it; an auto-finish (last copy claimed)
+    # leaves it False so a mis-tapped final Claimed can still be undone.
+    closed_by_owner = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["scheduled_at", "id"]

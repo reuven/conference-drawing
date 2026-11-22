@@ -3,10 +3,11 @@
 import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from django.apps import apps
+from django.conf import settings as django_settings
 from django.core.management import call_command
 from hypothesis import HealthCheck, settings
 
@@ -35,6 +36,21 @@ elif os.environ.get("CI"):
     settings.load_profile("ci")
 else:
     settings.load_profile("dev")
+
+
+@pytest.fixture(scope="session")
+def django_db_modify_db_settings(
+    django_db_modify_db_settings: None, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Use a file-backed test DB so locking behaves as in production.
+
+    Django's default in-memory SQLite test DB uses shared-cache table locks,
+    which fail at once instead of honoring the busy timeout, so concurrency
+    tests against it would prove nothing.
+    """
+    default = cast(dict[str, Any], django_settings.DATABASES["default"])
+    test_db = cast(dict[str, Any], default.setdefault("TEST", {}))
+    test_db["NAME"] = str(tmp_path_factory.mktemp("db") / "test.sqlite3")
 
 
 @pytest.fixture(scope="session")
