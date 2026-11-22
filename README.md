@@ -107,7 +107,9 @@ Everything is configured by environment variables or that `.env` file; see
    quantity.
 4. **Flyer.** From the conference page at `/booth/<slug>/`, open "Printable
    flyer" and print it or save it as a PDF from the browser. Optionally open
-   "Booth display link" on a monitor.
+   "Booth display link" on a monitor. If that link leaks, select the
+   conference in the admin and run "Rotate display token": the old link stops
+   working, and the conference page shows the new one.
 5. **At the booth.** Open `/booth/` on your phone. When a drawing's time
    comes, start it. Digital winners are announced at once and emailed through
    Drip. For each physical pick, tap Claimed if the person is there or Not

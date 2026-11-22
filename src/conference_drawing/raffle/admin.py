@@ -23,6 +23,7 @@ from .models import (
     PrizeLine,
     Question,
     create_default_questions,
+    new_display_token,
 )
 from .timezones import to_local, to_utc
 
@@ -63,6 +64,27 @@ class ConferenceAdmin(admin.ModelAdmin[Conference]):
     search_fields = ("name", "slug")
     readonly_fields = ("display_token", "wrapped_up_at", "deleted_entrant_count")
     inlines = [QuestionInline]
+    actions = ["rotate_display_token"]
+
+    @admin.action(description="Rotate display token")
+    def rotate_display_token(
+        self, request: HttpRequest, queryset: QuerySet[Conference]
+    ) -> None:
+        """Give each conference a fresh token, so a leaked display URL 404s.
+
+        The monitor then needs the new "Booth display link" from the booth.
+        """
+        count = 0
+        for conference in queryset:
+            conference.display_token = new_display_token()
+            conference.save(update_fields=["display_token"])
+            count += 1
+        self.message_user(
+            request,
+            f"Rotated the display token of {count} conference(s). "
+            "Open the new booth display link on the monitor.",
+            messages.SUCCESS,
+        )
 
     def save_model(
         self, request: HttpRequest, obj: Conference, form: Any, change: bool

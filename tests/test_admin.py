@@ -584,6 +584,28 @@ def test_codes_text_rejected_for_physical_line(
     assert not CouponCode.objects.exists()
 
 
+def test_rotate_display_token_action_breaks_the_old_url(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    """For a display link that leaked: the old URL must stop working at once."""
+    conf, other = conference_factory(), conference_factory()
+    old, untouched = conf.display_token, other.display_token
+    assert admin_client.get(f"/display/{old}/").status_code == 200
+    resp = admin_client.post(
+        reverse("admin:raffle_conference_changelist"),
+        {"action": "rotate_display_token", "_selected_action": [conf.pk]},
+        follow=True,
+    )
+    assert "Rotated the display token of 1 conference(s)." in resp.content.decode()
+    conf.refresh_from_db()
+    other.refresh_from_db()
+    assert conf.display_token != old and len(conf.display_token) >= 40
+    assert other.display_token == untouched
+    assert admin_client.get(f"/display/{old}/").status_code == 404
+    assert admin_client.get(f"/display/{conf.display_token}/").status_code == 200
+    assert old not in resp.content.decode()
+
+
 # --- login rate limit ----------------------------------------------------------
 
 
