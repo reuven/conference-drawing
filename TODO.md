@@ -8,7 +8,7 @@ Spec: `docs/superpowers/specs/2026-11-22-conference-raffle-design.md`
 - [x] 1. Project scaffold, settings, ops endpoints, test harness, CI
 - [x] 2. Data model
 - [x] 3. Eligibility
-- [ ] 4. Drawing service (start, claim, not-here redraw, undo, close)
+- [x] 4. Drawing service (start, claim, not-here redraw, undo, close)
 - [ ] 5. Coupon codes and prize URLs
 - [ ] 6. Public entry flow
 - [ ] 7. Booth drawing screen (phone-first, HTMX)
