@@ -521,6 +521,19 @@ def test_undo_after_auto_finish_refused_when_later_drawing_started(
     assert pick.status == S.CLAIMED
 
 
+def test_undo_after_auto_finish_ignores_later_drawing_of_another_conference(
+    drawing: Drawing, entrants: list[int]
+) -> None:
+    [pick] = started_single(drawing)
+    mark_claimed(pick, now=LATER)
+    elsewhere = factories.make_drawing(
+        factories.make_conference(), scheduled_at=SCHEDULED
+    )
+    digital_line(elsewhere)
+    start_drawing(elsewhere, now=LATER, rng=rng())
+    assert undo_last(pick, now=LATER).status == S.PENDING
+
+
 def test_undo_after_auto_finish_allowed_when_earlier_drawing_exists(
     conf: Conference, drawing: Drawing, entrants: list[int]
 ) -> None:

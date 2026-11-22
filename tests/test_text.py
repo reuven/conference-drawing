@@ -85,3 +85,26 @@ def test_label_still_rejects_bidi_bom_and_separators(bad: str) -> None:
 def test_label_accepts_text_with_zwj_and_zwnj(parts: list[str]) -> None:
     s = "".join(parts)
     assert validate_single_line_label(s) == s.strip()
+
+
+@pytest.mark.parametrize(
+    ("bad", "code", "message"),
+    [
+        ("   ", "blank", "This field cannot be blank."),
+        (
+            "n" * 201,
+            "max_length",
+            "Ensure this value has at most 200 characters.",
+        ),
+        (
+            "a\nb",
+            "invalid_characters",
+            "Remove line breaks and invisible or control characters.",
+        ),
+    ],
+)
+def test_label_error_code_and_message(bad: str, code: str, message: str) -> None:
+    with pytest.raises(ValidationError) as caught:
+        validate_single_line_label(bad)
+    [error] = caught.value.error_list
+    assert (error.code, error.message) == (code, message)
