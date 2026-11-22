@@ -12,7 +12,7 @@
 <p class="note">{{ pending }} Drip jobs are still pending. Wait for them to send, then come back.</p>
 {% else %}
 <p>This permanently deletes {{ entrants }} {{ entrants|pluralize:"entrant,entrants" }}: names, emails, answers and picks. Drawings, prizes and counts stay. It can't be undone.</p>
-<p>{{ failed }} failed Drip jobs will be discarded.</p>
+<p>{{ failed }} failed Drip {{ failed|pluralize:"job,jobs" }} will be discarded.</p>
 <p class="note">Hourly snapshots still hold the data until they age out (48 hours).</p>
 <form method="post" action="{% url 'booth-delete-entrants' conference.slug %}">
   {% csrf_token %}

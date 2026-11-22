@@ -355,7 +355,11 @@ class CouponCode(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["prize_line", "code"], name="coupon_code_unique_per_line"
-            )
+            ),
+            models.CheckConstraint(
+                condition=Q(pick__isnull=True) | Q(used=True),
+                name="couponcode_pick_implies_used",
+            ),
         ]
 
     def __str__(self) -> str:

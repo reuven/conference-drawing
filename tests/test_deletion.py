@@ -3,20 +3,23 @@
 import datetime
 import logging
 import random
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.contrib.admin.models import ADDITION, LogEntry
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.models import ContentType
-from django.db import connection
+from django.db import IntegrityError, OperationalError, connection, transaction
 from django.test import Client
 from django.urls import reverse
 
 from conference_drawing.raffle.deletion import delete_entrants
 from conference_drawing.raffle.draw import DrawingError, start_drawing
+from conference_drawing.raffle.drip.outbox import requeue_failed
 from conference_drawing.raffle.models import (
     AuditEvent,
     Conference,
@@ -129,6 +132,20 @@ def test_deletes_entrants_and_picks_keeps_drawings_and_counts(
 def test_outbox_payloads_redacted(
     conference: Conference, populated: dict[str, Any]
 ) -> None:
+    other = factories.make_conference()
+    OutboxJob.objects.create(
+        conference=other, kind=OutboxJob.Kind.EVENT, payload={"keep": 1}
+    )
+    delete_entrants(conference, now=NOW)
+    mine = OutboxJob.objects.filter(conference=conference)
+    assert mine.count() == 1
+    assert all(j.payload == {"redacted": True} for j in mine)
+    assert OutboxJob.objects.get(conference=other).payload == {"keep": 1}
+
+
+def test_failed_jobs_are_removed_and_cannot_be_retried(
+    conference: Conference, populated: dict[str, Any]
+) -> None:
     OutboxJob.objects.create(
         conference=conference,
         kind=OutboxJob.Kind.SUBSCRIBERS,
@@ -138,15 +155,20 @@ def test_outbox_payloads_redacted(
     )
     other = factories.make_conference()
     OutboxJob.objects.create(
-        conference=other, kind=OutboxJob.Kind.EVENT, payload={"keep": 1}
+        conference=other, kind=OutboxJob.Kind.EVENT, status=OutboxJob.Status.FAILED
     )
     delete_entrants(conference, now=NOW)
     mine = OutboxJob.objects.filter(conference=conference)
-    assert mine.count() == 2
-    assert all(j.payload == {"redacted": True} for j in mine)
-    assert OutboxJob.objects.get(conference=other).payload == {"keep": 1}
-    failed = OutboxJob.objects.get(status=OutboxJob.Status.FAILED)
-    assert failed.last_error_class == "DripError"
+    assert not mine.filter(status=OutboxJob.Status.FAILED).exists()
+    assert requeue_failed(mine, now=NOW) == 0
+    assert OutboxJob.objects.filter(conference=other).count() == 1
+
+
+def test_assigned_code_must_be_marked_used(
+    conference: Conference, populated: dict[str, Any]
+) -> None:
+    with pytest.raises(IntegrityError), transaction.atomic():
+        CouponCode.objects.update(used=False)
 
 
 def test_no_email_left_anywhere_in_db(
@@ -233,10 +255,16 @@ def test_scrub_failure_is_logged_by_class_only(
     populated: dict[str, Any],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # Inside the test's wrapping transaction VACUUM cannot run, which is the
-    # very failure the best-effort scrub must survive.
-    with caplog.at_level(logging.INFO):
+    fake = MagicMock()
+    fake.cursor.return_value.__enter__.return_value.execute.side_effect = (
+        OperationalError("database is locked")
+    )
+    with (
+        caplog.at_level(logging.INFO),
+        patch("conference_drawing.raffle.deletion.connection", fake),
+    ):
         delete_entrants(conference, now=NOW)
+    assert Entrant.objects.count() == 0
     text = caplog.text
     assert "OperationalError" in text
     assert SECRET_MAIL not in text
@@ -253,15 +281,23 @@ def test_deleted_bytes_are_gone_from_the_database_file(
     factories.make_entrant(conf, name="Zelda Quux", email=needle.decode())
     path = Path(connection.settings_dict["NAME"])
     with connection.cursor() as cur:
+        cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    assert needle in path.read_bytes()
-    delete_entrants(conf, now=NOW)
-    raw = path.read_bytes()
-    wal = Path(f"{path}-wal")
-    if wal.exists():
-        raw += wal.read_bytes()
-    assert needle not in raw
-    assert b"Zelda Quux" not in raw
+    # A second connection (the Drip worker's stand-in) keeps the WAL alive on
+    # disk, as in production, so we can read it after the scrub.
+    other = sqlite3.connect(path)
+    try:
+        other.execute("SELECT count(*) FROM raffle_entrant").fetchall()
+        assert needle in path.read_bytes()
+        delete_entrants(conf, now=NOW)
+        wal = Path(f"{path}-wal")
+        raw = path.read_bytes() + (wal.read_bytes() if wal.exists() else b"")
+        assert needle not in raw
+        assert b"Zelda Quux" not in raw
+    finally:
+        other.close()
+        with connection.cursor() as cur:
+            cur.execute("PRAGMA journal_mode=DELETE")
 
 
 # --- view --------------------------------------------------------------------
@@ -293,7 +329,7 @@ def test_confirmation_page_shows_counts_and_failed_jobs(
     )
     body = owner.get(reverse("booth-delete-entrants", args=["pycon"])).content.decode()
     assert "3 entrants" in body
-    assert "1 failed Drip jobs will be discarded" in body
+    assert "1 failed Drip job will be discarded" in body
     assert Entrant.objects.count() == 3
 
 

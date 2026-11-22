@@ -21,4 +21,11 @@ class Migration(migrations.Migration):
             field=models.BooleanField(default=False),
         ),
         migrations.RunPython(mark_assigned_codes_used, migrations.RunPython.noop),
+        migrations.AddConstraint(
+            model_name="couponcode",
+            constraint=models.CheckConstraint(
+                condition=models.Q(("pick__isnull", True), ("used", True), _connector="OR"),
+                name="couponcode_pick_implies_used",
+            ),
+        ),
     ]
