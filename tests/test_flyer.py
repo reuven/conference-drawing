@@ -57,6 +57,26 @@ def test_flyer_qr_encodes_entry_url(owner: Client, conference: Conference) -> No
     assert "testserver/c/pycon/" in html
 
 
+def test_flyer_qr_is_https_behind_the_proxy(
+    owner: Client, conference: Conference, settings: Any
+) -> None:
+    """Caddy terminates TLS and says so; the printed code must not be http://."""
+    settings.ALLOWED_HOSTS = ["raffle.example.com"]
+    response = owner.get(
+        reverse(URL, args=[conference.slug]),
+        HTTP_HOST="raffle.example.com",
+        HTTP_X_FORWARDED_PROTO="https",
+    )
+    html = response.content.decode()
+    want = "https://raffle.example.com" + reverse("entry", args=["pycon"])
+    http = want.replace("https://", "http://", 1)
+    for url, present in ((want, True), (http, False)):
+        svg = segno.make(url, error="m").svg_inline(scale=10)
+        path_data = re.search(r' d="([^"]+)"', svg)
+        assert path_data is not None
+        assert (path_data.group(1) in html) is present, url
+
+
 def test_flyer_qr_carries_no_inline_style(
     owner: Client, conference: Conference
 ) -> None:
