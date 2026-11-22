@@ -7,6 +7,7 @@ because the services don't refresh the caller's objects. With HTMX a tap swaps
 one copy's rows in place; without JavaScript the same forms POST and redirect.
 """
 
+import datetime
 import random
 import secrets
 from collections.abc import Callable
@@ -14,7 +15,7 @@ from dataclasses import dataclass, field
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
+from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
 from django.template.loader import render_to_string
 from django.urls import reverse
@@ -31,7 +32,8 @@ from ..draw import (
     undo_last,
 )
 from ..drip.config import drip_settings
-from ..models import Conference, CouponCode, Drawing, Pick, PrizeLine
+from ..drip.outbox import enqueue_won_prize, failed_count, pending_count, requeue_failed
+from ..models import Conference, CouponCode, Drawing, OutboxJob, Pick, PrizeLine
 from ..timezones import to_local
 
 _ACTIVE = (Pick.Status.PENDING, Pick.Status.CLAIMED, Pick.Status.DIGITAL)
@@ -40,6 +42,11 @@ _ACTIVE = (Pick.Status.PENDING, Pick.Status.CLAIMED, Pick.Status.DIGITAL)
 def _rng() -> random.Random:
     """Production randomness; tests replace this with a seeded `random.Random`."""
     return secrets.SystemRandom()
+
+
+def _enqueue(pick: Pick, now: datetime.datetime) -> None:
+    """Hand a digital pick to the Drip outbox inside the drawing's transaction."""
+    enqueue_won_prize(pick, now=now)
 
 
 @dataclass
@@ -214,11 +221,32 @@ def conference_page(request: HttpRequest, slug: str) -> HttpResponse:
         (d, _local_label(d))
         for d in Drawing.objects.filter(conference=conf).select_related("conference")
     ]
+    drip_on = drip_settings() is not None
     return render(
         request,
         "raffle/booth/conference.html",
-        {"conference": conf, "drawings": drawings},
+        {
+            "conference": conf,
+            "drawings": drawings,
+            "drip_on": drip_on,
+            "drip_pending": pending_count(conf) if drip_on else 0,
+            "drip_failed": failed_count(conf) if drip_on else 0,
+        },
     )
+
+
+@login_required
+@require_POST
+def retry_failed(request: HttpRequest, slug: str) -> HttpResponse:
+    """Requeue this conference's failed Drip jobs; 404 when Drip isn't in use."""
+    conf = get_object_or_404(Conference, slug=slug)
+    if drip_settings() is None:
+        raise Http404
+    count = requeue_failed(
+        OutboxJob.objects.filter(conference=conf), now=timezone.now()
+    )
+    messages.success(request, f"Requeued {count} failed Drip job(s).")
+    return HttpResponseRedirect(reverse("booth-conference", args=[conf.slug]))
 
 
 @login_required
@@ -244,8 +272,14 @@ def _redirect(request: HttpRequest, drawing_id: int) -> HttpResponse:
 def start(request: HttpRequest, pk: int) -> HttpResponse:
     """Run the drawing; refusals come back as a message on the drawing page."""
     obj = get_object_or_404(Drawing, pk=pk)
+    now = timezone.now()
     try:
-        start_drawing(obj, now=timezone.now(), rng=_rng())
+        start_drawing(
+            obj,
+            now=now,
+            rng=_rng(),
+            on_digital_pick=lambda pick: _enqueue(pick, now),
+        )
     except DrawingError as exc:
         messages.error(request, str(exc))
     return _redirect(request, obj.pk)

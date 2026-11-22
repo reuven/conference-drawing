@@ -11,6 +11,7 @@ from django.http import HttpRequest
 from django.utils import timezone
 
 from .codes import parse_codes
+from .drip.outbox import requeue_failed
 from .models import (
     Book,
     Conference,
@@ -282,11 +283,7 @@ class OutboxJobAdmin(_ReadOnlyAdmin[OutboxJob]):
 
     @admin.action(description="Retry failed jobs", permissions=["retry"])
     def retry_failed(self, request: HttpRequest, queryset: QuerySet[OutboxJob]) -> None:
-        count = queryset.filter(status=OutboxJob.Status.FAILED).update(
-            status=OutboxJob.Status.PENDING,
-            attempts=0,
-            next_attempt_at=timezone.now(),
-        )
+        count = requeue_failed(queryset, now=timezone.now())
         self.message_user(request, f"Requeued {count} failed job(s).", messages.SUCCESS)
 
     def has_retry_permission(self, request: HttpRequest) -> bool:

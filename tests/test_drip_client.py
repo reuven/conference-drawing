@@ -1,0 +1,97 @@
+"""DripClient: request shape, auth, and error mapping, against mocked HTTP only."""
+
+import base64
+import datetime
+import json
+from collections.abc import Iterator
+
+import httpx
+import pytest
+import respx
+from pydantic import SecretStr
+
+from conference_drawing.raffle.drip.client import DripClient, DripError
+from conference_drawing.raffle.drip.config import DripSettings
+from conference_drawing.raffle.drip.payloads import EventPayload, SubscriberPayload
+
+BASE = "https://api.getdrip.com/v2/1234567"
+UA = "conference-drawing (+https://github.com/reuven/conference-drawing)"
+EVENT = EventPayload(
+    email="a@example.com",
+    action="Won raffle prize",
+    properties={"book_title": "B"},
+    occurred_at=datetime.datetime(2027, 5, 11, 21, 0, tzinfo=datetime.UTC),
+)
+
+
+@pytest.fixture
+def http() -> Iterator[httpx.Client]:
+    with httpx.Client() as client:
+        yield client
+
+
+@pytest.fixture
+def drip(http: httpx.Client) -> DripClient:
+    return DripClient(
+        DripSettings(account_id="1234567", api_key=SecretStr("fake-key")), http
+    )
+
+
+def test_client_posts_expected_json_and_user_agent(
+    respx_mock: respx.MockRouter, drip: DripClient
+) -> None:
+    route = respx_mock.post(f"{BASE}/events").mock(return_value=httpx.Response(204))
+    drip.record_event(EVENT)
+    request = route.calls.last.request
+    assert json.loads(request.content) == {"events": [EVENT.to_json()]}
+    assert request.headers["User-Agent"] == UA
+    assert request.headers["Content-Type"] == "application/json"
+    expected = base64.b64encode(b"fake-key:").decode()
+    assert request.headers["Authorization"] == f"Basic {expected}"
+    assert request.extensions["timeout"]["read"] == 10
+
+
+def test_upsert_subscribers_posts_batches(
+    respx_mock: respx.MockRouter, drip: DripClient
+) -> None:
+    route = respx_mock.post(f"{BASE}/subscribers/batches").mock(
+        return_value=httpx.Response(201)
+    )
+    subs = [
+        SubscriberPayload(email=f"p{i}@example.com", first_name="P", tags=["t"])
+        for i in range(1001)
+    ]
+    drip.upsert_subscribers(subs)
+    assert route.call_count == 2
+    sizes = [
+        len(json.loads(c.request.content)["batches"][0]["subscribers"])
+        for c in route.calls
+    ]
+    assert sizes == [1000, 1]
+
+
+def test_upsert_nothing_makes_no_call(drip: DripClient) -> None:
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post(f"{BASE}/subscribers/batches")
+        drip.upsert_subscribers([])
+    assert route.call_count == 0
+
+
+def test_client_raises_drip_error_on_422(
+    respx_mock: respx.MockRouter, drip: DripClient
+) -> None:
+    respx_mock.post(f"{BASE}/events").mock(
+        return_value=httpx.Response(422, json={"errors": ["a@example.com is bad"]})
+    )
+    with pytest.raises(DripError) as caught:
+        drip.record_event(EVENT)
+    assert caught.value.status_code == 422
+    assert "a@example.com" not in str(caught.value)
+    assert not caught.value.retryable
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"), [(400, False), (404, False), (429, True), (503, True)]
+)
+def test_drip_error_retryable_rule(status: int, retryable: bool) -> None:
+    assert DripError(status).retryable is retryable

@@ -6,6 +6,14 @@
 <p><a href="{% url 'display' conference.display_token %}">Booth display link</a></p>
 <p><a href="{% url 'booth-flyer' conference.slug %}">Printable flyer</a></p>
 <p><a href="{% url 'booth-export' conference.slug %}">Download CSV</a></p>
+{% for message in messages %}<p class="note" role="status">{{ message }}</p>{% endfor %}
+{% if drip_on %}
+<form method="post" action="{% url 'booth-retry-failed' conference.slug %}">
+  {% csrf_token %}
+  <p class="note">Drip: {{ drip_pending }} pending, {{ drip_failed }} failed</p>
+  {% if drip_failed %}<button class="tap" type="submit">Retry failed</button>{% endif %}
+</form>
+{% endif %}
 <ul class="booth-list">
   {% for drawing, when in drawings %}
   <li>
