@@ -1,6 +1,9 @@
 """Drip credentials, read from Django settings (which load the project `.env`)."""
 
+from typing import Any
+
 from django.conf import settings
+from django.core.checks import CheckMessage, Error, register
 from pydantic import BaseModel, SecretStr, field_validator
 
 
@@ -31,3 +34,26 @@ def drip_settings() -> DripSettings | None:
     if not account_id or not api_key:
         return None
     return DripSettings(account_id=account_id, api_key=SecretStr(api_key))
+
+
+@register("conference_drawing")
+def check_drip_settings(**kwargs: Any) -> list[CheckMessage]:
+    """Fail `manage.py check` (and so deploys) on a half-set or malformed Drip config.
+
+    Catching it here keeps a typo from surfacing as a 500 at the booth, or from
+    silently disabling Drip. Messages never include the API key.
+    """
+    account_id = getattr(settings, "DRIP_ACCOUNT_ID", "")
+    api_key = getattr(settings, "DRIP_API_KEY", "")
+    if bool(account_id) != bool(api_key):
+        return [
+            Error(
+                "Set both DRIP_ACCOUNT_ID and DRIP_API_KEY, or neither.",
+                id="conference_drawing.E001",
+            )
+        ]
+    if account_id and not (account_id.isascii() and account_id.isdigit()):
+        return [
+            Error("DRIP_ACCOUNT_ID must be digits only.", id="conference_drawing.E002")
+        ]
+    return []

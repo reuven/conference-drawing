@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from django.contrib.auth.models import User
+from django.core.checks import run_checks
 from django.test import Client
 from django.urls import reverse
 from pydantic import ValidationError
@@ -559,3 +560,43 @@ def test_drip_account_id_must_be_digits(bad: str) -> None:
 def test_rng_factory_is_system_random(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.undo()
     assert isinstance(booth._rng(), secrets.SystemRandom)
+
+
+def test_htmx_config_meta_disables_eval_and_inline_styles(owner: Client) -> None:
+    html = owner.get(reverse("booth-home")).content.decode()
+    meta = (
+        """<meta name="htmx-config" content='"""
+        """{"allowEval":false,"includeIndicatorStyles":false,"allowScriptTags":false}'>"""
+    )
+    assert meta in html
+    assert html.index(meta) < html.index("htmx-2.0.11.min.js")
+
+
+def _drip_check_ids() -> list[str]:
+    return [m.id or "" for m in run_checks(tags=["conference_drawing"])]
+
+
+def test_drip_check_passes_when_unset_or_valid(settings: Any) -> None:
+    assert _drip_check_ids() == []
+    settings.DRIP_ACCOUNT_ID = "1234567"
+    settings.DRIP_API_KEY = "sekrit-key"
+    assert _drip_check_ids() == []
+
+
+@pytest.mark.parametrize(("account", "key"), [("123", ""), ("", "sekrit-key")])
+def test_drip_check_rejects_half_configured_pair(
+    settings: Any, account: str, key: str
+) -> None:
+    settings.DRIP_ACCOUNT_ID = account
+    settings.DRIP_API_KEY = key
+    messages = run_checks(tags=["conference_drawing"])
+    assert [m.id for m in messages] == ["conference_drawing.E001"]
+    assert "sekrit" not in str(messages[0])
+
+
+def test_drip_check_rejects_malformed_account_id(settings: Any) -> None:
+    settings.DRIP_ACCOUNT_ID = "12a"
+    settings.DRIP_API_KEY = "sekrit-key"
+    messages = run_checks(tags=["conference_drawing"])
+    assert [m.id for m in messages] == ["conference_drawing.E002"]
+    assert "sekrit" not in str(messages[0])
