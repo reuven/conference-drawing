@@ -324,6 +324,8 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
   per-conference token, so winner names aren't on a public, guessable page.
 - **Entry form abuse**: per-IP rate limit and a honeypot field; no CAPTCHA
   (friction on phones). Entry closes at wrap-up.
+- **Admin login abuse**: login POSTs are rate limited per IP (10 a minute),
+  so password guessing can't tie up the workers the booth needs.
 - **Time handling**: all times stored in UTC, displayed and entered in the
   conference's IANA zone.
 - **QR code**: generated server-side as SVG (e.g. `segno`).

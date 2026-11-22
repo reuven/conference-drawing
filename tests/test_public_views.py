@@ -184,6 +184,7 @@ def test_post_without_csrf_token_is_refused(conference: Conference) -> None:
     assert Entrant.objects.count() == 0
 
 
+@pytest.mark.usefixtures("frozen_ratelimit_clock")
 def test_post_rate_limited_per_ip(client: Client, conference: Conference) -> None:
     kwargs: dict[str, Any] = {"REMOTE_ADDR": "203.0.113.5"}
     url = reverse("entry", args=[conference.slug])
@@ -198,6 +199,7 @@ def test_post_rate_limited_per_ip(client: Client, conference: Conference) -> Non
     assert client.get(url, **kwargs).status_code == 200
 
 
+@pytest.mark.usefixtures("frozen_ratelimit_clock")
 def test_rate_limit_uses_rightmost_forwarded_for(
     client: Client, conference: Conference
 ) -> None:

@@ -584,6 +584,38 @@ def test_codes_text_rejected_for_physical_line(
     assert not CouponCode.objects.exists()
 
 
+# --- login rate limit ----------------------------------------------------------
+
+
+@pytest.mark.usefixtures("frozen_ratelimit_clock")
+def test_admin_login_posts_are_rate_limited_per_ip(db: None) -> None:
+    """Password guessing is capped, so it can't freeze the booth's workers."""
+    client = Client()
+    url = reverse("admin:login")
+    assert url == "/admin/login/"
+    guess = {"username": "boss", "password": "wrong"}
+    who: dict[str, Any] = {"REMOTE_ADDR": "203.0.113.9"}
+    statuses = [client.post(url, guess, **who).status_code for _ in range(10)]
+    assert set(statuses) == {200}  # the form again, with an error
+    blocked = client.post(url, guess, **who)
+    assert blocked.status_code == 429
+    assert blocked["Cache-Control"] == "private, no-store"
+    # GET is never limited, and another client has its own count.
+    assert client.get(url, **who).status_code == 200
+    assert client.post(url, guess, REMOTE_ADDR="203.0.113.10").status_code == 200
+
+
+@pytest.mark.usefixtures("frozen_ratelimit_clock")
+def test_admin_login_still_logs_in(db: None) -> None:
+    get_user_model().objects.create_superuser("boss", "boss@example.com", "pw")
+    client = Client()
+    resp = client.post(
+        reverse("admin:login"),
+        {"username": "boss", "password": "pw", "next": "/admin/"},
+    )
+    assert (resp.status_code, resp["Location"]) == (302, "/admin/")
+
+
 # --- the drawing state machine is the booth's, never the admin's ---------------
 
 

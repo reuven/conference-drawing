@@ -2,9 +2,18 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import path
+from django_ratelimit.decorators import ratelimit
 
 from conference_drawing import ops
 from conference_drawing.raffle.views import booth, display, export, flyer, public
+
+# Password guessing on the admin login would tie up the sync workers the booth
+# needs, so login POSTs get the entry form's per-client limiter (and its 429),
+# tighter. Listed before admin.site.urls, so this path wins and "admin:login"
+# still reverses to the same URL.
+admin_login = ratelimit(key=public.client_ip, rate="10/m", method="POST", block=True)(
+    admin.site.login
+)
 
 urlpatterns = [
     path("health", ops.health, name="health"),
@@ -35,6 +44,7 @@ urlpatterns = [
         name="booth-retry-failed",
     ),
     path("booth/<slug:slug>/", booth.conference_page, name="booth-conference"),
+    path("admin/login/", admin_login, name="admin-login"),
     path("admin/", admin.site.urls),
 ]
 

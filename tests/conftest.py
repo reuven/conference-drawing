@@ -1,10 +1,12 @@
 """Shared test harness: environment, Hypothesis profiles, DB guards."""
 
 import os
+import types
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+import django_ratelimit.core
 import pytest
 from django.apps import apps
 from django.conf import settings as django_settings
@@ -102,6 +104,23 @@ def django_db_setup(django_db_setup: None, django_db_blocker: Any) -> None:
     """Create the DatabaseCache table in the test database (rate limiting uses it)."""
     with django_db_blocker.unblock():
         call_command("createcachetable", verbosity=0)
+
+
+# A fixed instant well inside one rate-limit window (its jitter is under 60 s).
+FROZEN_EPOCH = 1_800_000_000.0
+
+
+@pytest.fixture
+def frozen_ratelimit_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin django-ratelimit's clock so a test never straddles a minute boundary.
+
+    The limiter keys its counters by time window; a test that crosses into the
+    next window would start a fresh count and flake. Only the limiter's own
+    `time` reference is replaced, never the global `time.time`.
+    """
+    monkeypatch.setattr(
+        django_ratelimit.core, "time", types.SimpleNamespace(time=lambda: FROZEN_EPOCH)
+    )
 
 
 @pytest.fixture(autouse=True)
