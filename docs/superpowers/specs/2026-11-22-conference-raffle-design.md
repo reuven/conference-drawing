@@ -270,16 +270,45 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
   conference's IANA zone.
 - **QR code**: generated server-side as SVG (e.g. `segno`).
 - **Live updates**: HTMX (vendored, pinned) with polling; no WebSockets.
-- **Deployment** (serving goal 8): one Docker image (gunicorn + WhiteNoise for
-  static), SQLite and uploaded covers on a mounted volume.
-  - **Primary path: Fly.io** — the repo ships a `fly.toml` with a volume;
-    deploy is `fly launch` then `fly deploy`.
-  - **Fallback: `docker compose up`** on any VPS, with Caddy for automatic TLS.
-  - **`uv run conference-drawing init`** generates `SECRET_KEY`, writes `.env`,
-    runs migrations, and creates the owner login (interactive locally;
-    from `DJANGO_SUPERUSER_*` env vars on first boot in a container).
-  - README is a zero-to-printed-flyer walkthrough, including the Drip workflow
-    setup.
+- **Deployment** (serving goal 8; revised 2026-11-22 after Reuven chose
+  DigitalOcean and pointed at his existing server). The app is **ephemeral per
+  conference**: installed when the conference starts, removed when it ends.
+  Target is any Ubuntu server with **systemd + Caddy** that the operator can
+  ssh to as root. Reuven's is `wp2.lerner.co.il` (Ubuntu 24.04, 1 vCPU,
+  2 GB RAM + 2 GB swap, native Caddy 2.11 importing `/etc/caddy/sites/*.caddy`,
+  no Docker, and it also serves his WordPress sites and store — so the install
+  must be small and must never break Caddy).
+  - **Native, no Docker**: `uv` installs Python 3.14 and the locked
+    dependencies under `/srv/conference-drawing/`, owned by a dedicated
+    `conference-drawing` system user. Two systemd units: `conference-drawing-web`
+    (gunicorn, 2 workers, on a unix socket) and `conference-drawing-drip`
+    (the outbox worker). An hourly systemd timer snapshots SQLite with
+    `sqlite3 .backup`, keeping 48.
+  - **Caddy**: the install writes one file, `/etc/caddy/sites/conference-drawing.caddy`
+    (`<domain> { reverse_proxy unix//run/conference-drawing/web.sock }` plus
+    static/media handling), runs `caddy validate` on the full config, and only
+    then `systemctl reload caddy`. It never edits any other Caddy file.
+  - **Operator commands, run from the laptop** (one each, refusing on the first
+    failure):
+    - `deploy/up.sh <host> <domain>` — preflight (refuses if any systemd unit is
+      failed, Caddy invalid, or the domain's DNS doesn't point at the host),
+      install or upgrade, optional restore of a previous backup, then a smoke
+      check of `/health`, `/version`, and the entry page over HTTPS.
+    - `deploy/backup.sh <host>` — pulls a consistent SQLite snapshot plus
+      media to the laptop.
+    - `deploy/down.sh <host>` — **refuses** while Drip outbox jobs are pending
+      or if no backup newer than the last write exists; then removes the units,
+      the Caddy site file (validate + reload), and `/srv/conference-drawing`.
+  - **No server?** The README shows creating a $6 DigitalOcean Droplet,
+    installing Caddy from its official apt repo, then running `up.sh`.
+  - **Init**: `conference-drawing init` (run by `up.sh` on first install)
+    generates `SECRET_KEY`, writes the server's `.env` (mode 0600), migrates,
+    and creates the owner login.
+  - **Books carry across conferences** by restoring the previous backup on
+    `up.sh --restore <file>`; deleting a finished conference's entrants first
+    keeps personal data out of the backup.
+  - Every page footer shows the running version; `GET`/`HEAD /health`
+    (no DB) and `GET /version` exist.
 - **License**: MIT. Package/distribution name `conference-drawing`.
 - **Drip is optional per install** (see "Without Drip" above).
 - **Privacy note**: a page whose text the owner edits; linked from the form.
@@ -289,7 +318,7 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
 - Exact model fields, URL structure, template layout and styling.
 - Outbox mechanism (DB table + management-command worker, or Django's tasks
   framework with a DB-backed worker).
-- Rate-limit implementation, Docker/Caddy details, backup recipe in docs.
+- Rate-limit implementation details.
 - Test structure, Hypothesis properties (e.g. no excluded or past winner is
   ever picked; picks per line never exceed quantity; each pool code is used
   at most once).
