@@ -16,7 +16,11 @@ def restore_profile() -> Iterator[None]:
 
 
 @pytest.mark.usefixtures("restore_profile")
-def test_ci_profile_runs_200_examples(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ci_profile_runs_200_examples(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Not under mutants/, where the mutmut profile would win (as in a mutmut run).
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("HYPOTHESIS_PROFILE", raising=False)
     monkeypatch.setenv("CI", "1")
     importlib.reload(conftest)

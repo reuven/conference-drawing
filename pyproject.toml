@@ -92,3 +92,14 @@ select = ["E", "F", "I", "B", "UP", "S", "DJ"]
 
 [tool.mutmut]
 source_paths = ["src/conference_drawing"]
+# The pure-logic modules whose tests are worth auditing; the rest is Django glue.
+only_mutate = [
+    "*/raffle/eligibility.py",
+    "*/raffle/draw.py",
+    "*/raffle/codes.py",
+    "*/raffle/text.py",
+]
+# mutants/ gets a copy of pyproject.toml, so pytest's env (the Postgres test
+# database settings) applies there too. e2e needs a browser, and tests/deploy
+# needs deploy/, which is not copied; neither exercises the mutated modules.
+pytest_add_cli_args = ["-m", "not e2e", "--ignore=tests/deploy"]

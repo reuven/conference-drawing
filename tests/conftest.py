@@ -25,7 +25,15 @@ settings.register_profile(
     "dev", max_examples=50, deadline=None, suppress_health_check=[HealthCheck.too_slow]
 )
 settings.register_profile("ci", max_examples=200, deadline=None)
-settings.register_profile("mutmut", max_examples=10, deadline=None)
+# mutmut runs pytest more than once in one process (stats, then the clean run),
+# so a hypothesis TestCase method sees a second executor instance. That is an
+# artifact of the runner, not a flaky test.
+settings.register_profile(
+    "mutmut",
+    max_examples=10,
+    deadline=None,
+    suppress_health_check=[HealthCheck.differing_executors],
+)
 
 _explicit = os.environ.get("HYPOTHESIS_PROFILE")
 if _explicit:
