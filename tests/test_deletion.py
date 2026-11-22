@@ -13,6 +13,7 @@ import pytest
 from django.contrib.admin.models import ADDITION, LogEntry
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.models import ContentType
+from django.core.cache import cache
 from django.db import IntegrityError, OperationalError, connection, transaction
 from django.test import Client
 from django.urls import reverse
@@ -115,6 +116,17 @@ def test_refuses_while_a_drawing_is_open(
     assert Entrant.objects.filter(conference=conference).count() == 3
     conference.refresh_from_db()
     assert conference.deleted_entrant_count is None
+
+
+def test_deletion_clears_the_rate_limit_cache(
+    conference: Conference, populated: dict[str, Any]
+) -> None:
+    """Its keys hash client IPs, which brute force reverses over IPv4."""
+    cache.set("rl:entry:203.0.113.5", 3, 60)
+    delete_entrants(conference, now=NOW)
+    with connection.cursor() as cur:
+        cur.execute("SELECT count(*) FROM cd_cache")
+        assert cur.fetchone() == (0,)
 
 
 def test_refuses_before_wrapup(conference_factory: Callable[..., Conference]) -> None:
@@ -285,15 +297,17 @@ def test_scrub_failure_is_logged_by_class_only(
     assert f"conference={conference.pk}" in text
 
 
-# The tables that held personal data, which VACUUM FULL must rewrite.
-SCRUBBED = (Entrant, Pick, OutboxJob, CouponCode, LogEntry)
+# The tables that held personal data, which VACUUM FULL must rewrite; the
+# cache table holds rate-limit keys derived from client IP addresses.
+SCRUBBED = [
+    m._meta.db_table for m in (Entrant, Pick, OutboxJob, CouponCode, LogEntry)
+] + ["cd_cache"]
 
 
 def _filenodes() -> dict[str, int]:
     with connection.cursor() as cur:
         nodes = {}
-        for model in SCRUBBED:
-            table = model._meta.db_table
+        for table in SCRUBBED:
             cur.execute("SELECT pg_relation_filenode(%s::regclass)", [table])
             nodes[table] = cur.fetchone()[0]
     return nodes

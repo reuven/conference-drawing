@@ -287,6 +287,9 @@ only locks the conference.
 - **Deleting.** "Delete entrants" removes every entrant of the conference, and
   with them their picks, the admin-history rows about them, and any failed
   Drip jobs; the remaining Drip jobs keep a row but lose their contents. It
+  also empties the rate-limit cache, whose keys are hashes of visitors' IP
+  addresses (easy to reverse for IPv4); otherwise each key expires after
+  about a minute but its row can stay in the table until overwritten. It
   then tries to rewrite the affected database tables so the deleted rows leave
   the files. That rewrite is best effort: it gives up (and only logs it) if a
   table stays locked for more than 5 seconds, and even when it runs, the

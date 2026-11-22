@@ -4,7 +4,8 @@ Once Drip has every entrant the owner removes all personal data for the
 conference. Entrants (and, by cascade, their picks) go; coupon `pick` and audit
 `pick` links become NULL; admin-history rows about those entrants are deleted;
 the conference's failed outbox jobs are deleted (so they cannot be retried) and
-every remaining job's payload is replaced with `{"redacted": true}`.
+every remaining job's payload is replaced with `{"redacted": true}`; and the
+rate-limit cache (`cd_cache`, keyed by hashed client IPs) is emptied.
 Audit details hold ids and counts only, so nothing else needs redacting.
 
 A coupon code keeps `used=True` so it is never handed out twice.
@@ -36,8 +37,10 @@ import datetime
 import functools
 import logging
 
+from django.conf import settings
 from django.contrib.admin.models import LogEntry
 from django.contrib.contenttypes.models import ContentType
+from django.core.cache import cache
 from django.db import DatabaseError, connection, transaction
 from django.db.models import CharField
 from django.db.models.functions import Cast
@@ -89,6 +92,10 @@ def delete_entrants(conference: Conference, *, now: datetime.datetime) -> int:
         jobs.update(payload={"redacted": True})
         locked.deleted_entrant_count = count
         locked.save(update_fields=["deleted_entrant_count"])
+        # The cache holds only django-ratelimit counters, keyed by a hash of
+        # the client IP, which brute force reverses over IPv4. Clearing it
+        # resets every limit for a minute, a fair price on a deletion day.
+        cache.clear()
         # After the outermost commit, outside any transaction, even when a
         # caller wraps this in its own atomic block.
         transaction.on_commit(functools.partial(_vacuum_full, locked.pk))
@@ -97,8 +104,16 @@ def delete_entrants(conference: Conference, *, now: datetime.datetime) -> int:
     return count
 
 
-# Every table that held an entrant's name, email or answers.
+# Every table that held an entrant's name, email or answers, plus the cache
+# table (rate-limit keys derived from client IPs).
 _SCRUBBED_MODELS = (Entrant, Pick, OutboxJob, CouponCode, LogEntry)
+
+
+def _scrubbed_tables() -> list[str]:
+    cache_table = str(settings.CACHES["default"]["LOCATION"])
+    return [m._meta.db_table for m in _SCRUBBED_MODELS] + [cache_table]
+
+
 # How long VACUUM FULL may wait for a table lock (a PostgreSQL interval).
 LOCK_TIMEOUT = "5s"
 
@@ -118,8 +133,8 @@ def _vacuum_full(conference_id: int) -> None:
                 "SELECT set_config('lock_timeout', %s, false)", [LOCK_TIMEOUT]
             )
             try:
-                for model in _SCRUBBED_MODELS:
-                    table = connection.ops.quote_name(model._meta.db_table)
+                for name in _scrubbed_tables():
+                    table = connection.ops.quote_name(name)
                     cursor.execute(f"VACUUM (FULL, ANALYZE) {table}")
             finally:
                 cursor.execute("RESET lock_timeout")
