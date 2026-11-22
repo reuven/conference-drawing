@@ -5,8 +5,8 @@ Spec: `docs/superpowers/specs/2026-11-22-conference-raffle-design.md`
 
 - [x] Design doc approved
 - [x] Implementation plan written
-- [ ] 1. Project scaffold, settings, ops endpoints, test harness, CI
-- [ ] 2. Data model
+- [x] 1. Project scaffold, settings, ops endpoints, test harness, CI
+- [x] 2. Data model
 - [ ] 3. Eligibility
 - [ ] 4. Drawing service (start, claim, not-here redraw, undo, close)
 - [ ] 5. Coupon codes and prize URLs

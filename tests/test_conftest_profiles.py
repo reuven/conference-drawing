@@ -2,9 +2,10 @@ import importlib
 from collections.abc import Iterator
 from pathlib import Path
 
-import conftest
 import pytest
 from hypothesis import settings
+
+from tests import conftest
 
 
 @pytest.fixture

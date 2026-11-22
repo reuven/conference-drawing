@@ -1,7 +1,7 @@
 """Shared test harness: environment, Hypothesis profiles, DB guards."""
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +9,16 @@ import pytest
 from django.apps import apps
 from django.core.management import call_command
 from hypothesis import HealthCheck, settings
+
+from conference_drawing.raffle.models import (
+    Book,
+    Conference,
+    Drawing,
+    Entrant,
+    Pick,
+    PrizeLine,
+)
+from tests import factories
 
 settings.register_profile(
     "dev", max_examples=50, deadline=None, suppress_health_check=[HealthCheck.too_slow]
@@ -45,3 +55,33 @@ def db_is_empty(request: pytest.FixtureRequest) -> Iterator[None]:
                     f"{model.__name__} is not empty at test start (leaked rows)"
                 )
     yield
+
+
+@pytest.fixture
+def book_factory(db: None) -> Callable[..., Book]:
+    return factories.make_book
+
+
+@pytest.fixture
+def conference_factory(db: None) -> Callable[..., Conference]:
+    return factories.make_conference
+
+
+@pytest.fixture
+def drawing_factory(db: None) -> Callable[..., Drawing]:
+    return factories.make_drawing
+
+
+@pytest.fixture
+def prize_line_factory(db: None) -> Callable[..., PrizeLine]:
+    return factories.make_prize_line
+
+
+@pytest.fixture
+def entrant_factory(db: None) -> Callable[..., Entrant]:
+    return factories.make_entrant
+
+
+@pytest.fixture
+def pick_factory(db: None) -> Callable[..., Pick]:
+    return factories.make_pick
