@@ -278,13 +278,28 @@ def test_up_refuses_a_uv_download_with_the_wrong_hash(up: Fakes) -> None:
 
 
 def test_up_refuses_while_the_uv_hash_file_is_a_placeholder(up: Fakes) -> None:
-    del up.extra_env["CD_UV_SHA256_FILE"]  # the committed file
-    assert "PLACEHOLDER" in (DEPLOY / "uv-0.13.9.sha256").read_text()
+    placeholder = up.root / "uv-0.13.9.sha256"
+    placeholder.write_text(f"PLACEHOLDER  {UV_TARBALL}\n")
+    up.extra_env["CD_UV_SHA256_FILE"] = str(placeholder)
     result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
     assert result.returncode != 0
     assert "uv-0.13.9.sha256" in result.stderr
     assert "releases" in result.stderr
     assert up.calls() == []
+
+
+def test_committed_uv_hash_file_is_filled_in() -> None:
+    lines = [
+        line
+        for line in (DEPLOY / "uv-0.13.9.sha256").read_text().splitlines()
+        if line and not line.startswith("#")
+    ]
+    names = sorted(line.split("  ", 1)[1] for line in lines)
+    assert names == [
+        "uv-aarch64-unknown-linux-gnu.tar.gz",
+        "uv-x86_64-unknown-linux-gnu.tar.gz",
+    ]
+    assert all(re.fullmatch(r"[0-9a-f]{64}", line.split("  ", 1)[0]) for line in lines)
 
 
 def test_up_refuses_an_unknown_server_architecture(up: Fakes) -> None:
