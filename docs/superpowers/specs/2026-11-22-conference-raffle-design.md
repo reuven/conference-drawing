@@ -1,7 +1,7 @@
 # Conference Book Raffle — Design
 
 Date: 2026-11-22
-Status: draft for approval
+Status: approved 2026-11-22
 
 ## Intent and why
 
@@ -36,6 +36,8 @@ with no SurveyMonkey, no CSV juggling, and no manual exclusion of staff.
    "you didn't win, but…" consolation code).
 7. CSV export of entrants, and one-click deletion of a conference's entrant
    data.
+8. **Super easy to self-deploy** for someone who knows Python but isn't an
+   ops person (Reuven's requirement). Open source, repo `conference-drawing`.
 
 ## Non-goals
 
@@ -268,9 +270,17 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
   conference's IANA zone.
 - **QR code**: generated server-side as SVG (e.g. `segno`).
 - **Live updates**: HTMX (vendored, pinned) with polling; no WebSockets.
-- **Deployment**: one Docker image (gunicorn + WhiteNoise for static), SQLite
-  and uploaded covers on a mounted volume, Caddy in front for TLS; deploy
-  docs for a generic VPS.
+- **Deployment** (serving goal 8): one Docker image (gunicorn + WhiteNoise for
+  static), SQLite and uploaded covers on a mounted volume.
+  - **Primary path: Fly.io** — the repo ships a `fly.toml` with a volume;
+    deploy is `fly launch` then `fly deploy`.
+  - **Fallback: `docker compose up`** on any VPS, with Caddy for automatic TLS.
+  - **`uv run conference-drawing init`** generates `SECRET_KEY`, writes `.env`,
+    runs migrations, and creates the owner login (interactive locally;
+    from `DJANGO_SUPERUSER_*` env vars on first boot in a container).
+  - README is a zero-to-printed-flyer walkthrough, including the Drip workflow
+    setup.
+- **License**: MIT. Package/distribution name `conference-drawing`.
 - **Drip is optional per install** (see "Without Drip" above).
 - **Privacy note**: a page whose text the owner edits; linked from the form.
 
