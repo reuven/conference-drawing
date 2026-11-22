@@ -516,6 +516,52 @@ def test_caddy_template_renders_valid_domain_only(...)   # domain validated agai
 
 ---
 
+### Task 16b: Switch from SQLite to PostgreSQL (added 2026-11-22, Reuven's decision: PostgreSQL only)
+
+**Why:** Reuven trusts PostgreSQL more: real row locks, concurrent writers, mature backup tooling. SQLite support is removed entirely; no dual paths.
+
+**Files:** modify `settings.py`, `cli.py` (init), `raffle/deletion.py`, `raffle/drip/outbox.py` (any SQLite-only comments/assumptions), `tests/conftest.py`, the concurrency tests in `tests/test_draw.py`, `tests/test_deletion.py`, `tests/test_settings.py`, `tests/test_cli.py`, `.github/workflows/ci.yml`, every SQLite-specific file under `deploy/` and `tests/deploy/`, `pyproject.toml` (`uv add "psycopg[binary]"`, or `psycopg[c]`; justify the choice), the spec's storage and deployment sections.
+
+**Interfaces / decisions:**
+- **Settings:**
+  - `DATABASES` come from env: `CD_DB_NAME` (default `conference_drawing`), `CD_DB_USER` (default `conference-drawing`), `CD_DB_HOST` (default empty = local unix socket), `CD_DB_PORT`, and `CD_DB_PASSWORD` (optional; empty means peer auth over the socket).
+  - `CONN_MAX_AGE=60` with `CONN_HEALTH_CHECKS=True`.
+  - Drop the SQLite `transaction_mode` option.
+  - `ATOMIC_REQUESTS` stays off.
+  - The DatabaseCache table `cd_cache` stays.
+- **Locking:** `select_for_update()` now really locks rows. Keep every existing call. The two-thread double-tap Barrier test must still pass against Postgres; that proves the drawing's concurrency story without IMMEDIATE.
+- **Worker claim:** `claim_due` may use `select_for_update(skip_locked=True)` so concurrent workers never wait on each other. Keep the lease-checked outcome writes.
+- **Deletion:**
+  - After the deleting transaction commits, run `VACUUM (FULL, ANALYZE)` on the entrant, pick, outbox-job, coupon-code and admin-log tables. This must happen outside a transaction. On Django that means `connection.cursor()` outside `atomic`. On error, log the class name only.
+  - Document what VACUUM FULL can't guarantee: WAL segments and old snapshots may still hold the data until they are recycled or aged out.
+  - Keep `test_no_email_left_anywhere_in_db`, enumerating tables via `connection.introspection.table_names()`.
+  - Replace the file-bytes WAL test with one asserting that the tables were rewritten: `pg_relation_filenode` changes after VACUUM FULL.
+- **Tests:**
+  - Run against a local PostgreSQL, Homebrew `postgresql@18` on the laptop and a `postgres:18` service container in CI.
+  - pytest-django creates `test_conference_drawing`.
+  - The conftest guard allowlists `localhost`, `127.0.0.1` and the unix socket, and refuses any DSN or `options` that point elsewhere (testing-lessons: guard the test database).
+  - The autouse `db_is_empty` guard stays.
+  - A local Postgres test run counts as a normal testslot run, not `--heavy`; it isn't Docker.
+- **init:** checks the database connection first and fails with a clear message, naming the setting but never a password. Then migrate, createcachetable, and the rest as before.
+- **Deploy (wp2 is Ubuntu 24.04; Postgres not installed; MySQL is active for WordPress; about 860 MB RAM available):**
+  - `install.sh` installs Ubuntu's `postgresql` package (16) if it's missing.
+  - It sets a small footprint in a `conf.d` drop-in: `shared_buffers=64MB`, `max_connections=20`, `listen_addresses=''` (socket only).
+  - It creates role `conference-drawing` (LOGIN, no password, peer auth for that OS user) and database `conference_drawing` owned by it, idempotently.
+  - The units add `After=postgresql.service` and `Requires=postgresql.service`.
+- **Backup and snapshot:**
+  - Use `pg_dump -Fc` as the app user. Verify by reading every block: `pg_restore --list` reads only the TOC, so use `pg_restore -f /dev/null`.
+  - The tarball includes `db.dump` and the media.
+  - Snapshots keep the newest 48, under the same lock.
+  - Restore uses `pg_restore --clean --if-exists --no-owner --role=conference-drawing` into the fresh database. The restore tarball checks now expect `db.dump`.
+- **Teardown:** `uninstall.sh` drops the database and the role. It removes the `postgresql` package only if install.sh installed it: record a marker in `/srv/conference-drawing/.installed-postgresql` and check that no other databases exist before purging. Otherwise it leaves the package alone.
+- **No version drift between laptop and server:** Django and psycopg support both 16 and 18. Note this in the spec.
+
+- [ ] **Step 1: Failing tests first** for: settings from env, the conftest DSN guard, the init connection check, the VACUUM FULL rewrite, the Postgres double-tap race, `skip_locked` claiming, the install.sh Postgres provisioning (fakes), pg_dump backup and restore checks (fakes), and the uninstall marker logic.
+- [ ] **Step 2–4:** run (fail) → implement → run (pass). Full suite at 100% coverage, ruff, mypy, shellcheck.
+- [ ] **Step 5: Commit + push** in logical commits, for example app/tests first, then deploy.
+
+---
+
 ### Task 17: End-to-end browser tests
 
 **Files:** Create `tests/e2e/conftest.py`, `tests/e2e/test_flows.py`

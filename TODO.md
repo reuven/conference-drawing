@@ -21,5 +21,6 @@ Spec: `docs/superpowers/specs/2026-11-22-conference-raffle-design.md`
 - [x] 14. Deleting a conference's entrants
 - [x] 15. `init` command
 - [x] 16. Deploy, backup and teardown scripts (wp2 / any systemd+Caddy host)
+- [ ] 16b. Switch from SQLite to PostgreSQL (Reuven's decision, 2026-11-22)
 - [ ] 17. End-to-end browser tests
 - [ ] 18. Docs and release readiness (v0.1.0)
