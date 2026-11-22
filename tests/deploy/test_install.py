@@ -1047,6 +1047,42 @@ PURGE_BLOCKERS: dict[str, tuple[str, Entry]] = {
 }
 
 
+def test_uninstall_keeps_a_database_of_that_name_owned_by_another_role(
+    upgrade: Server,
+) -> None:
+    """Someone else's conference_drawing database is not ours to drop."""
+    upgrade.fakes.prepend("systemctl", {"match": "is-active", "exit": 3})
+    upgrade.fakes.prepend(
+        "psql", {"match": "-f -", "stdin_match": "datdba", "stdout": "wordpress\n"}
+    )
+    result = upgrade.uninstall()
+    assert result.returncode == 0, result.stderr
+    sql = _admin_sql(upgrade)
+    assert "DROP DATABASE" not in sql and "DROP ROLE" not in sql
+    said = result.stdout + result.stderr
+    assert "kept the conference_drawing database: it is owned by wordpress" in said
+
+
+def test_uninstall_drops_the_database_its_role_owns(upgrade: Server) -> None:
+    upgrade.fakes.prepend("systemctl", {"match": "is-active", "exit": 3})
+    upgrade.fakes.prepend(
+        "psql",
+        {"match": "-f -", "stdin_match": "datdba", "stdout": "conference-drawing\n"},
+    )
+    result = upgrade.uninstall()
+    assert result.returncode == 0, result.stderr
+    assert 'DROP DATABASE IF EXISTS :"db" WITH (FORCE);' in _admin_sql(upgrade)
+
+
+def test_uninstall_stops_if_it_cannot_read_the_owner(upgrade: Server) -> None:
+    upgrade.fakes.prepend("systemctl", {"match": "is-active", "exit": 3})
+    upgrade.fakes.prepend("psql", {"match": "-f -", "stdin_match": "datdba", "exit": 2})
+    result = upgrade.uninstall()
+    assert result.returncode != 0
+    assert "cannot read the owner" in result.stderr
+    assert "DROP DATABASE" not in _admin_sql(upgrade)
+
+
 @pytest.mark.parametrize("blocker", PURGE_BLOCKERS)
 def test_uninstall_keeps_postgresql_unless_it_is_provably_ours_alone(
     upgrade: Server, blocker: str

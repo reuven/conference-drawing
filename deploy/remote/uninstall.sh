@@ -75,11 +75,22 @@ safe_to_purge() {
 # only if install.sh installed it (the marker) and safe_to_purge agrees; its
 # dependencies (postgresql-common, the client) stay for apt autoremove.
 if [ -n "$(pg_server_majors)" ]; then
-	say "dropping the $DB_NAME database and the $DB_ROLE role"
-	pg_admin -f - <<'SQL'
+	# install.sh refuses a database of this name owned by another role, so one
+	# is someone else's: keep it, and our role with it (it may own objects there).
+	owner=$(pg_admin -At -f - <<'SQL'
+SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = :'db';
+SQL
+	) || die "cannot read the owner of the $DB_NAME database; nothing was dropped"
+	if [ -n "$owner" ] && [ "$owner" != "$DB_ROLE" ]; then
+		say "kept the $DB_NAME database: it is owned by $owner, not $DB_ROLE." \
+			"Kept the $DB_ROLE role too. Drop them by hand if they are yours."
+	else
+		say "dropping the $DB_NAME database and the $DB_ROLE role"
+		pg_admin -f - <<'SQL'
 DROP DATABASE IF EXISTS :"db" WITH (FORCE);
 DROP ROLE IF EXISTS :"role";
 SQL
+	fi
 	no_symlink "$PG_MARKER"
 	if [ -f "$PG_MARKER" ]; then
 		major=$(cat "$PG_MARKER")
