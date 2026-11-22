@@ -154,8 +154,14 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {"plain": {"format": "%(levelname)s %(name)s %(message)s"}},
+    # Display tokens and exception text never reach journald (logredact.py).
+    "filters": {"redact": {"()": "conference_drawing.logredact.RedactFilter"}},
     "handlers": {
-        "stderr": {"class": "logging.StreamHandler", "formatter": "plain"},
+        "stderr": {
+            "class": "logging.StreamHandler",
+            "formatter": "plain",
+            "filters": ["redact"],
+        },
     },
     "root": {"handlers": ["stderr"], "level": "INFO"},
 }

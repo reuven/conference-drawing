@@ -3,7 +3,9 @@
 Read-only and unauthenticated by design: the monitor can't sign in, so access is
 a long random token in the URL. The page polls a small partial every 2 seconds.
 Names are shown as entered (the owner reads them aloud anyway); emails, codes
-and prize URLs never appear here, and nothing here is logged.
+and prize URLs never appear here. These views log nothing themselves, and the
+path Django logs for a 404 or 500 here has its token replaced by REDACTED
+(`conference_drawing.logredact`).
 """
 
 import datetime

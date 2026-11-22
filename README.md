@@ -266,7 +266,9 @@ only locks the conference.
   display, whose address contains a secret token. The flyer and entry pages
   never show them. Every page tells search engines not to index it. The
   app's own logs carry ids and counts only, never names, emails, answers, or
-  codes.
+  codes. Every log line, Django's own error lines included, has display
+  tokens replaced by `REDACTED`, and an error's traceback names each
+  exception's type without its message (which could quote a name or email).
 - **Server access log.** Caddy, the web server in front of the app, keeps its
   own access log for this site (`/var/log/caddy/conference-drawing.access.log`).
   It records each visitor's IP address and the page they asked for. Display
