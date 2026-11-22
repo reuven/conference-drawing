@@ -49,6 +49,12 @@ def client_ip(group: str, request: HttpRequest) -> str:
     can trust; anything to its left was supplied by the client and could be
     forged to get a fresh bucket per request. Unparseable values fall back to
     REMOTE_ADDR, and a request with nothing usable shares the "unknown" bucket.
+
+    Trust assumption: exactly one trusted proxy (Caddy) sits in front, with no
+    ``trusted_proxies`` setting, so it drops any client-sent X-Forwarded-For
+    and sends the peer address alone (deploy/caddy/conference-drawing.caddy.tmpl).
+    If a CDN or second proxy is ever added in front of Caddy, the rightmost
+    entry becomes that proxy's address and this must take the entry before it.
     """
     forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
     candidates = [forwarded.rsplit(",", 1)[-1], request.META.get("REMOTE_ADDR", "")]

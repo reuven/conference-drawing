@@ -276,6 +276,16 @@ def test_client_ip_with_nothing_usable_still_returns_a_string() -> None:
     assert _ip(REMOTE_ADDR="garbage") == "unknown"
 
 
+@given(spoofed=st.lists(st.text()), real=st.ip_addresses(v=4))
+def test_client_ip_ignores_whatever_the_client_put_before_caddys_entry(
+    spoofed: list[str], real: Any
+) -> None:
+    # Caddy (the one trusted proxy) appends the connecting address last;
+    # anything before it came from the client.
+    header = ", ".join([*spoofed, str(real)])
+    assert _ip(HTTP_X_FORWARDED_FOR=header, REMOTE_ADDR="") == str(real)
+
+
 @given(xff=st.text(), remote=st.text())
 def test_client_ip_never_raises(xff: str, remote: str) -> None:
     result = _ip(HTTP_X_FORWARDED_FOR=xff, REMOTE_ADDR=remote)
