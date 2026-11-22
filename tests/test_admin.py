@@ -496,3 +496,89 @@ def test_prize_line_form_uncommitted_save_still_adds_codes(
     line.save()
     form.save_m2m()
     assert CouponCode.objects.filter(prize_line=line).count() == 2
+
+
+def test_resaving_unchanged_ambiguous_time_keeps_the_same_instant(
+    admin_client: Client, conference_factory: Factory, drawing_factory: Factory
+) -> None:
+    conf = conference_factory(time_zone="America/New_York")
+    # 06:30 UTC on 2027-11-07 is the SECOND 01:30 (EST, fold=1).
+    second = datetime.datetime(2027, 11, 7, 6, 30, tzinfo=datetime.UTC)
+    drawing = drawing_factory(conf, scheduled_at=second)
+    data = {
+        "status": "scheduled",
+        "scheduled_at_0": "2027-11-07",
+        "scheduled_at_1": "01:30:00",
+        **_formset("prizeline_set", []),
+    }
+    resp = admin_client.post(
+        reverse("admin:raffle_drawing_change", args=[drawing.pk]), data
+    )
+    assert resp.status_code == 302, resp.content.decode()[:2000]
+    drawing.refresh_from_db()
+    assert drawing.scheduled_at == second
+
+
+def test_changing_time_on_existing_drawing_converts_again(
+    admin_client: Client, conference_factory: Factory, drawing_factory: Factory
+) -> None:
+    conf = conference_factory(time_zone="America/New_York")
+    drawing = drawing_factory(conf)
+    data = {
+        "status": "scheduled",
+        "scheduled_at_0": "2027-05-11",
+        "scheduled_at_1": "15:00:00",
+        **_formset("prizeline_set", []),
+    }
+    admin_client.post(reverse("admin:raffle_drawing_change", args=[drawing.pk]), data)
+    drawing.refresh_from_db()
+    assert drawing.scheduled_at == datetime.datetime(
+        2027, 5, 11, 19, 0, tzinfo=datetime.UTC
+    )
+
+
+def test_conference_is_read_only_on_existing_drawing(
+    admin_client: Client, conference_factory: Factory, drawing_factory: Factory
+) -> None:
+    conf = conference_factory()
+    other = conference_factory()
+    drawing = drawing_factory(conf)
+    url = reverse("admin:raffle_drawing_change", args=[drawing.pk])
+    assert 'name="conference"' not in admin_client.get(url).content.decode()
+    data = {
+        "conference": other.pk,
+        "status": "scheduled",
+        "scheduled_at_0": "2027-05-11",
+        "scheduled_at_1": "14:00:00",
+        **_formset("prizeline_set", []),
+    }
+    admin_client.post(url, data)
+    drawing.refresh_from_db()
+    assert drawing.conference_id == conf.pk
+
+
+def test_book_in_use_delete_page_is_blocked_not_an_error(
+    admin_client: Client,
+    conference_factory: Factory,
+    drawing_factory: Factory,
+    prize_line_factory: Factory,
+) -> None:
+    line = prize_line_factory(drawing_factory(conference_factory()))
+    resp = admin_client.get(reverse("admin:raffle_book_delete", args=[line.book_id]))
+    assert resp.status_code == 200
+    assert "protected" in resp.content.decode().lower()
+    assert Book.objects.filter(pk=line.book_id).exists()
+
+
+def test_codes_text_rejected_for_physical_line(
+    admin_client: Client, conference_factory: Factory, book_factory: Factory
+) -> None:
+    conf = conference_factory()
+    book = book_factory()
+    row = _line_row(kind="physical", url_template="", code_mode="", codes_text="AAA")
+    resp = admin_client.post(
+        reverse("admin:raffle_drawing_add"), _drawing_post(conf, book.pk, [row])
+    )
+    assert resp.status_code == 200
+    assert not Drawing.objects.exists()
+    assert not CouponCode.objects.exists()

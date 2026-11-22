@@ -8,9 +8,13 @@ directory.
 import os
 from pathlib import Path
 
+import django_stubs_ext
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.csp import CSP
 from dotenv import dotenv_values
+
+# Make django-stubs generics (ModelAdmin[M], ...) subscriptable at runtime.
+django_stubs_ext.monkeypatch()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 

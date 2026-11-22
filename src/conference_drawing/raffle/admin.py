@@ -27,7 +27,7 @@ from .timezones import to_local, to_utc
 
 
 @admin.register(InstallSettings)
-class InstallSettingsAdmin(admin.ModelAdmin):
+class InstallSettingsAdmin(admin.ModelAdmin[InstallSettings]):
     """Per-install copy; one row only: no second add, no delete."""
 
     def has_add_permission(self, request: HttpRequest) -> bool:
@@ -40,18 +40,18 @@ class InstallSettingsAdmin(admin.ModelAdmin):
 
 
 @admin.register(Book)
-class BookAdmin(admin.ModelAdmin):
+class BookAdmin(admin.ModelAdmin[Book]):
     list_display = ("title", "link")
     search_fields = ("title",)
 
 
-class QuestionInline(admin.TabularInline):
+class QuestionInline(admin.TabularInline[Question, Conference]):
     model = Question
     extra = 0
 
 
 @admin.register(Conference)
-class ConferenceAdmin(admin.ModelAdmin):
+class ConferenceAdmin(admin.ModelAdmin[Conference]):
     """Conferences with their optional questions and exclusion list.
 
     `display_token` authorizes the public display URL, so it is read-only here
@@ -80,7 +80,7 @@ def _has_picks(drawing: Drawing | None) -> bool:
     )
 
 
-class PrizeLineForm(forms.ModelForm):
+class PrizeLineForm(forms.ModelForm[PrizeLine]):
     """Prize line plus a paste box that appends coupon codes to the pool."""
 
     codes_text = forms.CharField(
@@ -148,7 +148,7 @@ class PrizeLineForm(forms.ModelForm):
         return line
 
 
-class PrizeLineInline(admin.StackedInline):
+class PrizeLineInline(admin.StackedInline[PrizeLine, Drawing]):
     model = PrizeLine
     form = PrizeLineForm
     extra = 1
@@ -170,7 +170,7 @@ class PrizeLineInline(admin.StackedInline):
         return not _has_picks(obj) and super().has_delete_permission(request, obj)
 
 
-class DrawingAdminForm(forms.ModelForm):
+class DrawingAdminForm(forms.ModelForm[Drawing]):
     """Takes `scheduled_at` as local wall-clock time in the conference's zone."""
 
     scheduled_at = forms.SplitDateTimeField(
@@ -191,9 +191,15 @@ class DrawingAdminForm(forms.ModelForm):
 
     def clean(self) -> dict[str, Any]:
         cleaned = super().clean() or {}
-        conference = cleaned.get("conference")
+        # On change the conference field is read-only, so it comes from the row.
+        conference = self.instance.conference if self.instance.pk else None
+        conference = conference or cleaned.get("conference")
         value = cleaned.get("scheduled_at")
         if conference is None or value is None:
+            return cleaned
+        if self.instance.pk and "scheduled_at" not in self.changed_data:
+            # A plain re-save must not re-resolve an ambiguous wall time.
+            cleaned["scheduled_at"] = self.instance.scheduled_at
             return cleaned
         # The field attaches the server zone; what the owner typed is the wall time.
         wall = value.replace(tzinfo=None)
@@ -210,11 +216,18 @@ class DrawingAdminForm(forms.ModelForm):
 
 
 @admin.register(Drawing)
-class DrawingAdmin(admin.ModelAdmin):
+class DrawingAdmin(admin.ModelAdmin[Drawing]):
     form = DrawingAdminForm
     list_display = ("__str__", "conference", "local_time", "status")
     list_filter = ("conference", "status")
     inlines = [PrizeLineInline]
+
+    def get_readonly_fields(
+        self, request: HttpRequest, obj: Drawing | None = None
+    ) -> tuple[str, ...]:
+        # Moving a drawing to another conference would silently change its
+        # time zone, and with it the entry cutoff.
+        return ("conference",) if obj else ()
 
     @admin.display(description="Scheduled (local)", ordering="scheduled_at")
     def local_time(self, obj: Drawing) -> str:
@@ -230,7 +243,7 @@ class DrawingAdmin(admin.ModelAdmin):
         return not _has_picks(obj) and super().has_delete_permission(request, obj)
 
 
-class _ReadOnlyAdmin(admin.ModelAdmin):
+class _ReadOnlyAdmin[M: Any](admin.ModelAdmin[M]):
     """No add, change or delete: the screen only lists and searches."""
 
     def has_add_permission(self, request: HttpRequest) -> bool:
@@ -244,14 +257,14 @@ class _ReadOnlyAdmin(admin.ModelAdmin):
 
 
 @admin.register(Entrant)
-class EntrantAdmin(_ReadOnlyAdmin):
+class EntrantAdmin(_ReadOnlyAdmin[Entrant]):
     list_display = ("name", "email", "conference", "created_at")
     list_filter = ("conference",)
     search_fields = ("name", "email")
 
 
 @admin.register(OutboxJob)
-class OutboxJobAdmin(_ReadOnlyAdmin):
+class OutboxJobAdmin(_ReadOnlyAdmin[OutboxJob]):
     """Drip outbox. The payload can hold emails, so it is never rendered."""
 
     list_display = (
