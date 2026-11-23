@@ -1,17 +1,22 @@
 """Admin setup screens: driven through the test client as a superuser."""
 
 import datetime
+import io
 import json
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
+from PIL import Image
 
 from conference_drawing.raffle.admin import DrawingAdminForm, PrizeLineForm
 from conference_drawing.raffle.models import (
@@ -60,6 +65,9 @@ def _conference_post(**over: Any) -> dict[str, Any]:
         "starts_on": "2027-05-10",
         "ends_on": "2027-05-12",
         "exclusion_emails": "",
+        "after_mode": "inherit",
+        "after_markdown": "",
+        "after_redirect_url": "",
         **_formset("question_set", []),
     }
     return {**data, **over}
@@ -805,3 +813,249 @@ def test_scheduled_drawing_can_still_be_deleted(
     delete = reverse("admin:raffle_drawing_delete", args=[drawing.pk])
     assert admin_client.post(delete, {"post": "yes"}).status_code == 302
     assert not Drawing.objects.exists()
+
+
+# --- After-conference content and logo file lifecycle ---------------------
+
+
+def _png(name: str = "logo.png") -> SimpleUploadedFile:
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buf, format="PNG")
+    return SimpleUploadedFile(name, buf.getvalue(), content_type="image/png")
+
+
+def _site_post(**over: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "owner_name": "",
+        "privacy_note": "",
+        "followup_ack_text": "ack",
+        "bd_checkbox_text": "box",
+        "after_mode": "page",
+        "after_markdown": "",
+        "after_redirect_url": "",
+    }
+    return {**data, **over}
+
+
+def _site_url() -> str:
+    InstallSettings.get()
+    return reverse("admin:raffle_installsettings_change", args=[1])
+
+
+def _logo_files(root: Path) -> list[str]:
+    return sorted(p.name for p in (root / "logos").glob("*")) if root.exists() else []
+
+
+@pytest.fixture
+def media(settings: Any, tmp_path: Path) -> Path:
+    settings.MEDIA_ROOT = tmp_path
+    return tmp_path
+
+
+def test_both_admins_have_after_a_conference_fieldset(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    conf = conference_factory()
+    fields = {"after_mode", "after_logo", "after_markdown", "after_redirect_url"}
+    for admin_obj, obj in (
+        (admin.site._registry[InstallSettings], InstallSettings.get()),
+        (admin.site._registry[Conference], conf),
+    ):
+        fieldsets = dict((t, o) for t, o in admin_obj.get_fieldsets(None, obj))  # type: ignore[arg-type]
+        assert fields <= set(fieldsets["After a conference"]["fields"])
+
+
+def test_conference_fieldset_is_collapsed_with_help(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    conf = conference_factory()
+    resp = admin_client.get(reverse("admin:raffle_conference_change", args=[conf.pk]))
+    html = resp.content.decode()
+    assert "After a conference" in html
+    assert "collapse" in html
+    assert "Leave blank to use the site-wide settings" in html
+
+
+def test_site_fieldset_is_not_collapsed(admin_client: Client) -> None:
+    html = admin_client.get(_site_url()).content.decode()
+    assert "After a conference" in html
+    assert "Leave blank to use the site-wide settings" not in html
+
+
+def test_logo_thumbnail_shows_once_a_logo_exists(
+    admin_client: Client, media: Path
+) -> None:
+    html = admin_client.get(_site_url()).content.decode()
+    assert "after-logo-thumb" not in html
+    admin_client.post(_site_url(), _site_post(after_logo=_png()))
+    html = admin_client.get(_site_url()).content.decode()
+    assert re.search(r'<img [^>]*class="after-logo-thumb"', html)
+    assert "style=" not in re.search(r"<img [^>]*after-logo-thumb[^>]*>", html)[0]  # type: ignore[index]
+
+
+def test_admin_loads_the_thumbnail_css(admin_client: Client) -> None:
+    html = admin_client.get(_site_url()).content.decode()
+    assert "raffle/admin.css" in html
+
+
+def test_site_redirect_without_url_is_a_form_error(admin_client: Client) -> None:
+    resp = admin_client.post(_site_url(), _site_post(after_mode="redirect"))
+    assert resp.status_code == 200
+    assert "Redirect mode needs a URL" in resp.content.decode()
+    assert InstallSettings.get().after_mode == "page"
+
+
+def test_conference_redirect_without_any_url_is_a_form_error(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    conf = conference_factory()
+    data = _conference_post(slug=conf.slug, after_mode="redirect")
+    resp = admin_client.post(
+        reverse("admin:raffle_conference_change", args=[conf.pk]), data
+    )
+    assert resp.status_code == 200
+    assert "Redirect mode needs a URL" in resp.content.decode()
+
+
+def test_conference_redirect_may_use_the_sites_url(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    site = InstallSettings.get()
+    site.after_redirect_url = "https://example.com/next"
+    site.save()
+    conf = conference_factory()
+    data = _conference_post(slug=conf.slug, after_mode="redirect")
+    resp = admin_client.post(
+        reverse("admin:raffle_conference_change", args=[conf.pk]), data
+    )
+    assert resp.status_code == 302
+
+
+def test_replacing_a_logo_deletes_the_old_file(
+    admin_client: Client,
+    media: Path,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(after_logo=_png()))
+    (old,) = _logo_files(media)
+    with django_capture_on_commit_callbacks(execute=True):
+        resp = admin_client.post(_site_url(), _site_post(after_logo=_png()))
+    assert resp.status_code == 302
+    (new,) = _logo_files(media)
+    assert new != old
+
+
+def test_clearing_a_logo_deletes_the_file(
+    admin_client: Client,
+    media: Path,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(after_logo=_png()))
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(**{"after_logo-clear": "on"}))
+    assert _logo_files(media) == []
+    assert InstallSettings.get().after_logo.name == ""
+
+
+def test_saving_without_a_new_logo_keeps_the_file(
+    admin_client: Client,
+    media: Path,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(after_logo=_png()))
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(after_markdown="hello"))
+    assert len(_logo_files(media)) == 1
+
+
+def test_old_file_survives_until_commit(
+    admin_client: Client,
+    media: Path,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(after_logo=_png()))
+    with django_capture_on_commit_callbacks(execute=False):
+        admin_client.post(_site_url(), _site_post(**{"after_logo-clear": "on"}))
+    assert len(_logo_files(media)) == 1
+
+
+def test_replacing_a_logo_whose_file_is_missing_saves(
+    admin_client: Client,
+    media: Path,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(after_logo=_png()))
+    for path in (media / "logos").glob("*"):
+        path.unlink()
+    with django_capture_on_commit_callbacks(execute=True):
+        resp = admin_client.post(_site_url(), _site_post(after_logo=_png()))
+    assert resp.status_code == 302
+    assert len(_logo_files(media)) == 1
+
+
+def test_conference_logo_change_leaves_the_sites_logo(
+    admin_client: Client,
+    media: Path,
+    conference_factory: Factory,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(after_logo=_png()))
+    site_logo = str(InstallSettings.get().after_logo.name)
+    conf = conference_factory()
+    url = reverse("admin:raffle_conference_change", args=[conf.pk])
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(url, _conference_post(slug=conf.slug, after_logo=_png()))
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(url, _conference_post(slug=conf.slug, after_logo=_png()))
+    assert len(_logo_files(media)) == 2
+    assert InstallSettings.get().after_logo.name == site_logo
+    assert (media / site_logo).exists()
+
+
+def test_deleting_a_conference_deletes_its_logo(
+    admin_client: Client,
+    media: Path,
+    conference_factory: Factory,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    conf = conference_factory()
+    url = reverse("admin:raffle_conference_change", args=[conf.pk])
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(url, _conference_post(slug=conf.slug, after_logo=_png()))
+    assert len(_logo_files(media)) == 1
+    with django_capture_on_commit_callbacks(execute=True):
+        Conference.objects.get(pk=conf.pk).delete()
+    assert _logo_files(media) == []
+
+
+def test_deleting_a_conference_without_a_logo_is_fine(
+    conference_factory: Factory,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    conf = conference_factory()
+    with django_capture_on_commit_callbacks(execute=True):
+        conf.delete()
+    assert not Conference.objects.filter(pk=conf.pk).exists()
+
+
+def test_save_with_update_fields_elsewhere_keeps_the_logo(
+    admin_client: Client,
+    media: Path,
+    conference_factory: Factory,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    conf = conference_factory()
+    url = reverse("admin:raffle_conference_change", args=[conf.pk])
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(url, _conference_post(slug=conf.slug, after_logo=_png()))
+    stale = Conference.objects.get(pk=conf.pk)
+    stale.after_logo = ""
+    with django_capture_on_commit_callbacks(execute=True):
+        stale.save(update_fields=["wrapped_up_at"])
+    assert len(_logo_files(media)) == 1

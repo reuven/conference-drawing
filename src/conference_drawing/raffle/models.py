@@ -15,13 +15,16 @@ from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.core.files import File
+from django.core.files.storage import default_storage
 from django.core.validators import (
     MaxLengthValidator,
     MinValueValidator,
     RegexValidator,
 )
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 from django.utils import timezone
 from PIL import Image
 
@@ -188,6 +191,52 @@ def logo_upload_to(instance: models.Model, filename: str) -> str:
     return f"logos/{uuid.uuid4().hex}.{ext}"
 
 
+def _stored_logo_name(instance: models.Model) -> str:
+    """The logo name the database holds for `instance`, or "" if it has none yet.
+
+    Read before saving so the file being replaced is known even though the
+    in-memory field already holds the new upload.
+    """
+    if instance.pk is None:
+        return ""
+    return str(
+        type(instance)
+        ._default_manager.filter(pk=instance.pk)
+        .values_list("after_logo", flat=True)
+        .first()
+        or ""
+    )
+
+
+def _delete_on_commit(name: str | None) -> None:
+    """Delete a stored logo once the surrounding transaction commits.
+
+    Why on commit: a rolled-back save must not lose the file the database still
+    points at. `delete` is a no-op for a file that is already gone.
+    """
+    if name:
+        transaction.on_commit(lambda: default_storage.delete(name))
+
+
+def _save_replacing_logo(
+    instance: models.Model, save: Any, *args: Any, **kwargs: Any
+) -> None:
+    """Run `save`, then queue deletion of the logo file it replaced or cleared.
+
+    A save that names `update_fields` without `after_logo` leaves the stored
+    logo alone, so it must not queue anything.
+    """
+    fields = kwargs.get("update_fields")
+    if fields is not None and "after_logo" not in fields:
+        save(*args, **kwargs)
+        return
+    with transaction.atomic():
+        old = _stored_logo_name(instance)
+        save(*args, **kwargs)
+        if old != instance.after_logo.name:  # type: ignore[attr-defined]
+            _delete_on_commit(old)
+
+
 _NEEDS_URL = "Redirect mode needs a URL (here or in the install settings)."
 
 
@@ -239,7 +288,7 @@ class InstallSettings(models.Model):
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         self.pk = 1
-        super().save(*args, **kwargs)
+        _save_replacing_logo(self, super().save, *args, **kwargs)
 
     def clean(self) -> None:
         if self.after_mode == AfterMode.REDIRECT and not self.after_redirect_url:
@@ -305,6 +354,9 @@ class Conference(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        _save_replacing_logo(self, super().save, *args, **kwargs)
 
     def clean(self) -> None:
         errors: dict[str, str] = {}
@@ -634,3 +686,9 @@ class OutboxJob(models.Model):
 
     def __str__(self) -> str:
         return f"{self.kind} job {self.pk} ({self.status})"
+
+
+@receiver(post_delete, sender=Conference)
+def delete_conference_logo(sender: Any, instance: Conference, **kwargs: Any) -> None:
+    """Remove a deleted conference's logo file once the deletion commits."""
+    _delete_on_commit(instance.after_logo.name)

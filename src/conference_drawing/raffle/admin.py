@@ -9,6 +9,7 @@ from django.contrib.admin.widgets import AdminSplitDateTime
 from django.db.models import Count, Q, QuerySet
 from django.http import HttpRequest
 from django.utils import timezone
+from django.utils.html import format_html
 
 from .codes import parse_codes
 from .drip.outbox import requeue_failed
@@ -27,10 +28,56 @@ from .models import (
 )
 from .timezones import to_local, to_utc
 
+AFTER_FIELDS = (
+    "after_mode",
+    "after_logo_preview",
+    "after_logo",
+    "after_markdown",
+    "after_redirect_url",
+)
+
+
+def _logo_preview(obj: InstallSettings | Conference | None) -> Any:
+    """Show the current logo as a small image; sized by `raffle/admin.css`.
+
+    Why a class and not `style=`: the CSP forbids inline styles.
+    """
+    if obj is None or not obj.after_logo:
+        return "-"
+    return format_html(
+        '<img class="after-logo-thumb" src="{}" alt="Current logo">',
+        obj.after_logo.url,
+    )
+
+
+class _AfterLogoMedia:
+    class Media:
+        css = {"all": ("raffle/admin.css",)}
+
 
 @admin.register(InstallSettings)
-class InstallSettingsAdmin(admin.ModelAdmin[InstallSettings]):
+class InstallSettingsAdmin(admin.ModelAdmin[InstallSettings], _AfterLogoMedia):
     """Per-install copy; one row only: no second add, no delete."""
+
+    readonly_fields = ("after_logo_preview",)
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": (
+                    "owner_name",
+                    "privacy_note",
+                    "followup_ack_text",
+                    "bd_checkbox_text",
+                )
+            },
+        ),
+        ("After a conference", {"fields": AFTER_FIELDS}),
+    )
+
+    @admin.display(description="Current logo")
+    def after_logo_preview(self, obj: InstallSettings | None) -> Any:
+        return _logo_preview(obj)
 
     def has_add_permission(self, request: HttpRequest) -> bool:
         return not InstallSettings.objects.exists()
@@ -53,7 +100,7 @@ class QuestionInline(admin.TabularInline[Question, Conference]):
 
 
 @admin.register(Conference)
-class ConferenceAdmin(admin.ModelAdmin[Conference]):
+class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
     """Conferences with their optional questions and exclusion list.
 
     `display_token` authorizes the public display URL, so it is read-only here
@@ -62,7 +109,39 @@ class ConferenceAdmin(admin.ModelAdmin[Conference]):
 
     list_display = ("name", "slug", "starts_on", "ends_on", "time_zone")
     search_fields = ("name", "slug")
-    readonly_fields = ("display_token", "wrapped_up_at", "deleted_entrant_count")
+    readonly_fields = (
+        "display_token",
+        "wrapped_up_at",
+        "deleted_entrant_count",
+        "after_logo_preview",
+    )
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": (
+                    "name",
+                    "slug",
+                    "time_zone",
+                    "booth_location",
+                    "starts_on",
+                    "ends_on",
+                    "exclusion_emails",
+                    "display_token",
+                    "wrapped_up_at",
+                    "deleted_entrant_count",
+                )
+            },
+        ),
+        (
+            "After a conference",
+            {
+                "classes": ["collapse"],
+                "description": "Leave blank to use the site-wide settings.",
+                "fields": AFTER_FIELDS,
+            },
+        ),
+    )
     inlines = [QuestionInline]
     actions = ["rotate_display_token"]
 
@@ -85,6 +164,10 @@ class ConferenceAdmin(admin.ModelAdmin[Conference]):
             "Open the new booth display link on the monitor.",
             messages.SUCCESS,
         )
+
+    @admin.display(description="Current logo")
+    def after_logo_preview(self, obj: Conference | None) -> Any:
+        return _logo_preview(obj)
 
     def save_model(
         self, request: HttpRequest, obj: Conference, form: Any, change: bool
