@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.core.files import File
-from django.core.files.storage import default_storage
+from django.core.files.storage import Storage
 from django.core.validators import (
     MaxLengthValidator,
     MinValueValidator,
@@ -23,6 +23,7 @@ from django.core.validators import (
 )
 from django.db import models, transaction
 from django.db.models import Q
+from django.db.models.fields.files import FieldFile
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
 from django.utils import timezone
@@ -145,7 +146,12 @@ def validate_logo(file: File[Any]) -> None:
     Why: the file is served from our own origin, so it must really be a raster
     image (never SVG or HTML renamed .png) and must not blow up memory when
     decoded. Pillow decides by content, not by the uploaded name.
+
+    A file already stored was validated when uploaded; re-checking it on every
+    admin re-save would crash if the file has gone missing from disk.
     """
+    if isinstance(file, FieldFile) and file._committed:  # type: ignore[attr-defined]
+        return
     if file.size is not None and file.size > MAX_LOGO_BYTES:
         raise ValidationError("The logo must be 2 MB or smaller.")
     try:
@@ -208,14 +214,27 @@ def _stored_logo_name(instance: models.Model) -> str:
     )
 
 
-def _delete_on_commit(name: str | None) -> None:
+def _delete_on_commit(name: str | None, storage: Storage) -> None:
     """Delete a stored logo once the surrounding transaction commits.
 
     Why on commit: a rolled-back save must not lose the file the database still
-    points at. `delete` is a no-op for a file that is already gone.
+    points at. Why the re-check: a stale admin tab may have written the name
+    back, so a file some row still references is kept. `robust` keeps a storage
+    error from turning a committed save into a 500. `delete` is a no-op for a
+    file that is already gone.
     """
-    if name:
-        transaction.on_commit(lambda: default_storage.delete(name))
+    if not name:
+        return
+
+    def delete() -> None:
+        in_use = any(
+            model.objects.filter(after_logo=name).exists()
+            for model in (InstallSettings, Conference)
+        )
+        if not in_use:
+            storage.delete(name)
+
+    transaction.on_commit(delete, robust=True)
 
 
 def _save_replacing_logo(
@@ -234,7 +253,7 @@ def _save_replacing_logo(
         old = _stored_logo_name(instance)
         save(*args, **kwargs)
         if old != instance.after_logo.name:  # type: ignore[attr-defined]
-            _delete_on_commit(old)
+            _delete_on_commit(old, instance.after_logo.storage)  # type: ignore[attr-defined]
 
 
 _NEEDS_URL = "Redirect mode needs a URL (here or in the install settings)."
@@ -691,4 +710,4 @@ class OutboxJob(models.Model):
 @receiver(post_delete, sender=Conference)
 def delete_conference_logo(sender: Any, instance: Conference, **kwargs: Any) -> None:
     """Remove a deleted conference's logo file once the deletion commits."""
-    _delete_on_commit(instance.after_logo.name)
+    _delete_on_commit(instance.after_logo.name, instance.after_logo.storage)

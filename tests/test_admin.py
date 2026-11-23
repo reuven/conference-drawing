@@ -18,7 +18,12 @@ from django.urls import reverse
 from django.utils import timezone
 from PIL import Image
 
-from conference_drawing.raffle.admin import DrawingAdminForm, PrizeLineForm
+from conference_drawing.raffle.admin import (
+    ConferenceAdmin,
+    DrawingAdminForm,
+    InstallSettingsAdmin,
+    PrizeLineForm,
+)
 from conference_drawing.raffle.models import (
     Book,
     Conference,
@@ -1059,3 +1064,129 @@ def test_save_with_update_fields_elsewhere_keeps_the_logo(
     with django_capture_on_commit_callbacks(execute=True):
         stale.save(update_fields=["wrapped_up_at"])
     assert len(_logo_files(media)) == 1
+
+
+# --- Review follow-ups ------------------------------------------------------
+
+
+def _unlink_logos(root: Path) -> None:
+    for path in (root / "logos").glob("*"):
+        path.unlink()
+
+
+def test_resaving_with_a_missing_logo_file_saves(
+    admin_client: Client,
+    media: Path,
+    conference_factory: Factory,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    conf = conference_factory()
+    url = reverse("admin:raffle_conference_change", args=[conf.pk])
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(after_logo=_png()))
+        admin_client.post(url, _conference_post(slug=conf.slug, after_logo=_png()))
+    _unlink_logos(media)
+    site = admin_client.post(_site_url(), _site_post(after_markdown="hi"))
+    assert site.status_code == 302
+    resp = admin_client.post(url, _conference_post(slug=conf.slug, after_markdown="x"))
+    assert resp.status_code == 302
+
+
+def test_a_stored_logo_is_not_decoded_again_on_save(
+    admin_client: Client,
+    media: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(after_logo=_png()))
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("decoded again")
+
+    monkeypatch.setattr(Image, "open", boom)
+    resp = admin_client.post(_site_url(), _site_post(after_markdown="hi"))
+    assert resp.status_code == 302
+
+
+def test_callback_keeps_a_file_another_row_still_uses(
+    admin_client: Client,
+    media: Path,
+    conference_factory: Factory,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    conf = conference_factory()
+    url = reverse("admin:raffle_conference_change", args=[conf.pk])
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(url, _conference_post(slug=conf.slug, after_logo=_png()))
+    held = str(Conference.objects.get(pk=conf.pk).after_logo.name)
+    site = InstallSettings.get()
+    site.after_logo.name = held  # the site row also points at the file
+    site.save()
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(url, _conference_post(slug=conf.slug, after_logo=_png()))
+    assert (media / held).exists()
+
+
+def test_storage_error_on_delete_does_not_break_the_save(
+    admin_client: Client,
+    media: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(_site_url(), _site_post(after_logo=_png()))
+
+    def fail(self: Any, name: str) -> None:
+        raise OSError("disk")
+
+    monkeypatch.setattr("django.core.files.storage.FileSystemStorage.delete", fail)
+    with django_capture_on_commit_callbacks(execute=True):
+        resp = admin_client.post(_site_url(), _site_post(**{"after_logo-clear": "on"}))
+    assert resp.status_code == 302
+    assert InstallSettings.get().after_logo.name == ""
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>',
+        b"not an image at all",
+    ],
+)
+def test_bad_logo_upload_is_a_form_error_and_leaves_no_file(
+    admin_client: Client, media: Path, payload: bytes
+) -> None:
+    bad = SimpleUploadedFile("logo.png", payload, content_type="image/png")
+    resp = admin_client.post(_site_url(), _site_post(after_logo=bad))
+    assert resp.status_code == 200
+    assert "errorlist" in resp.content.decode()
+    assert _logo_files(media) == []
+
+
+def test_conference_after_fieldset_classes(rf: Any) -> None:
+    request = rf.get("/")
+    fieldsets = dict(ConferenceAdmin(Conference, admin.site).get_fieldsets(request))
+    assert fieldsets["After a conference"]["classes"] == ["collapse"]
+    assert (
+        "classes"
+        not in dict(
+            InstallSettingsAdmin(InstallSettings, admin.site).get_fieldsets(request)
+        )["After a conference"]
+    )
+
+
+def test_deleting_a_conference_whose_logo_file_is_missing_succeeds(
+    admin_client: Client,
+    media: Path,
+    conference_factory: Factory,
+    django_capture_on_commit_callbacks: Any,
+) -> None:
+    conf = conference_factory()
+    url = reverse("admin:raffle_conference_change", args=[conf.pk])
+    with django_capture_on_commit_callbacks(execute=True):
+        admin_client.post(url, _conference_post(slug=conf.slug, after_logo=_png()))
+    _unlink_logos(media)
+    with django_capture_on_commit_callbacks(execute=True):
+        Conference.objects.get(pk=conf.pk).delete()
+    assert not Conference.objects.filter(pk=conf.pk).exists()
