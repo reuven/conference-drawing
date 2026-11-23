@@ -1,16 +1,22 @@
 import datetime
+import io
 import logging
+import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, RequestFactory
 from django.urls import reverse
 from hypothesis import given
 from hypothesis import strategies as st
+from PIL import Image
 
 from conference_drawing.raffle.forms import EntryForm
 from conference_drawing.raffle.models import (
+    AfterMode,
     Conference,
     Drawing,
     Entrant,
@@ -335,3 +341,167 @@ def test_client_ip_never_raises(xff: str, remote: str) -> None:
     result = _ip(HTTP_X_FORWARDED_FOR=xff, REMOTE_ADDR=remote)
     assert isinstance(result, str)
     assert result
+
+
+# --- wrapped-up entry page and the site home page -----------------------------
+
+
+def _png(name: str = "logo.png") -> Any:
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buf, format="PNG")
+    return SimpleUploadedFile(name, buf.getvalue(), content_type="image/png")
+
+
+@pytest.fixture
+def wrapped(conference: Conference) -> Conference:
+    Conference.objects.filter(pk=conference.pk).update(wrapped_up_at=DRAW_AT)
+    conference.refresh_from_db()
+    return conference
+
+
+def _main(html: str) -> str:
+    return html.split("<main>")[1].split("</main>")[0]
+
+
+def test_wrapped_up_entry_with_nothing_configured_is_unchanged(
+    client: Client, wrapped: Conference
+) -> None:
+    html = client.get(reverse("entry", args=[wrapped.slug])).content.decode()
+    main = _main(html)
+    assert f"<h1>{wrapped.name}</h1>" in main
+    assert f"<p>{CLOSED}</p>" in main
+    assert "after-logo" not in html
+    assert "<a " not in main
+
+
+def test_wrapped_up_entry_shows_conference_markdown_and_logo(
+    client: Client,
+    wrapped: Conference,
+    settings: Any,
+    tmp_path: Path,
+) -> None:
+    settings.MEDIA_ROOT = tmp_path
+    wrapped.after_markdown = "See **our site** at [here](https://example.com/x)."
+    wrapped.after_logo = _png()
+    wrapped.save()
+    html = client.get(reverse("entry", args=[wrapped.slug])).content.decode()
+    main = _main(html)
+    assert "<strong>our site</strong>" in main
+    assert 'href="https://example.com/x"' in main
+    assert re.search(r'<img class="after-logo" src="/media/logos/[^"]+" alt="">', main)
+    assert f"<p>{CLOSED}</p>" in main
+
+
+def test_logo_alt_is_owner_name_when_set(
+    client: Client, wrapped: Conference, settings: Any, tmp_path: Path
+) -> None:
+    settings.MEDIA_ROOT = tmp_path
+    InstallSettings.objects.update_or_create(
+        pk=1, defaults={"owner_name": "Example Owner", "after_logo": _png()}
+    )
+    html = client.get(reverse("entry", args=[wrapped.slug])).content.decode()
+    assert re.search(r'<img class="after-logo" src="[^"]+" alt="Example Owner">', html)
+
+
+def test_wrapped_up_entry_redirects_302(client: Client, wrapped: Conference) -> None:
+    wrapped.after_mode = AfterMode.REDIRECT
+    wrapped.after_redirect_url = "https://example.com/next"
+    wrapped.save()
+    response = client.get(reverse("entry", args=[wrapped.slug]))
+    assert response.status_code == 302
+    assert response["Location"] == "https://example.com/next"
+
+
+def test_wrapped_up_entry_uses_site_redirect_when_inheriting(
+    client: Client, wrapped: Conference
+) -> None:
+    install = InstallSettings.get()
+    install.after_mode = AfterMode.REDIRECT
+    install.after_redirect_url = "https://example.com/site"
+    install.save()
+    response = client.get(reverse("entry", args=[wrapped.slug]))
+    assert response.status_code == 302
+    assert response["Location"] == "https://example.com/site"
+
+
+def test_head_on_wrapped_up_entry_redirects(
+    client: Client, wrapped: Conference
+) -> None:
+    wrapped.after_mode = AfterMode.REDIRECT
+    wrapped.after_redirect_url = "https://example.com/next"
+    wrapped.save()
+    response = client.head(reverse("entry", args=[wrapped.slug]))
+    assert response.status_code == 302
+
+
+def test_head_on_page_mode_is_200(client: Client, wrapped: Conference) -> None:
+    assert client.head(reverse("entry", args=[wrapped.slug])).status_code == 200
+
+
+def test_post_to_wrapped_up_entry_shows_closed_page_even_in_redirect_mode(
+    client: Client, wrapped: Conference
+) -> None:
+    wrapped.after_mode = AfterMode.REDIRECT
+    wrapped.after_redirect_url = "https://example.com/next"
+    wrapped.save()
+    response = _post(client, wrapped)
+    assert response.status_code == 200
+    assert CLOSED in response.content.decode()
+    assert Entrant.objects.count() == 0
+
+
+def test_open_conference_entry_ignores_after_settings(
+    client: Client, conference: Conference
+) -> None:
+    conference.after_mode = AfterMode.REDIRECT
+    conference.after_redirect_url = "https://example.com/next"
+    conference.after_markdown = "Hello after"
+    conference.save()
+    response = client.get(reverse("entry", args=[conference.slug]))
+    assert response.status_code == 200
+    assert "<form" in response.content.decode()
+    assert "Hello after" not in response.content.decode()
+
+
+def test_home_404_when_nothing_configured(client: Client, db: None) -> None:
+    assert client.get(reverse("home")).status_code == 404
+    assert client.head(reverse("home")).status_code == 404
+
+
+def test_home_page_mode_shows_site_content(
+    client: Client, conference: Conference
+) -> None:
+    install = InstallSettings.get()
+    install.after_markdown = "Site **news**"
+    install.save()
+    html = client.get(reverse("home")).content.decode()
+    assert "<strong>news</strong>" in _main(html)
+    assert conference.name not in html
+    assert CLOSED not in html
+
+
+def test_home_redirect_mode_302(client: Client, db: None) -> None:
+    install = InstallSettings.get()
+    install.after_mode = AfterMode.REDIRECT
+    install.after_redirect_url = "https://example.com/site"
+    install.save()
+    response = client.get(reverse("home"))
+    assert response.status_code == 302
+    assert response["Location"] == "https://example.com/site"
+
+
+def test_home_rejects_post(client: Client, db: None) -> None:
+    assert client.post(reverse("home")).status_code == 405
+
+
+def test_after_pages_keep_security_headers(client: Client, wrapped: Conference) -> None:
+    install = InstallSettings.get()
+    install.after_markdown = "Site text"
+    install.save()
+    reference = client.get(reverse("privacy"))
+    assert reference["Content-Security-Policy"]
+    for url in (reverse("entry", args=[wrapped.slug]), reverse("home")):
+        response = client.get(url)
+        assert response.status_code == 200
+        for header in ("Content-Security-Policy", "X-Robots-Tag", "Cache-Control"):
+            assert response[header] == reference[header]

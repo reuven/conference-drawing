@@ -252,3 +252,10 @@ button.undo {
     color: var(--fg);
   }
 }
+
+.after-logo {
+  display: block;
+  max-width: 240px;
+  height: auto;
+  margin: 0 0 1rem;
+}

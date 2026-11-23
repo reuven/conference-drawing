@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable
 
 from django.http import (
+    Http404,
     HttpRequest,
     HttpResponse,
     HttpResponseBase,
@@ -17,6 +18,7 @@ from django.views.decorators.http import require_GET, require_http_methods
 from django_ratelimit.decorators import ratelimit
 from django_ratelimit.exceptions import Ratelimited
 
+from ..after import resolve_after
 from ..forms import EntriesClosed, EntryForm
 from ..models import Conference, InstallSettings
 from ..schedule import schedule_context
@@ -93,7 +95,18 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
     """
     conference = get_object_or_404(Conference, slug=slug)
     if conference.wrapped_up_at is not None:
-        return render(request, "raffle/closed.html", {"conference": conference})
+        after = resolve_after(InstallSettings.get(), conference)
+        if after.redirect_url is not None and request.method in ("GET", "HEAD"):
+            return HttpResponseRedirect(after.redirect_url)
+        return render(
+            request,
+            "raffle/closed.html",
+            {
+                "conference": conference,
+                "after": after,
+                "install": InstallSettings.get(),
+            },
+        )
 
     if request.method == "POST":
         form = EntryForm(conference, request.POST)
@@ -125,6 +138,22 @@ def thanks(request: HttpRequest, slug: str) -> HttpResponse:
     """Confirm the entry (identical for new and repeat entries)."""
     conference = get_object_or_404(Conference, slug=slug)
     return render(request, "raffle/thanks.html", schedule_context(conference))
+
+
+@require_http_methods(["GET", "HEAD"])
+def home(request: HttpRequest) -> HttpResponseBase:
+    """Show the site-wide after-conference page at `/`, or redirect, or 404.
+
+    Old flyers and a bare domain land here. Nothing configured means there is
+    nothing to say, so it stays the 404 it always was.
+    """
+    install = InstallSettings.get()
+    after = resolve_after(install, None)
+    if after.redirect_url is not None:
+        return HttpResponseRedirect(after.redirect_url)
+    if after.is_empty:
+        raise Http404
+    return render(request, "raffle/home.html", {"after": after, "install": install})
 
 
 @require_GET

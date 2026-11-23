@@ -1,0 +1,5 @@
+{% extends "raffle/base.html" %}
+{% block title %}{% if install.owner_name %}{{ install.owner_name }}{% else %}Welcome{% endif %}{% endblock %}
+{% block content %}
+{% include "raffle/_after.html" %}
+{% endblock %}
