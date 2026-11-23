@@ -1,6 +1,6 @@
 [project]
 name = "conference-drawing"
-version = "0.1.2"
+version = "0.2.0"
 description = "Self-hosted Django app for running book raffles at a conference booth"
 license = "MIT"
 license-files = ["LICENSE"]
