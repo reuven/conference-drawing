@@ -165,6 +165,13 @@ to it by hand (up.sh never edits the shared Caddyfile), then run up.sh again:
 remote "getent group caddy" >/dev/null ||
 	die "$HOST has no caddy group; the app's socket is shared with Caddy through it"
 host_ips=$(remote "hostname -I")
+# A provider's reserved or floating IP (DigitalOcean NATs it to an anchor
+# address) is routed to the server but never appears on its interfaces. ssh
+# just reached the server by $HOST's name, so what that name resolves to counts
+# as the server's own; for an address given as $HOST, dig returns nothing.
+host_dns=$(dig +short "$HOST" A)
+host_dns6=$(dig +short -t AAAA "$HOST")
+host_ips="$host_ips $(printf '%s\n%s\n' "$host_dns" "$host_dns6" | grep -E '^[0-9A-Fa-f.:]+$' || true)"
 host_ips=" $(printf '%s' "$host_ips" | tr -s '[:space:]' ' ' | tr 'A-F' 'a-f') "
 # Every AAAA record must be the host too, or IPv6 clients reach another server.
 dns6=$(dig +short -t AAAA "$domain")

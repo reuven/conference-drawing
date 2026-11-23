@@ -118,6 +118,8 @@ def up(fakes: Fakes) -> Fakes:
         [
             {"match": f"+short {DOMAIN} A", "exact": True, "stdout": f"{HOST_IP}\n"},
             {"match": f"+short -t AAAA {DOMAIN}", "exact": True, "stdout": ""},
+            {"match": f"+short {HOST} A", "exact": True, "stdout": ""},
+            {"match": f"+short -t AAAA {HOST}", "exact": True, "stdout": ""},
         ],
     )
     fakes.set("scp", _scp())
@@ -423,6 +425,40 @@ def test_up_accepts_dns_through_a_cname(up: Fakes) -> None:
         },
     )
     assert up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT).returncode == 0
+
+
+RESERVED_IP = "198.51.100.7"
+RESERVED_IP6 = "2001:db8::77"
+
+
+def test_up_accepts_dns_at_the_hosts_reserved_ip(up: Fakes) -> None:
+    """A provider's reserved/floating IP is routed to the server but is not on
+    its interfaces (DigitalOcean NATs it to an anchor address). ssh reached the
+    server by HOST's name, so the addresses that name resolves to are its own."""
+    for name, rtype, ip in [
+        (HOST, "A", RESERVED_IP),
+        (HOST, "AAAA", RESERVED_IP6),
+        (DOMAIN, "A", RESERVED_IP),
+        (DOMAIN, "AAAA", RESERVED_IP6),
+    ]:
+        query = f"+short {name} A" if rtype == "A" else f"+short -t AAAA {name}"
+        up.prepend("dig", {"match": query, "exact": True, "stdout": f"{ip}\n"})
+    assert up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT).returncode == 0
+
+
+def test_up_still_refuses_dns_elsewhere_when_host_has_a_reserved_ip(up: Fakes) -> None:
+    up.prepend(
+        "dig",
+        {"match": f"+short {HOST} A", "exact": True, "stdout": f"{RESERVED_IP}\n"},
+    )
+    up.prepend(
+        "dig",
+        {"match": f"+short {DOMAIN} A", "exact": True, "stdout": "198.51.100.99\n"},
+    )
+    result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT)
+    assert result.returncode != 0
+    assert "198.51.100.99" in result.stderr
+    _never_installed(up)
 
 
 def test_up_refuses_a_dirty_checkout(up: Fakes) -> None:
@@ -1068,6 +1104,8 @@ UP_STEPS: list[tuple[str, str]] = [
     ("ssh", "/etc/caddy/sites/"),
     ("ssh", "getent group caddy"),
     ("ssh", "hostname -I"),
+    ("dig", f"+short {HOST} A"),
+    ("dig", f"-t AAAA {HOST}"),
     ("dig", f"-t AAAA {DOMAIN}"),
     ("dig", f"{DOMAIN} A"),
     ("ssh", "uname -m"),

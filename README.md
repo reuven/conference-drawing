@@ -139,7 +139,9 @@ only ssh access as root to the server.
 The server must be Ubuntu with systemd and [Caddy](https://caddyserver.com/)
 already installed and serving, a `caddy` group, and a line in
 `/etc/caddy/Caddyfile` that reads `import /etc/caddy/sites/*.caddy`. The
-domain's DNS A (and AAAA) records must already point at the server.
+domain's DNS A (and AAAA) records must already point at the server: at an
+address on its network interfaces, or at one the host's own name resolves to
+(so a DigitalOcean Reserved IP or another provider's floating IP works).
 
 ```sh
 deploy/up.sh <host> <domain> [--restore <backup.tar.gz>]
