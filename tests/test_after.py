@@ -347,3 +347,11 @@ def test_old_code_can_insert_rows_without_after_columns(db: None) -> None:
         "",
     )
     assert not conf.after_logo
+
+
+def test_migration_paths_to_the_validators_stay_importable() -> None:
+    """Migration 0005 names the validators through models; keep that path alive."""
+    from conference_drawing.raffle import models, validators
+
+    for name in ("validate_logo", "validate_redirect_url", "logo_upload_to"):
+        assert getattr(models, name) is getattr(validators, name)
