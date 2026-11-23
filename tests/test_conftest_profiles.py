@@ -54,3 +54,25 @@ def test_mutmut_profile_suppresses_differing_executors() -> None:
     assert HealthCheck.differing_executors in profile.suppress_health_check
     ci = settings.get_profile("ci")
     assert HealthCheck.differing_executors not in ci.suppress_health_check
+
+
+@pytest.mark.usefixtures("restore_profile")
+def test_ci_profile_keeps_hypothesis_builtin_ci_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Registering "ci" replaces Hypothesis's built-in profile, so ours must
+    # build on it: derandomized, no example database, reproduction blobs.
+    # Reloading conftest while another profile is loaded (as mutmut's second
+    # in-process pytest run does) must not leak that profile into "ci".
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HYPOTHESIS_PROFILE", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    settings.load_profile("mutmut")
+    importlib.reload(conftest)
+    ci = settings.get_profile("ci")
+    assert ci.derandomize is True
+    assert ci.database is None
+    assert ci.print_blob is True
+    assert ci.max_examples == 200
+    assert ci.deadline is None
+    assert ci.suppress_health_check == ()
