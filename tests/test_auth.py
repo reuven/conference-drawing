@@ -6,10 +6,10 @@ from unittest import mock
 import pytest
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.models import AbstractBaseUser
-from django.test import Client
+from django.test import Client, RequestFactory
 from django.urls import reverse
 
-from conference_drawing.auth import EmailOrUsernameBackend
+from conference_drawing.auth import AdminLoginForm, EmailOrUsernameBackend
 
 User = get_user_model()
 
@@ -144,3 +144,17 @@ def test_every_failure_path_does_exactly_one_hash(
     ):
         assert authenticate(username=typed, password=password) is None
     assert setter.call_count + checker.call_count == 1
+
+
+def test_unmatched_email_does_not_log_in_the_only_active_user(
+    boss: AbstractBaseUser,
+) -> None:
+    # The email filter is what ties the typed address to an account: with one
+    # active user in the table, a lookup that ignored it would let anyone in.
+    assert authenticate(username="stranger@example.com", password="pw") is None
+
+
+def test_admin_login_form_keeps_the_positional_request() -> None:
+    request = RequestFactory().get("/admin/login/")
+    form = AdminLoginForm(request)
+    assert form.request is request

@@ -4,6 +4,7 @@ import datetime
 import io
 import re
 import struct
+import warnings
 import zlib
 from typing import Any
 from urllib.parse import urlsplit
@@ -34,6 +35,13 @@ from conference_drawing.raffle.models import (
 @pytest.mark.parametrize("url", ["https://example.com/x?y=1", "HTTPS://Example.com"])
 def test_redirect_url_accepts_https(url: str) -> None:
     validate_redirect_url(url)
+
+
+def test_redirect_url_length_limit_is_inclusive() -> None:
+    prefix = "https://example.com/"
+    validate_redirect_url(prefix + "a" * (500 - len(prefix)))
+    with pytest.raises(ValidationError):
+        validate_redirect_url(prefix + "a" * (501 - len(prefix)))
 
 
 @pytest.mark.parametrize(
@@ -117,6 +125,30 @@ def test_logo_refuses_over_2mb() -> None:
     big = SimpleUploadedFile("logo.png", b"\x89PNG" + b"0" * (2 * 1024 * 1024))
     with pytest.raises(ValidationError, match="2 MB"):
         validate_logo(big)
+
+
+def test_logo_of_exactly_2mb_is_accepted() -> None:
+    png = _image("PNG").read()
+    padded = png + b"\0" * (2 * 1024 * 1024 - len(png))  # trailing bytes after IEND
+    upload = SimpleUploadedFile("logo.png", padded)
+    assert upload.size == 2 * 1024 * 1024
+    validate_logo(upload)
+
+
+@pytest.mark.filterwarnings("ignore:unrelated")
+def test_logo_validation_ignores_unrelated_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only a decompression-bomb warning is an error; any other warning Pillow
+    # raises while reading must not reject a good image.
+    real_open = Image.open
+
+    def noisy_open(*args: Any, **kwargs: Any) -> Any:
+        warnings.warn("unrelated", UserWarning, stacklevel=2)
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(Image, "open", noisy_open)
+    validate_logo(_image("PNG"))
 
 
 def test_logo_refuses_decompression_bomb() -> None:

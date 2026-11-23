@@ -1,11 +1,16 @@
+from collections.abc import Sequence
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
+from markdown_it import MarkdownIt
+from markdown_it.renderer import RendererHTML
+from markdown_it.token import Token
+from markdown_it.utils import EnvType, OptionsDict
 
-from conference_drawing.raffle.markup import _MD, render_markdown
+from conference_drawing.raffle.markup import _MD, _build, _link_open, render_markdown
 
 
 def test_renders_headings_lists_and_links() -> None:
@@ -126,3 +131,49 @@ def test_never_emits_active_content(text: str) -> None:
     assert audit.bad == []
     assert "<script" not in out
     assert "<img" not in out
+
+
+# --- configuration pins -------------------------------------------------------
+# `_MD` is built once at import, so these tests call `_build()` afresh: the
+# parser's options are what keep owner HTML out of a `|safe` template.
+
+
+def test_build_escapes_raw_html_and_drops_images() -> None:
+    md = _build()
+    out = md.render("<script>x</script> ![a](https://example.com/x.png)")
+    assert "<script" not in out
+    assert "&lt;script&gt;" in out
+    assert "<img" not in out
+
+
+def test_build_is_commonmark_without_linkify_tables_or_strikethrough() -> None:
+    out = _build().render("see example.com\n\n| a |\n|---|\n| b |\n\n~~gone~~")
+    assert "<a " not in out
+    assert "<table" not in out
+    assert "<s>" not in out
+
+
+def test_build_rewrites_links_with_rel_and_refuses_bad_ones() -> None:
+    md = _build()
+    assert md.render("[t](https://example.com)") == (
+        '<p><a href="https://example.com" rel="noopener noreferrer">t</a></p>\n'
+    )
+    assert "<a " not in md.render("[t](javascript:alert(1))")
+
+
+def test_link_open_passes_options_and_env_to_the_renderer() -> None:
+    seen: list[tuple[object, object]] = []
+
+    class Spy(RendererHTML):
+        def renderToken(  # noqa: N802
+            self, tokens: Sequence[Token], idx: int, options: OptionsDict, env: EnvType
+        ) -> str:
+            seen.append((options, env))
+            return ""
+
+    token = Token("link_open", "a", 1)
+    token.attrs = {"href": "https://example.com"}
+    marker_env: EnvType = {"k": 1}
+    options = MarkdownIt().options
+    _link_open(Spy(MarkdownIt()), [token], 0, options, marker_env)
+    assert seen == [(options, marker_env)]
