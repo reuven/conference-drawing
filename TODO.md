@@ -39,4 +39,5 @@ Spec: `docs/superpowers/specs/2026-11-23-between-conferences-design.md`
 - [x] 5. Log in with email or username
 - [x] 6. Deploy: logos folder, `owner-password.sh`
 - [x] 7. Docs, privacy line, e2e, version 0.2.0
-- [ ] Release v0.2.0 (mutmut, CI gate, tag, upgrade wp2)
+- [x] Release v0.2.0 (mutmut, CI gate, tag v0.2.0 on 4d85e3d)
+- [ ] Upgrade wp2 to v0.2.0 (owner runs deploy/up.sh)
