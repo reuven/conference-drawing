@@ -59,8 +59,9 @@
 #                                       not list. The only writable path.
 #     .env 0600, snapshots/ 0700 (pg_dump files, 0600)
 #     static/, media/, media/covers/    app user 0755, files 0644 (public anyway)
-#   /run/conference-drawing/web.sock    gunicorn's socket, in a 0750 directory
-#                                       of group caddy (see the web unit)
+#   /run/conference-drawing/web.sock    gunicorn's socket, made by systemd
+#                                       (the web .socket unit): app user,
+#                                       group caddy, 0660
 #   PostgreSQL                          socket only (listen_addresses = ''),
 #                                       database conference_drawing owned by
 #                                       role conference-drawing (peer auth)
@@ -127,11 +128,11 @@ on_exit() {
 	log_line "install failed (exit $status) commit=${commit:-unknown}${started:+; $started}"
 	if [ "$migrating" -eq 1 ] && [ -n "$pre_migrate" ]; then
 		log_line "init/migrate failed: the schema may be partly migrated. To go back to the pre-migrate snapshot:" \
-			"systemctl stop $WEB_UNIT $DRIP_UNIT $SNAPSHOT_TIMER &&" \
+			"systemctl stop $WEB_SOCKET $WEB_UNIT $DRIP_UNIT $SNAPSHOT_TIMER &&" \
 			"runuser -u postgres -- dropdb --force $DB_NAME &&" \
 			"runuser -u postgres -- createdb --owner=$DB_ROLE $DB_NAME &&" \
 			"runuser -u $APP_USER -- pg_restore --no-owner --role=$DB_ROLE --exit-on-error --single-transaction --dbname=$DB_NAME $pre_migrate &&" \
-			"systemctl start $WEB_UNIT $DRIP_UNIT $SNAPSHOT_TIMER;" \
+			"systemctl start $WEB_SOCKET $WEB_UNIT $DRIP_UNIT $SNAPSHOT_TIMER;" \
 			"then rerun up.sh, which grants the database's privileges again"
 	elif [ "$migrating" -eq 1 ]; then
 		log_line "init/migrate failed with no pre-migrate snapshot (the database had no tables yet), so there is nothing to put back"
@@ -426,7 +427,9 @@ if [ "$upgrade" -eq 1 ]; then # settings exist, and the old app keeps serving
 fi
 
 say "switching to the new release"
-for unit in "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_TIMER"; do
+# The socket first: while it listens, a request would start the old web app
+# against a database that is being migrated.
+for unit in "$WEB_SOCKET" "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_TIMER"; do
 	if systemctl is-active --quiet "$unit"; then
 		systemctl stop "$unit"
 		stopped+=("$unit")
@@ -457,11 +460,11 @@ switched=1
 install -m 0644 "$release/version.json" "$APP_DIR/version.json"
 
 say "systemd units"
-for unit in "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_SERVICE" "$SNAPSHOT_TIMER"; do
+for unit in "$WEB_SOCKET" "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_SERVICE" "$SNAPSHOT_TIMER"; do
 	install -m 0644 "$release/systemd/$unit" "$UNIT_DIR/$unit"
 done
 systemctl daemon-reload
-systemctl enable --now "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_TIMER"
+systemctl enable --now "$WEB_SOCKET" "$WEB_UNIT" "$DRIP_UNIT" "$SNAPSHOT_TIMER"
 stopped=()
 # Keep the new venv and the one it replaced; drop older ones.
 for dir in "$APP_DIR"/venv-*; do

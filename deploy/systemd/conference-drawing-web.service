@@ -1,8 +1,9 @@
 # Managed by conference-drawing (deploy/remote/install.sh).
 [Unit]
 Description=conference-drawing web app (gunicorn on a unix socket)
-After=network.target postgresql.service
+After=network.target postgresql.service conference-drawing-web.socket
 Requires=postgresql.service
+Requires=conference-drawing-web.socket
 
 [Service]
 Type=notify
@@ -13,16 +14,13 @@ Environment=CD_ENV_FILE=/srv/conference-drawing/data/.env
 Environment=CD_DATA_DIR=/srv/conference-drawing/data
 Environment=CD_VERSION_FILE=/srv/conference-drawing/version.json
 Environment=CD_DB_HOST=/var/run/postgresql
-# /run/conference-drawing holds the socket. The directory is 0750 and handed
-# to group caddy ("+": as root) before gunicorn starts, so only gunicorn's
-# user and Caddy can reach the socket (gunicorn binds it with its own umask,
-# 0). up.sh refuses a server without a caddy group.
-RuntimeDirectory=conference-drawing
-RuntimeDirectoryMode=0750
-ExecStartPre=+/usr/bin/chgrp caddy /run/conference-drawing
+# The listening socket comes from conference-drawing-web.socket (LISTEN_FDS),
+# which sets its permissions; so no --bind here.
 # No gunicorn access log: request lines carry display tokens and query strings.
+# No control socket: gunicorn 25+ writes it under the working directory, which
+# is read-only here, and nothing uses gunicornc.
 # gunicorn tells systemd when it is ready (Type=notify), so "start" waits.
-ExecStart=/srv/conference-drawing/venv/bin/gunicorn --workers 2 --bind unix:/run/conference-drawing/web.sock conference_drawing.wsgi:application
+ExecStart=/srv/conference-drawing/venv/bin/gunicorn --workers 2 --no-control-socket conference_drawing.wsgi:application
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5

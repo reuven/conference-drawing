@@ -13,7 +13,7 @@ require_root
 if [ -e "$LOCK_FILE" ] || [ -L "$LOCK_FILE" ]; then
 	take_lock 600
 fi
-units=("$SNAPSHOT_TIMER" "$SNAPSHOT_SERVICE" "$WEB_UNIT" "$DRIP_UNIT")
+units=("$SNAPSHOT_TIMER" "$SNAPSHOT_SERVICE" "$WEB_SOCKET" "$WEB_UNIT" "$DRIP_UNIT")
 for unit in "${units[@]}"; do
 	if [ -e "$UNIT_DIR/$unit" ]; then
 		systemctl disable --now "$unit"

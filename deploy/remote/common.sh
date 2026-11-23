@@ -29,6 +29,7 @@ CADDY_MAIN="$ROOT/etc/caddy/Caddyfile"
 CADDY_SITE="$ROOT/etc/caddy/sites/conference-drawing.caddy"
 CADDY_LOG_DIR="$ROOT/var/log/caddy"
 UNIT_DIR="$ROOT/etc/systemd/system"
+WEB_SOCKET=conference-drawing-web.socket
 WEB_UNIT=conference-drawing-web.service
 DRIP_UNIT=conference-drawing-drip.service
 SNAPSHOT_SERVICE=conference-drawing-snapshot.service

@@ -1,0 +1,22 @@
+# Managed by conference-drawing (deploy/remote/install.sh).
+# systemd creates the socket Caddy proxies to and hands it to gunicorn, so the
+# socket's permissions never depend on the web service's own setup: systemd
+# re-applies a RuntimeDirectory's owner before every Exec command, which undid
+# a chgrp of the old socket directory. Only the app's user and group caddy
+# (Caddy's primary group, so no Caddy restart) can connect.
+# up.sh refuses a server without a caddy group.
+#
+# While this socket listens, any request starts the web service: every script
+# that stops the app (install.sh, stop.sh) stops this socket too.
+[Unit]
+Description=conference-drawing web socket (Caddy connects here)
+
+[Socket]
+ListenStream=/run/conference-drawing/web.sock
+SocketUser=conference-drawing
+SocketGroup=caddy
+SocketMode=0660
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

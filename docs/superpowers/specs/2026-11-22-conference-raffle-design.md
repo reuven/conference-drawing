@@ -340,8 +340,11 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
   must be small and must never break Caddy).
   - **Native, no Docker**: `uv` installs Python 3.14 and the locked
     dependencies under `/srv/conference-drawing/`, owned by a dedicated
-    `conference-drawing` system user. Two systemd units: `conference-drawing-web`
-    (gunicorn, 2 workers, on a unix socket) and `conference-drawing-drip`
+    `conference-drawing` system user. Two systemd services: `conference-drawing-web`
+    (gunicorn, 2 workers, on a unix socket that the `conference-drawing-web.socket`
+    unit creates as the app user, group `caddy`, mode 0660, and hands to gunicorn;
+    every script that stops the app stops that socket too, or a request would
+    start the web service again) and `conference-drawing-drip`
     (the outbox worker), both `Requires=postgresql.service`. An hourly
     systemd timer runs `pg_dump -Fc` as the app user, reads every block back
     with `pg_restore -f /dev/null` (`--list` reads only the table of

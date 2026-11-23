@@ -35,7 +35,10 @@ from tests.deploy.conftest import (
 )
 
 COMMON = str(DEPLOY / "remote" / "common.sh")
+# The socket comes first: while it listens, any request starts the web app, so
+# every stop must include it (a migration or a teardown must not wake the app).
 APP_UNITS = [
+    "conference-drawing-web.socket",
     "conference-drawing-web.service",
     "conference-drawing-drip.service",
     "conference-drawing-snapshot.timer",
@@ -69,6 +72,9 @@ class Server:
 
     def uninstall(self) -> subprocess.CompletedProcess[str]:
         return self.fakes.run([str(self.release / "remote" / "uninstall.sh")])
+
+    def stop(self) -> subprocess.CompletedProcess[str]:
+        return self.fakes.run([str(self.release / "remote" / "stop.sh")])
 
     def log(self) -> list[str]:
         """Every fake call as ``tool args``, in order."""
@@ -974,6 +980,35 @@ def test_install_restore_removes_the_dump_when_extracting_fails(
     assert result.returncode != 0
     assert not (server.data / "db.dump").exists()
     assert not any("pg_restore" in line for line in server.log())
+
+
+# --- stop (down.sh's quiet step) ------------------------------------------------
+
+WEB_QUIET = (
+    "conference-drawing-snapshot.timer conference-drawing-web.socket "
+    "conference-drawing-web.service"
+)
+
+
+def test_stop_quiets_the_socket_with_the_web_app_before_the_outbox_check(
+    upgrade: Server,
+) -> None:
+    upgrade.fakes.prepend("runuser", {"match": "outbox_status"})
+    result = upgrade.stop()
+    assert result.returncode == 0, result.stderr
+    log = upgrade.log()
+    assert log.index(f"systemctl stop {WEB_QUIET}") < upgrade.index("outbox_status")
+    assert log[-1] == "systemctl stop conference-drawing-drip.service"
+
+
+def test_stop_starts_the_socket_again_when_a_drip_job_is_pending(
+    upgrade: Server,
+) -> None:
+    upgrade.fakes.prepend("runuser", {"match": "outbox_status", "exit": 1})
+    result = upgrade.stop()
+    assert result.returncode != 0
+    assert f"systemctl start {WEB_QUIET}" in upgrade.log()
+    assert "systemctl stop conference-drawing-drip.service" not in upgrade.log()
 
 
 # --- uninstall -----------------------------------------------------------------

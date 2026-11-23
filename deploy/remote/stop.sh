@@ -9,9 +9,10 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 require_root
-systemctl stop "$SNAPSHOT_TIMER" "$WEB_UNIT"
+# The socket too: while it listens, any request would start the web app again.
+systemctl stop "$SNAPSHOT_TIMER" "$WEB_SOCKET" "$WEB_UNIT"
 if ! run_app outbox_status; then
-	systemctl start "$WEB_UNIT" "$SNAPSHOT_TIMER"
+	systemctl start "$SNAPSHOT_TIMER" "$WEB_SOCKET" "$WEB_UNIT"
 	die "a Drip job is pending; the app is running again. Wait, then rerun down.sh"
 fi
 systemctl stop "$DRIP_UNIT"

@@ -24,7 +24,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 }
 set_target "$1"
 local_commit
-start_again="ssh $TARGET systemctl start conference-drawing-web.service conference-drawing-drip.service conference-drawing-snapshot.timer"
+start_again="ssh $TARGET systemctl start conference-drawing-web.socket conference-drawing-web.service conference-drawing-drip.service conference-drawing-snapshot.timer"
 
 stage down "$DEPLOY/remote"
 say "checking the Drip outbox on $HOST"

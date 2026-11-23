@@ -800,9 +800,13 @@ SERVICES = [
 ]
 
 
-def test_units_are_exactly_the_expected_four() -> None:
+def test_units_are_exactly_the_expected_five() -> None:
     assert sorted(p.name for p in SYSTEMD.iterdir()) == sorted(
-        [*SERVICES, "conference-drawing-snapshot.timer"]
+        [
+            *SERVICES,
+            "conference-drawing-snapshot.timer",
+            "conference-drawing-web.socket",
+        ]
     )
 
 
@@ -826,22 +830,46 @@ def test_services_set_paths_user_and_hardening(name: str) -> None:
         assert unit[f"Service.{key}"] == [value], key
 
 
-def test_web_unit_serves_gunicorn_on_the_socket() -> None:
+SOCKET_PATH = "/run/conference-drawing/web.sock"
+
+
+def test_web_unit_serves_gunicorn_on_the_systemd_socket() -> None:
     unit = _unit("conference-drawing-web.service")
-    assert unit["Service.RuntimeDirectory"] == ["conference-drawing"]
-    # Only gunicorn's user and the caddy group may reach the socket: the
-    # directory is 0750 and handed to group caddy (caddy's primary group, so
-    # no Caddy restart) before gunicorn starts.
-    assert unit["Service.RuntimeDirectoryMode"] == ["0750"]
-    assert "up.sh refuses a server without a caddy group" in WEB_UNIT_TEXT()
-    assert unit["Service.ExecStartPre"] == [
-        "+/usr/bin/chgrp caddy /run/conference-drawing"
-    ]
+    # systemd re-applies a RuntimeDirectory's owner (User/Group) before every
+    # Exec command, so a chgrp in ExecStartPre was undone before gunicorn ran
+    # and Caddy got 503s (found on the first real install). The socket unit
+    # owns the socket's permissions instead.
+    assert "Service.RuntimeDirectory" not in unit
+    assert "Service.ExecStartPre" not in unit
+    assert "conference-drawing-web.socket" in unit["Unit.Requires"]
+    assert "conference-drawing-web.socket" in " ".join(unit["Unit.After"]).split()
     (start,) = unit["Service.ExecStart"]
     assert start.startswith("/srv/conference-drawing/venv/bin/gunicorn ")
-    assert "--bind unix:/run/conference-drawing/web.sock" in start
+    # gunicorn takes the listening socket from systemd (LISTEN_FDS).
+    assert "--bind" not in start
+    # gunicorn 25+'s control socket would be written under the read-only
+    # working directory; nothing here uses gunicornc.
+    assert "--no-control-socket" in start.split()
     assert "conference_drawing.wsgi" in start
     assert unit["Install.WantedBy"] == ["multi-user.target"]
+
+
+def test_web_socket_is_reachable_only_by_the_app_and_caddy() -> None:
+    sock = _unit("conference-drawing-web.socket")
+    assert sock["Socket.ListenStream"] == [SOCKET_PATH]
+    # caddy is Caddy's primary group, so no Caddy restart is needed.
+    assert sock["Socket.SocketUser"] == ["conference-drawing"]
+    assert sock["Socket.SocketGroup"] == ["caddy"]
+    assert sock["Socket.SocketMode"] == ["0660"]
+    assert sock["Install.WantedBy"] == ["sockets.target"]
+    assert (
+        "up.sh refuses a server without a caddy group"
+        in (SYSTEMD / "conference-drawing-web.socket").read_text()
+    )
+
+
+def test_caddy_proxies_to_the_socket_units_path() -> None:
+    assert f"reverse_proxy unix/{SOCKET_PATH}" in TEMPLATE.read_text()
 
 
 def test_drip_unit_is_a_single_worker_with_graceful_stop() -> None:
@@ -1076,7 +1104,8 @@ def test_down_says_the_app_is_stopped_when_the_backup_fails(down: Fakes) -> None
     assert result.returncode != 0
     assert "stopped" in result.stderr
     assert (
-        "systemctl start conference-drawing-web.service "
+        "systemctl start conference-drawing-web.socket "
+        "conference-drawing-web.service "
         "conference-drawing-drip.service conference-drawing-snapshot.timer"
     ) in result.stderr
     assert not any("uninstall.sh" in k for k in _ssh_keys(down))
