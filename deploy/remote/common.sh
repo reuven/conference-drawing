@@ -64,6 +64,11 @@ valid_domain() {
 	[[ ${#1} -le 253 && $1 =~ ^($label\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
 
+# The owner's login name. Must match valid_username in deploy/lib.sh.
+valid_username() {
+	[[ $1 =~ ^[A-Za-z0-9@.+_-]{1,150}$ ]]
+}
+
 # Run a command as the app user, from / (never a directory root is changing),
 # without the maintenance lock's descriptor (fd 9).
 as_app() {

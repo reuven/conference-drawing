@@ -30,7 +30,9 @@ COMMIT = "0123456789abcdef0123456789abcdef01234567"
 # Paths on the (fake) server, never touched on this machine. Each run stages
 # into its own /tmp/conference-drawing-<commit>-<script>-<8 hex>.
 STAGE = f"/tmp/conference-drawing-{COMMIT}-"  # noqa: S108
-STAGE_RE = rf"/tmp/conference-drawing-{COMMIT}-(up|backup|down)-[0-9a-f]{{8}}"  # noqa: S108
+STAGE_RE = (
+    rf"/tmp/conference-drawing-{COMMIT}-(up|backup|down|owner-password)-[0-9a-f]{{8}}"  # noqa: S108
+)
 REMOTE_BACKUP = "/tmp/conference-drawing-backup.Ab12Cd34/backup.tar.gz"  # noqa: S108
 
 # Host tools the scripts and fakes may use. Nothing here can reach a network.

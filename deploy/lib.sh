@@ -29,6 +29,12 @@ valid_domain() {
 	[[ ${#1} -le 253 && $1 =~ ^($label\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
 }
 
+# The owner's login name: what up.sh asks for and Django accepts. Must match
+# remote/common.sh.
+valid_username() {
+	[[ $1 =~ ^[A-Za-z0-9@.+_-]{1,150}$ ]]
+}
+
 set_target() {
 	valid_host "$1" || die "not a host name: $1"
 	HOST=$1
@@ -41,6 +47,11 @@ set_target() {
 remote() { ssh "${SSH_OPTS[@]}" "$TARGET" "$1" </dev/null; }
 # shellcheck disable=SC2029
 remote_stdin() { ssh "${SSH_OPTS[@]}" "$TARGET" "$1" <"$2"; }
+# Run one fixed command on the server with a terminal, and keep stdin, so the
+# command can prompt the operator (a password typed at the server's own prompt,
+# never in argv). Use it only for a command that must prompt.
+# shellcheck disable=SC2029
+remote_tty() { ssh -t "${SSH_OPTS[@]}" "$TARGET" "$1"; }
 
 local_commit() {
 	COMMIT=$(git -C "$REPO" rev-parse HEAD)

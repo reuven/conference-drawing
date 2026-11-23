@@ -78,7 +78,7 @@ prompt_owner() {
 	printf 'Owner username [owner]: ' >&2
 	IFS= read -r user || die "no username given"
 	user=${user:-owner}
-	[[ $user =~ ^[A-Za-z0-9@.+_-]{1,150}$ ]] || die "a username is letters, digits and @.+-_ only"
+	valid_username "$user" || die "a username is letters, digits and @.+-_ only"
 	printf 'Owner email: ' >&2
 	IFS= read -r email || die "no email given"
 	[[ $email =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "that is not an email address"

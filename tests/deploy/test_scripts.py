@@ -35,6 +35,7 @@ from tests.deploy.conftest import (
 UP = str(DEPLOY / "up.sh")
 DOWN = str(DEPLOY / "down.sh")
 BACKUP = str(DEPLOY / "backup.sh")
+OWNER_PASSWORD = str(DEPLOY / "owner-password.sh")
 COMMON = str(DEPLOY / "remote" / "common.sh")
 SNAPSHOT = str(DEPLOY / "remote" / "snapshot.sh")
 TEMPLATE = DEPLOY / "caddy" / "conference-drawing.caddy.tmpl"
@@ -1222,6 +1223,77 @@ def test_unknown_commands_exit_97(fakes: Fakes) -> None:
     fakes.set("ssh", [])
     result = fakes.run(["-c", f"ssh root@{HOST} whoami"])
     assert result.returncode == 97
+
+
+# --- owner-password.sh ---------------------------------------------------------
+
+
+@pytest.fixture
+def owner_pw(fakes: Fakes) -> Fakes:
+    fakes.set("git", _git())
+    fakes.set("ssh", [*_staging_ssh(), {"match": "remote/owner_password.sh"}])
+    fakes.set("scp", _scp())
+    return fakes
+
+
+def test_owner_password_runs_the_server_script_on_a_tty(owner_pw: Fakes) -> None:
+    result = owner_pw.run([OWNER_PASSWORD, HOST, "owner@example.com"])
+    assert result.returncode == 0, result.stderr
+    (call,) = [c for c in owner_pw.calls("ssh") if "remote/owner_password.sh" in c.key]
+    assert "-t" in call.argv
+    assert re.fullmatch(
+        rf"bash {STAGE_RE}/remote/owner_password\.sh owner@example\.com", call.key
+    )
+    assert not any(
+        "password" in a.lower() for a in call.argv if "owner_password" not in a
+    )
+    # The staging directory is removed afterwards.
+    assert re.fullmatch(f"rm -rf {STAGE_RE}", _ssh_keys(owner_pw)[-1])
+
+
+def test_owner_password_cleans_up_when_the_server_script_fails(
+    owner_pw: Fakes,
+) -> None:
+    owner_pw.prepend("ssh", {"match": "remote/owner_password.sh", "exit": 1})
+    result = owner_pw.run([OWNER_PASSWORD, HOST, "owner"])
+    assert result.returncode != 0
+    assert re.fullmatch(f"rm -rf {STAGE_RE}", _ssh_keys(owner_pw)[-1])
+
+
+@pytest.mark.parametrize("args", [[], [HOST], [HOST, "a", "b"]])
+def test_owner_password_needs_exactly_host_and_username(
+    owner_pw: Fakes, args: list[str]
+) -> None:
+    result = owner_pw.run([OWNER_PASSWORD, *args])
+    assert result.returncode == 2
+    assert "usage" in result.stderr
+    assert owner_pw.calls() == []
+
+
+@pytest.mark.parametrize("name", ["a b", "x;y", "$(id)", "a" * 151, ""])
+def test_owner_password_refuses_a_bad_username(owner_pw: Fakes, name: str) -> None:
+    result = owner_pw.run([OWNER_PASSWORD, HOST, name])
+    assert result.returncode != 0
+    assert owner_pw.calls() == []
+
+
+def test_owner_password_refuses_a_bad_host(owner_pw: Fakes) -> None:
+    result = owner_pw.run([OWNER_PASSWORD, "-oProxyCommand=x", "owner"])
+    assert result.returncode != 0
+    assert owner_pw.calls() == []
+
+
+def test_remote_tty_allocates_a_tty_and_keeps_stdin(fakes: Fakes) -> None:
+    fakes.set("ssh", [{"match": "whoami"}])
+    probe = fakes.root / "probe.sh"
+    probe.write_text(
+        f'source "{DEPLOY}/lib.sh"\nset_target {HOST}\nremote_tty whoami\n'
+    )
+    result = fakes.run([str(probe)], stdin="typed\n")
+    assert result.returncode == 0, result.stderr
+    (call,) = fakes.calls("ssh")
+    assert "-t" in call.argv
+    assert call.stdin == "typed\n"  # not redirected from /dev/null
 
 
 def test_shellcheck_is_clean() -> None:

@@ -191,13 +191,13 @@ prepare_data_dir() {
 	as_app bash -c '
 		set -euo pipefail
 		data=$1
-		for p in snapshots static media media/covers .env; do
+		for p in snapshots static media media/covers media/logos .env; do
 			if [ -L "$data/$p" ]; then
 				echo "error: $data/$p is a symbolic link; remove it and run again" >&2
 				exit 1
 			fi
 		done
-		mkdir -p "$data/snapshots" "$data/static" "$data/media/covers"
+		mkdir -p "$data/snapshots" "$data/static" "$data/media/covers" "$data/media/logos"
 		chmod 0700 "$data/snapshots"
 		find -P "$data/static" "$data/media" ! -type l -type d -exec chmod 0755 {} +
 		find -P "$data/static" "$data/media" ! -type l -type f -exec chmod 0644 {} +

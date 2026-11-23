@@ -49,6 +49,7 @@ ROOT_SCRIPTS = [
     "backup.sh",
     "stop.sh",
     "outbox_status.sh",
+    "owner_password.sh",
 ]
 
 
@@ -245,7 +246,7 @@ def test_install_fresh_lays_out_the_server(server: Server) -> None:
     assert result.returncode == 0, result.stderr
     assert os_mode(server.data) == 0o711
     assert os_mode(server.data / "snapshots") == 0o700
-    for sub in ("static", "media", "media/covers"):
+    for sub in ("static", "media", "media/covers", "media/logos"):
         assert os_mode(server.data / sub) == 0o755, sub
     env = server.data / ".env"
     assert env.read_text() == (
@@ -696,7 +697,7 @@ def test_install_refuses_the_wrong_uv_without_a_tarball(server: Server) -> None:
 
 # --- symlinks the app user could plant ------------------------------------------
 
-PLANTED = ["snapshots", "static", "media", "media/covers", ".env"]
+PLANTED = ["snapshots", "static", "media", "media/covers", "media/logos", ".env"]
 
 
 @pytest.mark.parametrize("planted", PLANTED)
@@ -1157,3 +1158,41 @@ def test_uninstall_refuses_while_a_unit_still_runs(upgrade: Server) -> None:
     result = upgrade.uninstall()  # is-active answers 0: still running
     assert result.returncode != 0
     assert upgrade.app.exists()
+
+
+# --- owner_password.sh ---------------------------------------------------------
+
+
+def test_owner_password_runs_changepassword_as_the_app_user(server: Server) -> None:
+    script = str(server.release / "remote" / "owner_password.sh")
+    server.fakes.prepend("runuser", {"match": "changepassword", "stdout": "ok\n"})
+    result = server.fakes.run([script, "owner@example.com"])
+    assert result.returncode == 0, result.stderr
+    (call,) = [c for c in server.fakes.calls("runuser") if "changepassword" in c.argv]
+    assert call.argv[:2] == ["-u", "conference-drawing"]
+    assert call.argv[-2:] == ["changepassword", "owner@example.com"]
+    assert call.argv[-3].endswith("/bin/conference-drawing")
+
+
+@pytest.mark.parametrize("name", ["", "a b", "x;y", "$(id)", "a" * 151])
+def test_owner_password_refuses_a_bad_username(server: Server, name: str) -> None:
+    script = str(server.release / "remote" / "owner_password.sh")
+    result = server.fakes.run([script, name])
+    assert result.returncode != 0
+    assert server.fakes.calls("runuser") == []
+
+
+def test_owner_password_refuses_without_a_username(server: Server) -> None:
+    script = str(server.release / "remote" / "owner_password.sh")
+    result = server.fakes.run([script])
+    assert result.returncode != 0
+    assert server.fakes.calls("runuser") == []
+
+
+def test_owner_password_refuses_when_not_root(server: Server) -> None:
+    server.fakes.prepend("id", {"match": "-u", "stdout": "1000\n"})
+    script = str(server.release / "remote" / "owner_password.sh")
+    result = server.fakes.run([script, "owner"])
+    assert result.returncode != 0
+    assert "run this as root" in result.stderr
+    assert server.fakes.calls("runuser") == []
