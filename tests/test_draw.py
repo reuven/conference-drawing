@@ -624,12 +624,30 @@ def test_undo_claim_after_auto_finish_refused_after_wrap_up(
     [pick] = started_single(drawing)
     mark_claimed(pick, now=LATER)
     wrap_up(conf, now=LATER)
+    drawing.refresh_from_db()  # a stale copy would be refused as "isn't open"
+    assert undo_rule(drawing).reopen_refusal == "This conference has been wrapped up."
     assert undo_rule(drawing).can_undo(pick, None) is False
     with pytest.raises(DrawingError, match=r"^This conference has been wrapped up\.$"):
         undo_last(pick, now=LATER)
     drawing.refresh_from_db()
     pick.refresh_from_db()
     assert (drawing.status, pick.status) == (Drawing.Status.FINISHED, S.CLAIMED)
+
+
+def test_another_conference_wrapped_up_does_not_block_undo(
+    drawing: Drawing, entrants: list[int]
+) -> None:
+    """Wrapping up last month's conference must not freeze today's booth."""
+    [pick] = started_single(drawing)
+    pick = mark_claimed(pick, now=LATER)
+    other = factories.make_conference(wrapped_up_at=NOW)
+    assert other.pk != drawing.conference_id
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.FINISHED
+    assert undo_rule(drawing).can_undo(pick, None) is True
+    undo_last(pick, now=LATER)
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.OPEN
 
 
 def test_undo_rule_matches_undo_last(drawing: Drawing, entrants: list[int]) -> None:
