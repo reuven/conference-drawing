@@ -12,24 +12,27 @@ from markdown_it.renderer import RendererHTML
 from markdown_it.token import Token
 from markdown_it.utils import EnvType, OptionsDict
 
-_ALLOWED_SCHEMES = frozenset({"https", "http", "mailto"})
+_WEB_SCHEMES = frozenset({"https", "http"})
 
 
 class _SafeMarkdownIt(MarkdownIt):
     """MarkdownIt that refuses every link whose scheme is not allow-listed."""
 
     def validateLink(self, url: str) -> bool:
-        """Allow only absolute https, http and mailto URLs.
+        """Allow only absolute https/http URLs with a host, and mailto.
 
         Called with the already-normalized URL by the link, autolink and
         reference rules. Relative links and fragments have no scheme and are
         refused, as is anything that does not parse.
         """
         try:
-            scheme = urlsplit(url.strip()).scheme
+            parts = urlsplit(url.strip())
         except ValueError:
             return False
-        return scheme.lower() in _ALLOWED_SCHEMES
+        scheme = parts.scheme.lower()
+        if scheme == "mailto":
+            return True
+        return scheme in _WEB_SCHEMES and bool(parts.netloc)
 
 
 def _link_open(
@@ -40,7 +43,12 @@ def _link_open(
     env: EnvType,
 ) -> str:
     """Render ``<a>`` with ``rel="noopener noreferrer"`` (no window.opener leak)."""
-    tokens[idx].attrSet("rel", "noopener noreferrer")
+    token = tokens[idx]
+    if token.attrGet("href") == "":
+        # markdown-it skips validateLink for an empty destination; drop the
+        # empty href so no link survives that the validator never saw.
+        del token.attrs["href"]
+    token.attrSet("rel", "noopener noreferrer")
     return self.renderToken(tokens, idx, options, env)
 
 
