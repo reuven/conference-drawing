@@ -6,15 +6,23 @@ enter and read them (see `timezones.py`).
 
 import re
 import secrets
+import uuid
+import warnings
 import zoneinfo
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator, RegexValidator
+from django.core.files import File
+from django.core.validators import (
+    MaxLengthValidator,
+    MinValueValidator,
+    RegexValidator,
+)
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
+from PIL import Image
 
 from .text import normalize_email, validate_single_line_label
 
@@ -88,6 +96,93 @@ def new_display_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+MAX_REDIRECT_URL_LENGTH = 500
+MAX_AFTER_MARKDOWN_LENGTH = 20_000
+MAX_LOGO_BYTES = 2 * 1024 * 1024
+_LOGO_EXTENSIONS = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp", "GIF": "gif"}
+_UNSAFE_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f]")
+
+
+class AfterMode(models.TextChoices):
+    """What a wrapped-up conference's entry page does."""
+
+    PAGE = "page", "Show a page"
+    REDIRECT = "redirect", "Redirect"
+    INHERIT = "inherit", "Use the install-wide setting"
+
+
+def validate_redirect_url(value: str) -> None:
+    """Accept only a short absolute https URL with a host and no userinfo.
+
+    Why: the entry page 302s visitors here, so a `javascript:` or credentialed
+    URL, or one with control characters, must never get through.
+    """
+    if len(value) > MAX_REDIRECT_URL_LENGTH or _UNSAFE_URL_CHARS.search(value):
+        raise ValidationError("Enter a shorter https:// URL without spaces.")
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname
+    except ValueError:
+        raise ValidationError("Enter a valid https:// URL.") from None
+    if parts.scheme.lower() != "https" or not host or "@" in parts.netloc:
+        raise ValidationError("Enter a full https:// URL, without a username.")
+
+
+def validate_logo(file: File[Any]) -> None:
+    """Accept only a small, intact PNG, JPEG, WEBP or GIF.
+
+    Why: the file is served from our own origin, so it must really be a raster
+    image (never SVG or HTML renamed .png) and must not blow up memory when
+    decoded. Pillow decides by content, not by the uploaded name.
+    """
+    if file.size is not None and file.size > MAX_LOGO_BYTES:
+        raise ValidationError("The logo must be 2 MB or smaller.")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            file.seek(0)
+            with Image.open(file) as img:
+                fmt = img.format
+                img.verify()
+    except (
+        OSError,
+        SyntaxError,
+        ValueError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ):
+        raise ValidationError("Upload a valid PNG, JPEG, WEBP or GIF image.") from None
+    finally:
+        file.seek(0)
+    if fmt not in _LOGO_EXTENSIONS:
+        raise ValidationError("Upload a PNG, JPEG, WEBP or GIF image.")
+
+
+def logo_upload_to(instance: models.Model, filename: str) -> str:
+    """Name an uploaded logo `logos/<random hex>.<ext>`, ignoring the user's name.
+
+    Why: the uploaded filename is attacker-controlled. Django passes only that
+    name, but the instance's `after_logo` already holds the upload, so the
+    extension comes from the format Pillow detects in the bytes.
+    """
+    upload = instance.after_logo  # type: ignore[attr-defined]
+    position = upload.file.tell()
+    try:
+        upload.file.seek(0)
+        with Image.open(upload.file) as img:
+            ext = _LOGO_EXTENSIONS.get(img.format or "")
+    except OSError, SyntaxError, ValueError:
+        ext = None
+    finally:
+        upload.file.seek(position)
+    if ext is None:
+        raise ValidationError("Upload a valid PNG, JPEG, WEBP or GIF image.")
+    return f"logos/{uuid.uuid4().hex}.{ext}"
+
+
+_NEEDS_URL = "Redirect mode needs a URL (here or in the install settings)."
+
+
 class ConferenceTags(NamedTuple):
     """The four Drip tags a conference uses."""
 
@@ -104,6 +199,22 @@ class InstallSettings(models.Model):
     privacy_note = models.TextField(blank=True)
     followup_ack_text = models.TextField(default=DEFAULT_FOLLOWUP_ACK_TEXT)
     bd_checkbox_text = models.TextField(default=DEFAULT_BD_CHECKBOX_TEXT)
+    after_mode = models.CharField(
+        max_length=10,
+        choices=[(AfterMode.PAGE, "Show a page"), (AfterMode.REDIRECT, "Redirect")],
+        default=AfterMode.PAGE,
+    )
+    after_logo = models.ImageField(
+        upload_to=logo_upload_to, blank=True, validators=[validate_logo]
+    )
+    after_markdown = models.TextField(
+        blank=True, validators=[MaxLengthValidator(MAX_AFTER_MARKDOWN_LENGTH)]
+    )
+    after_redirect_url = models.URLField(
+        max_length=MAX_REDIRECT_URL_LENGTH,
+        blank=True,
+        validators=[validate_redirect_url],
+    )
 
     def __str__(self) -> str:
         return "Install settings"
@@ -111,6 +222,10 @@ class InstallSettings(models.Model):
     def save(self, *args: Any, **kwargs: Any) -> None:
         self.pk = 1
         super().save(*args, **kwargs)
+
+    def clean(self) -> None:
+        if self.after_mode == AfterMode.REDIRECT and not self.after_redirect_url:
+            raise ValidationError({"after_redirect_url": _NEEDS_URL})
 
     @classmethod
     def get(cls) -> InstallSettings:
@@ -143,6 +258,20 @@ class Conference(models.Model):
     display_token = models.CharField(max_length=64, default=new_display_token)
     wrapped_up_at = models.DateTimeField(null=True, blank=True)
     deleted_entrant_count = models.PositiveIntegerField(null=True, blank=True)
+    after_mode = models.CharField(
+        max_length=10, choices=AfterMode, default=AfterMode.INHERIT
+    )
+    after_logo = models.ImageField(
+        upload_to=logo_upload_to, blank=True, validators=[validate_logo]
+    )
+    after_markdown = models.TextField(
+        blank=True, validators=[MaxLengthValidator(MAX_AFTER_MARKDOWN_LENGTH)]
+    )
+    after_redirect_url = models.URLField(
+        max_length=MAX_REDIRECT_URL_LENGTH,
+        blank=True,
+        validators=[validate_redirect_url],
+    )
 
     def __str__(self) -> str:
         return self.name
@@ -150,6 +279,12 @@ class Conference(models.Model):
     def clean(self) -> None:
         if self.starts_on and self.ends_on and self.ends_on < self.starts_on:
             raise ValidationError({"ends_on": "The end date is before the start date."})
+        if (
+            self.after_mode == AfterMode.REDIRECT
+            and not self.after_redirect_url
+            and not InstallSettings.get().after_redirect_url
+        ):
+            raise ValidationError({"after_redirect_url": _NEEDS_URL})
 
     @property
     def excluded_emails(self) -> frozenset[str]:
