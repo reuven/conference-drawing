@@ -24,3 +24,19 @@ Spec: `docs/superpowers/specs/2026-11-22-conference-raffle-design.md`
 - [x] 16b. Switch from SQLite to PostgreSQL (Reuven's decision, 2026-11-22)
 - [x] 17. End-to-end browser tests
 - [x] 18. Docs and release readiness (v0.1.0)
+
+## v0.2.0 — between conferences
+
+Plan: `docs/superpowers/plans/2026-11-23-between-conferences.md`
+Spec: `docs/superpowers/specs/2026-11-23-between-conferences-design.md`
+
+- [x] Design doc approved (2026-11-23)
+- [x] Implementation plan written
+- [ ] 1. Safe Markdown renderer
+- [ ] 2. After-conference fields, validation, migration, resolver
+- [ ] 3. Pages: wrapped-up entry URL and `/`
+- [ ] 4. Admin and logo file lifecycle
+- [ ] 5. Log in with email or username
+- [ ] 6. Deploy: logos folder, `owner-password.sh`
+- [ ] 7. Docs, privacy line, e2e, version 0.2.0
+- [ ] Release v0.2.0 (mutmut, CI gate, tag, upgrade wp2)
