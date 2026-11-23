@@ -188,7 +188,8 @@ email, and password. If your checkout's `.env` has `DRIP_API_KEY` and
 `DRIP_ACCOUNT_ID`, they are copied to the server. Run it again to upgrade; a
 snapshot of the database is taken before each migration. The install also
 creates `data/media/logos/` (mode 0755), where uploaded after-conference
-logos live.
+logos live. Upgrading to 0.2 signs everyone out of the admin once (the login
+method changed).
 
 An upgrade only **adds** keys the server's `.env` lacks; it never changes one
 that is already there. So rotating the Drip key, or moving to another domain,
@@ -225,8 +226,8 @@ deploy/owner-password.sh <host> <username>   # reset an admin password
 new password at the server's own prompt, and it never passes through the
 script. A username may not start with `-`.
 
-The admin login accepts your username or your email address, matched without
-regard to case. If two accounts share one email address, that address cannot
+The admin login accepts your username, or your email address in any case
+(usernames are case-sensitive). If two accounts share one email address, that address cannot
 be used to sign in, but each can still sign in by username.
 
 `down.sh` refuses while any Drip job is still pending. It stops the app,
@@ -284,7 +285,7 @@ and add your ssh key).
 
 4. From your laptop, run `deploy/up.sh <droplet-address> <your-domain>`.
 
-Delete the Droplet when the conference is over, or leave it for the next one.
+Keep the Droplet for the next conference; delete it only if you retire the install.
 
 ## Configuration
 
