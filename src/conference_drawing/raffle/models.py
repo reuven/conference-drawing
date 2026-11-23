@@ -6,15 +6,11 @@ enter and read them (see `timezones.py`).
 
 import re
 import secrets
-import unicodedata
-import uuid
-import warnings
 import zoneinfo
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
-from django.core.files import File
 from django.core.files.storage import Storage
 from django.core.validators import (
     MaxLengthValidator,
@@ -23,13 +19,26 @@ from django.core.validators import (
 )
 from django.db import models, transaction
 from django.db.models import Q
-from django.db.models.fields.files import FieldFile
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
 from django.utils import timezone
-from PIL import Image
 
 from .text import normalize_email, validate_single_line_label
+
+# Re-exported (`as` makes it explicit for mypy): migration 0005 names the
+# validators as `conference_drawing.raffle.models.<name>`.
+from .validators import (
+    MAX_REDIRECT_URL_LENGTH,
+)
+from .validators import (
+    logo_upload_to as logo_upload_to,
+)
+from .validators import (
+    validate_logo as validate_logo,
+)
+from .validators import (
+    validate_redirect_url as validate_redirect_url,
+)
 
 DEFAULT_FOLLOWUP_ACK_TEXT = (
     "Entering means one follow-up email from me after the conference."
@@ -101,16 +110,7 @@ def new_display_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-MAX_REDIRECT_URL_LENGTH = 500
 MAX_AFTER_MARKDOWN_LENGTH = 20_000
-MAX_LOGO_BYTES = 2 * 1024 * 1024
-_LOGO_EXTENSIONS = {
-    "PNG": "png",
-    "JPEG": "jpg",
-    "MPO": "jpg",
-    "WEBP": "webp",
-    "GIF": "gif",
-}
 
 
 class AfterMode(models.TextChoices):
@@ -119,82 +119,6 @@ class AfterMode(models.TextChoices):
     PAGE = "page", "Show a page"
     REDIRECT = "redirect", "Redirect"
     INHERIT = "inherit", "Use the install-wide setting"
-
-
-def validate_redirect_url(value: str) -> None:
-    """Accept only a short absolute https URL with a host and no userinfo.
-
-    Why: the entry page 302s visitors here, so a `javascript:` or credentialed
-    URL, or one with control characters, must never get through.
-    """
-    if len(value) > MAX_REDIRECT_URL_LENGTH or any(
-        c.isspace() or unicodedata.category(c).startswith("C") for c in value
-    ):
-        raise ValidationError("Enter a shorter https:// URL without spaces.")
-    try:
-        parts = urlsplit(value)
-        host = parts.hostname
-    except ValueError:
-        raise ValidationError("Enter a valid https:// URL.") from None
-    if parts.scheme.lower() != "https" or not host or "@" in parts.netloc:
-        raise ValidationError("Enter a full https:// URL, without a username.")
-
-
-def validate_logo(file: File[Any]) -> None:
-    """Accept only a small, intact PNG, JPEG, WEBP or GIF.
-
-    Why: the file is served from our own origin, so it must really be a raster
-    image (never SVG or HTML renamed .png) and must not blow up memory when
-    decoded. Pillow decides by content, not by the uploaded name.
-
-    A file already stored was validated when uploaded; re-checking it on every
-    admin re-save would crash if the file has gone missing from disk.
-    """
-    if isinstance(file, FieldFile) and file._committed:  # type: ignore[attr-defined]
-        return
-    if file.size is not None and file.size > MAX_LOGO_BYTES:
-        raise ValidationError("The logo must be 2 MB or smaller.")
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            file.seek(0)
-            with Image.open(file) as img:
-                fmt = img.format
-                img.verify()
-    except (
-        OSError,
-        SyntaxError,
-        ValueError,
-        Image.DecompressionBombError,
-        Image.DecompressionBombWarning,
-    ):
-        raise ValidationError("Upload a valid PNG, JPEG, WEBP or GIF image.") from None
-    finally:
-        file.seek(0)
-    if fmt not in _LOGO_EXTENSIONS:
-        raise ValidationError("Upload a PNG, JPEG, WEBP or GIF image.")
-
-
-def logo_upload_to(instance: models.Model, filename: str) -> str:
-    """Name an uploaded logo `logos/<random hex>.<ext>`, ignoring the user's name.
-
-    Why: the uploaded filename is attacker-controlled. Django passes only that
-    name, but the instance's `after_logo` already holds the upload, so the
-    extension comes from the format Pillow detects in the bytes.
-    """
-    upload = instance.after_logo  # type: ignore[attr-defined]
-    position = upload.file.tell()
-    try:
-        upload.file.seek(0)
-        with Image.open(upload.file) as img:
-            ext = _LOGO_EXTENSIONS.get(img.format or "")
-    except OSError, SyntaxError, ValueError:
-        ext = None
-    finally:
-        upload.file.seek(position)
-    if ext is None:
-        raise ValidationError("Upload a valid PNG, JPEG, WEBP or GIF image.")
-    return f"logos/{uuid.uuid4().hex}.{ext}"
 
 
 def _stored_logo_name(instance: models.Model) -> str:
@@ -287,12 +211,17 @@ class InstallSettings(models.Model):
         default="",
         db_default="",
         validators=[validate_logo],
+        help_text="PNG, JPEG, WebP or GIF, up to 2 MB.",
     )
     after_markdown = models.TextField(
         blank=True,
         default="",
         db_default="",
         validators=[MaxLengthValidator(MAX_AFTER_MARKDOWN_LENGTH)],
+        help_text=(
+            "Markdown, up to 20,000 characters. Links (https, http, mailto) work; "
+            "raw HTML and images don't \u2014 put a logo in the logo field."
+        ),
     )
     after_redirect_url = models.URLField(
         max_length=MAX_REDIRECT_URL_LENGTH,
@@ -300,6 +229,7 @@ class InstallSettings(models.Model):
         default="",
         db_default="",
         validators=[validate_redirect_url],
+        help_text="https only.",
     )
 
     class Meta:
@@ -360,12 +290,17 @@ class Conference(models.Model):
         default="",
         db_default="",
         validators=[validate_logo],
+        help_text="PNG, JPEG, WebP or GIF, up to 2 MB.",
     )
     after_markdown = models.TextField(
         blank=True,
         default="",
         db_default="",
         validators=[MaxLengthValidator(MAX_AFTER_MARKDOWN_LENGTH)],
+        help_text=(
+            "Markdown, up to 20,000 characters. Links (https, http, mailto) work; "
+            "raw HTML and images don't \u2014 put a logo in the logo field."
+        ),
     )
     after_redirect_url = models.URLField(
         max_length=MAX_REDIRECT_URL_LENGTH,
@@ -373,6 +308,7 @@ class Conference(models.Model):
         default="",
         db_default="",
         validators=[validate_redirect_url],
+        help_text="https only.",
     )
 
     def __str__(self) -> str:

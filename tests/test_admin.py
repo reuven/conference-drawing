@@ -1194,3 +1194,13 @@ def test_deleting_a_conference_whose_logo_file_is_missing_succeeds(
     with django_capture_on_commit_callbacks(execute=True):
         Conference.objects.get(pk=conf.pk).delete()
     assert not Conference.objects.filter(pk=conf.pk).exists()
+
+
+def test_site_settings_page_explains_the_fallback_and_field_formats(
+    admin_client: Client,
+) -> None:
+    html = admin_client.get(_site_url()).content.decode()
+    assert "Conferences use these unless they set their own, field by field." in html
+    assert "Links (https, http, mailto) work" in html
+    assert "https only." in html
+    assert "PNG, JPEG, WebP or GIF, up to 2 MB." in html

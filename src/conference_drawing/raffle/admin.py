@@ -72,7 +72,15 @@ class InstallSettingsAdmin(admin.ModelAdmin[InstallSettings], _AfterLogoMedia):
                 )
             },
         ),
-        ("After a conference", {"fields": AFTER_FIELDS}),
+        (
+            "After a conference",
+            {
+                "fields": AFTER_FIELDS,
+                "description": (
+                    "Conferences use these unless they set their own, field by field."
+                ),
+            },
+        ),
     )
 
     @admin.display(description="Current logo")

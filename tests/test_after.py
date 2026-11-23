@@ -1,5 +1,6 @@
 """After-conference settings: validators, upload naming, and the resolver."""
 
+import datetime
 import io
 import re
 import struct
@@ -310,8 +311,6 @@ def test_conference_clean_does_not_create_the_site_row(db: None) -> None:
 
 
 def test_conference_clean_reports_both_errors_together(db: None) -> None:
-    import datetime
-
     conf = Conference(
         after_mode=AfterMode.REDIRECT,
         starts_on=datetime.date(2026, 5, 2),

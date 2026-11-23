@@ -95,7 +95,8 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
     """
     conference = get_object_or_404(Conference, slug=slug)
     if conference.wrapped_up_at is not None:
-        after = resolve_after(InstallSettings.get(), conference)
+        install = InstallSettings.get()
+        after = resolve_after(install, conference)
         if after.redirect_url is not None and request.method in ("GET", "HEAD"):
             return HttpResponseRedirect(after.redirect_url)
         return render(
@@ -104,7 +105,7 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
             {
                 "conference": conference,
                 "after": after,
-                "install": InstallSettings.get(),
+                "install": install,
             },
         )
 
