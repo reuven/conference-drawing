@@ -183,7 +183,6 @@ def test_after_wrap_up_the_entry_url_shows_the_owner_page(
 
     responses: list[tuple[str, int]] = []
     phone_page.on("response", lambda r: responses.append((r.url, r.status)))
-    phone_page.on("console", lambda m: None)
     phone_page.goto(f"{live_server.url}/c/{conference.slug}/")
 
     expect(
@@ -192,7 +191,7 @@ def test_after_wrap_up_the_entry_url_shows_the_owner_page(
     expect(phone_page.get_by_role("link", name="our site")).to_have_attribute(
         "href", "https://example.com/"
     )
-    logo = phone_page.locator("img")
+    logo = phone_page.locator("img.after-logo")
     expect(logo).to_be_visible()
     assert logo.evaluate("img => img.naturalWidth") > 0
     assert (f"{live_server.url}/media/logos/site.png", 200) in responses

@@ -302,6 +302,10 @@ class InstallSettings(models.Model):
         validators=[validate_redirect_url],
     )
 
+    class Meta:
+        verbose_name = "install settings"
+        verbose_name_plural = "install settings"
+
     def __str__(self) -> str:
         return "Install settings"
 

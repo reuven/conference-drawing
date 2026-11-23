@@ -401,6 +401,10 @@ def test_admin_rejects_javascript_url(
     assert not PrizeLine.objects.exists()
 
 
+def test_install_settings_plural_label_is_not_settingss() -> None:
+    assert InstallSettings._meta.verbose_name_plural == "install settings"
+
+
 def test_install_settings_singleton(admin_client: Client) -> None:
     add = reverse("admin:raffle_installsettings_add")
     assert admin_client.get(add).status_code == 200

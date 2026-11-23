@@ -291,6 +291,9 @@ def test_privacy_page_states_retention(client: Client, db: None) -> None:
     sentence = "We keep your entry until the organizer deletes it."
     assert sentence in html
     assert html.index(sentence) < html.index("Owner note.")
+    install.privacy_note = ""
+    install.save()
+    assert sentence in client.get(reverse("privacy")).content.decode()
 
 
 def test_privacy_page_without_note(client: Client, db: None) -> None:
