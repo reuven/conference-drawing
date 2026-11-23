@@ -3,6 +3,7 @@
 {% block content %}
 <h1>Privacy</h1>
 {% if install.owner_name %}<p>Run by {{ install.owner_name }}.</p>{% endif %}
+<p>We keep your entry until the organizer deletes it.</p>
 {% if install.privacy_note %}
 <p>{{ install.privacy_note|linebreaksbr }}</p>
 {% else %}

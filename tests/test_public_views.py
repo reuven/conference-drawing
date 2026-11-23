@@ -283,6 +283,16 @@ def test_privacy_page_escapes_note_and_keeps_line_breaks(
     assert "Grace" in html
 
 
+def test_privacy_page_states_retention(client: Client, db: None) -> None:
+    install = InstallSettings.get()
+    install.privacy_note = "Owner note."
+    install.save()
+    html = client.get(reverse("privacy")).content.decode()
+    sentence = "We keep your entry until the organizer deletes it."
+    assert sentence in html
+    assert html.index(sentence) < html.index("Owner note.")
+
+
 def test_privacy_page_without_note(client: Client, db: None) -> None:
     response = client.get(reverse("privacy"))
     assert response.status_code == 200

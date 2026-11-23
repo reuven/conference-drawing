@@ -1,12 +1,22 @@
 """Core flows in a real browser: attendee, owner, display, flyer, CSP."""
 
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
+from django.contrib.auth import get_user_model
+from django.utils import timezone
+from PIL import Image
 from playwright.sync_api import Page, expect
 
-from conference_drawing.raffle.models import Conference, Drawing, Entrant, Pick
+from conference_drawing.raffle.models import (
+    Conference,
+    Drawing,
+    Entrant,
+    InstallSettings,
+    Pick,
+)
 from tests.e2e.conftest import CspWatch, is_csp_message
 
 pytestmark = pytest.mark.e2e
@@ -150,3 +160,61 @@ def test_csp_watch_catches_a_real_violation(
     assert phone_page.evaluate("window.__cspViolations") == ["script-src-elem inline"]
     assert csp_watch.violations == ["script-src-elem inline"]
     assert len(csp_watch.console) == 1
+
+
+def test_after_wrap_up_the_entry_url_shows_the_owner_page(
+    phone_page: Page,
+    live_server: Any,
+    conference: Conference,
+    csp_watch: CspWatch,
+    settings: Any,
+    tmp_path: Path,
+) -> None:
+    """The site's logo and link appear on a wrapped-up entry URL, CSP-clean."""
+    settings.MEDIA_ROOT = tmp_path
+    (tmp_path / "logos").mkdir()
+    Image.new("RGB", (8, 8), "navy").save(tmp_path / "logos" / "site.png")
+    install = InstallSettings.get()
+    install.after_logo = "logos/site.png"
+    install.after_markdown = "Thanks! See [our site](https://example.com/)."
+    install.save()
+    conference.wrapped_up_at = timezone.now()
+    conference.save()
+
+    responses: list[tuple[str, int]] = []
+    phone_page.on("response", lambda r: responses.append((r.url, r.status)))
+    phone_page.on("console", lambda m: None)
+    phone_page.goto(f"{live_server.url}/c/{conference.slug}/")
+
+    expect(
+        phone_page.get_by_text("Entries for this conference are closed")
+    ).to_be_visible()
+    expect(phone_page.get_by_role("link", name="our site")).to_have_attribute(
+        "href", "https://example.com/"
+    )
+    logo = phone_page.locator("img")
+    expect(logo).to_be_visible()
+    assert logo.evaluate("img => img.naturalWidth") > 0
+    assert (f"{live_server.url}/media/logos/site.png", 200) in responses
+    assert csp_watch.console == []
+    assert csp_watch.violations == []
+
+
+def test_admin_login_with_email(
+    phone_page: Page, live_server: Any, transactional_db: None
+) -> None:
+    """The admin login accepts the owner's email address, in any case."""
+    get_user_model().objects.create_user(
+        "owner",
+        email="owner@example.com",
+        password="pw-for-e2e-only",
+        is_staff=True,
+        is_superuser=True,
+    )
+    phone_page.goto(f"{live_server.url}/admin/login/")
+    phone_page.get_by_label("Username").fill("Owner@Example.com")
+    phone_page.get_by_label("Password").fill("pw-for-e2e-only")
+    phone_page.get_by_role("button", name="Log in").click()
+    expect(
+        phone_page.get_by_role("heading", name="Site administration")
+    ).to_be_visible()

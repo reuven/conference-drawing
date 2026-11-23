@@ -5,8 +5,9 @@ Visitors scan a QR code and enter on their phones; you run the drawings from
 your own phone at the booth; afterward the entrants go to
 [Drip](https://www.drip.com/) with tags, and Drip sends the follow-up email.
 
-One install has one owner. Each exhibitor deploys their own copy, runs it for
-one conference, and takes it down again.
+One install has one owner. Each exhibitor deploys their own copy and keeps it
+running: it serves one conference after another, and you can take it down if
+you ever retire it.
 
 What it does:
 
@@ -127,9 +128,40 @@ Everything is configured by environment variables or that `.env` file; see
    timestamps. It is personal data: keep it somewhere private.
 8. **Delete.** Once Drip has everything (no jobs pending), "Delete entrants"
    removes the conference's personal data and keeps the drawings, prizes, and
-   counts.
-9. **Take the server down.** `deploy/down.sh <host>` backs the server up to
-   your laptop and removes the app from the server (see below).
+   counts. This step is optional and explicit: nothing deletes entrants
+   for you, and entrants you keep stay in the install, tagged with their own
+   conference. The privacy page tells visitors "We keep your entry until the
+   organizer deletes it."
+9. **Next conference.** The install is permanent. Wrap up, export, then add
+   the next conference in the same admin; its entrants, drawings, and Drip
+   tags are its own. Books are reused.
+
+### After a conference
+
+Once a conference is wrapped up, its entry URL `/c/<slug>/` can show your
+own page instead of a bare "closed" message. Both the site settings (admin,
+"Install settings") and each conference have an "After a conference"
+fieldset with four fields:
+
+- **Mode:** `page` shows the page below; `redirect` sends visitors (a 302) to
+  the redirect URL. A conference can also inherit the site's mode.
+- **Logo:** PNG, JPEG, WebP, or GIF, at most 2 MB. SVG is refused.
+- **Markdown:** at most 20,000 characters. Links (https, http, and mailto
+  only) work; raw HTML and images do not. Put images in the logo field.
+- **Redirect URL:** `https` only, for example `https://example.com/books`.
+
+A conference's blank fields fall back to the site's, field by field. A
+wrapped-up `/c/<slug>/` shows the conference name, "Entries for this
+conference are closed", then the logo and the Markdown (or redirects). The
+site root `/` shows the site-wide content, or redirects, or answers 404 when
+nothing is configured. With nothing set anywhere, the plain closed page is
+unchanged.
+
+### If you ever retire the install
+
+`deploy/down.sh <host>` backs the server up to your laptop and removes the
+app from the server (see "Deploying to a server"). You do not need it between
+conferences.
 
 ## Deploying to a server
 
@@ -154,7 +186,9 @@ then builds this checkout, installs it under `/srv/conference-drawing/`, runs
 `/privacy/` over HTTPS. On the first install it asks for the owner's username,
 email, and password. If your checkout's `.env` has `DRIP_API_KEY` and
 `DRIP_ACCOUNT_ID`, they are copied to the server. Run it again to upgrade; a
-snapshot of the database is taken before each migration.
+snapshot of the database is taken before each migration. The install also
+creates `data/media/logos/` (mode 0755), where uploaded after-conference
+logos live.
 
 An upgrade only **adds** keys the server's `.env` lacks; it never changes one
 that is already there. So rotating the Drip key, or moving to another domain,
@@ -183,8 +217,17 @@ The other operator commands:
 
 ```sh
 deploy/backup.sh <host>   # save a backup to backups/ on this laptop
-deploy/down.sh <host>     # back up, then remove everything from the server
+deploy/down.sh <host>     # back up, then remove everything (retiring the install)
+deploy/owner-password.sh <host> <username>   # reset an admin password
 ```
+
+`owner-password.sh` runs over `ssh -t`, so it needs a terminal: you type the
+new password at the server's own prompt, and it never passes through the
+script. A username may not start with `-`.
+
+The admin login accepts your username or your email address, matched without
+regard to case. If two accounts share one email address, that address cannot
+be used to sign in, but each can still sign in by username.
 
 `down.sh` refuses while any Drip job is still pending. It stops the app,
 takes a final backup, then removes the services, the Caddy site file, the
@@ -260,7 +303,7 @@ with mode 0600.
 | `CD_DB_HOST` | empty (the local socket) | Host or socket directory. Homebrew: `/tmp`. |
 | `CD_DB_PORT` | empty | Port, if not the default. |
 | `CD_DB_PASSWORD` | empty | Password. Leave empty for socket login; for a TCP setup only. |
-| `CD_DATA_DIR` | `var/` in the project | Where static files and uploaded covers live. |
+| `CD_DATA_DIR` | `var/` in the project | Where static files and uploaded covers and logos live. |
 | `CD_ENV_FILE` | `.env` in the project | The file to read settings from. |
 | `CD_VERSION_FILE` | none | A JSON file the deploy writes; the footer and `/version` show it. |
 | `DRIP_ACCOUNT_ID` | none | Your Drip account id (digits). Set both Drip values or neither. |

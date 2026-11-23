@@ -331,8 +331,9 @@ follow-up acknowledgement and of the Better Developers opt-in (if any).
 - **QR code**: generated server-side as SVG (e.g. `segno`).
 - **Live updates**: HTMX (vendored, pinned) with polling; no WebSockets.
 - **Deployment** (serving goal 8; revised 2026-11-22 after Reuven chose
-  DigitalOcean and pointed at his existing server). The app is **ephemeral per
-  conference**: installed when the conference starts, removed when it ends.
+  DigitalOcean and pointed at his existing server). The app is **permanent;
+  teardown is optional** (revised 2026-11-23, v0.2): one install serves one
+  conference after another, and `down.sh` is for retiring it.
   Target is any Ubuntu server with **systemd + Caddy** that the operator can
   ssh to as root. Reuven's is `wp2.lerner.co.il` (Ubuntu 24.04, 1 vCPU,
   2 GB RAM + 2 GB swap, native Caddy 2.11 importing `/etc/caddy/sites/*.caddy`,
