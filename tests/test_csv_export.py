@@ -221,7 +221,7 @@ def test_non_string_answer_is_stringified(
 
 @pytest.fixture
 def owner(client: Client, db: None) -> Client:
-    user = User.objects.create_user("owner", password="pw", is_staff=True)  # noqa: S106
+    user = User.objects.create_user("owner", password="pw", is_staff=True)
     client.force_login(user)
     return client
 

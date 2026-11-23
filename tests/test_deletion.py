@@ -197,7 +197,7 @@ def test_assigned_code_must_be_marked_used(
 def test_no_email_left_anywhere_in_db(
     conference: Conference, populated: dict[str, Any]
 ) -> None:
-    user = User.objects.create_user("owner", password="pw")  # noqa: S106
+    user = User.objects.create_user("owner", password="pw")
     LogEntry.objects.create(
         user=user,
         content_type=ContentType.objects.get_for_model(Entrant),
@@ -402,7 +402,7 @@ def test_a_blocked_vacuum_gives_up_instead_of_stalling_the_request(
 
 @pytest.fixture
 def owner(client: Client, db: None) -> Client:
-    user = User.objects.create_user("owner", password="pw", is_staff=True)  # noqa: S106
+    user = User.objects.create_user("owner", password="pw", is_staff=True)
     client.force_login(user)
     return client
 

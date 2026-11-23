@@ -107,3 +107,40 @@ def test_admin_login_post_with_email_redirects_to_admin(db: None) -> None:
     }
     resp = Client().post(reverse("admin:login"), data, REMOTE_ADDR="203.0.113.77")
     assert (resp.status_code, resp["Location"]) == (302, "/admin/")
+
+
+def test_unknown_username_still_runs_the_hasher(db: None) -> None:
+    with mock.patch.object(User, "set_password") as spy:
+        assert authenticate(username="nobody", password="pw") is None
+    spy.assert_called_once_with("pw")
+
+
+@pytest.mark.parametrize(
+    ("typed", "password"),
+    [
+        ("nobody", "pw"),  # unknown username
+        ("nobody@example.com", "pw"),  # unknown email
+        ("same@example.com", "pw"),  # duplicate email
+        ("gone@example.com", "pw"),  # inactive, by email
+        ("gone", "pw"),  # inactive, by username
+        ("boss", "wrong"),  # wrong password
+    ],
+)
+def test_every_failure_path_does_exactly_one_hash(
+    db: None, typed: str, password: str
+) -> None:
+    """One hasher run per failed login, so no path is cheaper than another."""
+    User.objects.create_user("boss", "boss@example.com", "pw")
+    User.objects.create_user("a", "same@example.com", "pw")
+    User.objects.create_user("b", "same@example.com", "pw")
+    User.objects.create_user("gone", "gone@example.com", "pw", is_active=False)
+    with (
+        mock.patch.object(
+            User, "set_password", autospec=True, side_effect=User.set_password
+        ) as setter,
+        mock.patch.object(
+            User, "check_password", autospec=True, side_effect=User.check_password
+        ) as checker,
+    ):
+        assert authenticate(username=typed, password=password) is None
+    assert setter.call_count + checker.call_count == 1

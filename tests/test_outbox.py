@@ -405,7 +405,7 @@ def test_counts_and_requeue_failed(
 
 @pytest.fixture
 def owner(client: Client, db: None) -> Client:
-    user = User.objects.create_user("owner", password="pw", is_staff=True)  # noqa: S106
+    user = User.objects.create_user("owner", password="pw", is_staff=True)
     client.force_login(user)
     return client
 
@@ -614,7 +614,7 @@ def test_retry_failed_is_login_required_post_only_and_csrf_protected(
     failed = _job(conference, status=J.Status.FAILED)
     url = reverse("booth-retry-failed", args=[conference.slug])
     assert client.post(url).status_code == 302  # to login
-    user = User.objects.create_user("o2", password="pw", is_staff=True)  # noqa: S106
+    user = User.objects.create_user("o2", password="pw", is_staff=True)
     strict = Client(enforce_csrf_checks=True)
     strict.force_login(user)
     assert strict.post(url).status_code == 403
