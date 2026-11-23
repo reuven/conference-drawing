@@ -5,12 +5,14 @@ from django.urls import path
 from django_ratelimit.decorators import ratelimit
 
 from conference_drawing import ops
+from conference_drawing.auth import AdminLoginForm
 from conference_drawing.raffle.views import booth, display, export, flyer, public
 
 # Password guessing on the admin login would tie up the sync workers the booth
 # needs, so login POSTs get the entry form's per-client limiter (and its 429),
 # tighter. Listed before admin.site.urls, so this path wins and "admin:login"
 # still reverses to the same URL.
+admin.site.login_form = AdminLoginForm
 admin_login = ratelimit(key=public.client_ip, rate="10/m", method="POST", block=True)(
     admin.site.login
 )

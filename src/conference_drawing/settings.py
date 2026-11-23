@@ -49,6 +49,9 @@ DRIP_API_KEY = _env("DRIP_API_KEY")
 
 LOGIN_URL = "admin:login"
 
+# Extends ModelBackend; listing both would hash twice on every failed login.
+AUTHENTICATION_BACKENDS = ["conference_drawing.auth.EmailOrUsernameBackend"]
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
