@@ -58,7 +58,7 @@
 #   /srv/conference-drawing/data        app user 0711: others may pass through,
 #                                       not list. The only writable path.
 #     .env 0600, snapshots/ 0700 (pg_dump files, 0600)
-#     static/, media/, media/covers/    app user 0755, files 0644 (public anyway)
+#     static/, media/, media/{covers,logos}/  app user 0755, files 0644 (public anyway)
 #   /run/conference-drawing/web.sock    gunicorn's socket, made by systemd
 #                                       (the web .socket unit): app user,
 #                                       group caddy, 0660
