@@ -32,11 +32,11 @@ Spec: `docs/superpowers/specs/2026-11-23-between-conferences-design.md`
 
 - [x] Design doc approved (2026-11-23)
 - [x] Implementation plan written
-- [ ] 1. Safe Markdown renderer
-- [ ] 2. After-conference fields, validation, migration, resolver
-- [ ] 3. Pages: wrapped-up entry URL and `/`
-- [ ] 4. Admin and logo file lifecycle
-- [ ] 5. Log in with email or username
-- [ ] 6. Deploy: logos folder, `owner-password.sh`
-- [ ] 7. Docs, privacy line, e2e, version 0.2.0
+- [x] 1. Safe Markdown renderer
+- [x] 2. After-conference fields, validation, migration, resolver
+- [x] 3. Pages: wrapped-up entry URL and `/`
+- [x] 4. Admin and logo file lifecycle
+- [x] 5. Log in with email or username
+- [x] 6. Deploy: logos folder, `owner-password.sh`
+- [x] 7. Docs, privacy line, e2e, version 0.2.0
 - [ ] Release v0.2.0 (mutmut, CI gate, tag, upgrade wp2)
