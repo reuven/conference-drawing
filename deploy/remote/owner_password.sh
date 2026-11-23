@@ -9,4 +9,5 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require_root
 [ $# -eq 1 ] || die "usage: owner_password.sh <username>"
 valid_username "$1" || die "a username is letters, digits and @.+-_ only"
-run_app changepassword "$1"
+# "--" so a name can never be read as an option.
+run_app changepassword -- "$1"

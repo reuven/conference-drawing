@@ -6,6 +6,9 @@
 # Stages remote/owner_password.sh like backup.sh does, then runs it over
 # ssh -t so Django's changepassword asks for the new password at the server's
 # own prompt. The password never passes through this script or any argument.
+#
+# Needs a terminal on stdin. CD_ALLOW_NO_TTY=1 skips that check; it is for the
+# test harness only (its stdin is a pipe).
 set -euo pipefail
 # shellcheck source=deploy/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -17,6 +20,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 set_target "$1"
 valid_username "$2" || die "a username is letters, digits and @.+-_ only"
 user=$2
+
+[ -t 0 ] || [ "${CD_ALLOW_NO_TTY:-}" = 1 ] ||
+	die "run this from a terminal; changepassword prompts for the password"
 
 local_commit
 RDIR=""

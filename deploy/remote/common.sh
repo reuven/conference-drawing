@@ -66,7 +66,7 @@ valid_domain() {
 
 # The owner's login name. Must match valid_username in deploy/lib.sh.
 valid_username() {
-	[[ $1 =~ ^[A-Za-z0-9@.+_-]{1,150}$ ]]
+	[[ $1 =~ ^[A-Za-z0-9@.+_][A-Za-z0-9@.+_-]{0,149}$ ]]
 }
 
 # Run a command as the app user, from / (never a directory root is changing),

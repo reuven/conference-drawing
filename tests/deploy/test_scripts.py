@@ -1230,6 +1230,7 @@ def test_unknown_commands_exit_97(fakes: Fakes) -> None:
 
 @pytest.fixture
 def owner_pw(fakes: Fakes) -> Fakes:
+    fakes.extra_env["CD_ALLOW_NO_TTY"] = "1"  # the harness's stdin is a pipe
     fakes.set("git", _git())
     fakes.set("ssh", [*_staging_ssh(), {"match": "remote/owner_password.sh"}])
     fakes.set("scp", _scp())
@@ -1270,11 +1271,25 @@ def test_owner_password_needs_exactly_host_and_username(
     assert owner_pw.calls() == []
 
 
-@pytest.mark.parametrize("name", ["a b", "x;y", "$(id)", "a" * 151, ""])
+@pytest.mark.parametrize("name", ["a b", "x;y", "$(id)", "a" * 151, "", "-x", "--help"])
 def test_owner_password_refuses_a_bad_username(owner_pw: Fakes, name: str) -> None:
     result = owner_pw.run([OWNER_PASSWORD, HOST, name])
     assert result.returncode != 0
     assert owner_pw.calls() == []
+
+
+def test_owner_password_refuses_without_a_terminal(owner_pw: Fakes) -> None:
+    del owner_pw.extra_env["CD_ALLOW_NO_TTY"]
+    result = owner_pw.run([OWNER_PASSWORD, HOST, "owner"], stdin="piped\n")
+    assert result.returncode != 0
+    assert "terminal" in result.stderr
+    assert owner_pw.calls() == []
+
+
+def test_up_refuses_an_owner_name_that_starts_with_a_dash(up: Fakes) -> None:
+    result = up.run([UP, HOST, DOMAIN], stdin=OWNER_INPUT.replace("owner\n", "-x\n", 1))
+    assert result.returncode != 0
+    assert "letters, digits" in result.stderr
 
 
 def test_owner_password_refuses_a_bad_host(owner_pw: Fakes) -> None:

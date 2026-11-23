@@ -1170,11 +1170,11 @@ def test_owner_password_runs_changepassword_as_the_app_user(server: Server) -> N
     assert result.returncode == 0, result.stderr
     (call,) = [c for c in server.fakes.calls("runuser") if "changepassword" in c.argv]
     assert call.argv[:2] == ["-u", "conference-drawing"]
-    assert call.argv[-2:] == ["changepassword", "owner@example.com"]
-    assert call.argv[-3].endswith("/bin/conference-drawing")
+    assert call.argv[-3:] == ["changepassword", "--", "owner@example.com"]
+    assert call.argv[-4].endswith("/bin/conference-drawing")
 
 
-@pytest.mark.parametrize("name", ["", "a b", "x;y", "$(id)", "a" * 151])
+@pytest.mark.parametrize("name", ["", "a b", "x;y", "$(id)", "a" * 151, "-x", "--help"])
 def test_owner_password_refuses_a_bad_username(server: Server, name: str) -> None:
     script = str(server.release / "remote" / "owner_password.sh")
     result = server.fakes.run([script, name])

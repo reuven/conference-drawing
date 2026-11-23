@@ -32,7 +32,7 @@ valid_domain() {
 # The owner's login name: what up.sh asks for and Django accepts. Must match
 # remote/common.sh.
 valid_username() {
-	[[ $1 =~ ^[A-Za-z0-9@.+_-]{1,150}$ ]]
+	[[ $1 =~ ^[A-Za-z0-9@.+_][A-Za-z0-9@.+_-]{0,149}$ ]]
 }
 
 set_target() {
