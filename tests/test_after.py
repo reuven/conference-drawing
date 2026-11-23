@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 import pytest
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from hypothesis import example, given
 from hypothesis import strategies as st
 from PIL import Image
@@ -45,6 +46,9 @@ def test_redirect_url_accepts_https(url: str) -> None:
         "https://example.com/\n",
         "https://example.com/" + "a" * 500,
         "https://[::1",
+        "https://example.com/\x9b",
+        "https://exam\u200bple.com",
+        "https://example.com/\u202e",
     ],
 )
 def test_redirect_url_refuses_bad_urls(url: str) -> None:
@@ -55,6 +59,9 @@ def test_redirect_url_refuses_bad_urls(url: str) -> None:
 @example("https://example.com")
 @example("https://[::1")
 @example("https://@x.com")
+@example("https://example.com/\x9b")
+@example("https://exam\u200bple.com")
+@example("https://example.com/\u202e")
 @given(st.text())
 def test_redirect_url_property(value: str) -> None:
     try:
@@ -282,3 +289,62 @@ def test_after_content_is_frozen() -> None:
     got = resolve_after(_site(AfterMode.PAGE, "", "", ""), None)
     with pytest.raises(PydanticValidationError):
         got.mode = "redirect"
+
+
+def test_mpo_logo_is_accepted_and_named_jpg() -> None:
+    buf = io.BytesIO()
+    first = Image.new("RGB", (8, 8), "red")
+    first.save(
+        buf, format="MPO", save_all=True, append_images=[Image.new("RGB", (8, 8))]
+    )
+    assert Image.open(io.BytesIO(buf.getvalue())).format == "MPO"
+    upload = SimpleUploadedFile("logo.jpg", buf.getvalue())
+    validate_logo(upload)
+    assert logo_upload_to(InstallSettings(after_logo=upload), "x").endswith(".jpg")
+
+
+def test_conference_clean_does_not_create_the_site_row(db: None) -> None:
+    with pytest.raises(ValidationError):
+        Conference(after_mode=AfterMode.REDIRECT).clean()
+    assert not InstallSettings.objects.exists()
+
+
+def test_conference_clean_reports_both_errors_together(db: None) -> None:
+    import datetime
+
+    conf = Conference(
+        after_mode=AfterMode.REDIRECT,
+        starts_on=datetime.date(2026, 5, 2),
+        ends_on=datetime.date(2026, 5, 1),
+    )
+    with pytest.raises(ValidationError) as err:
+        conf.clean()
+    assert set(err.value.message_dict) == {"ends_on", "after_redirect_url"}
+
+
+def test_old_code_can_insert_rows_without_after_columns(db: None) -> None:
+    """v0.1.2 inserts omit the after_* columns, so the DB must default them."""
+    with connection.cursor() as cur:
+        cur.execute(
+            "INSERT INTO raffle_installsettings (id, owner_name, privacy_note,"
+            " followup_ack_text, bd_checkbox_text) VALUES (1, '', '', 'a', 'b')"
+        )
+        cur.execute(
+            "INSERT INTO raffle_conference (name, slug, time_zone, booth_location,"
+            " starts_on, ends_on, exclusion_emails, display_token)"
+            " VALUES ('N', 'n', 'UTC', '', '2026-01-01', '2026-01-02', '', 't')"
+        )
+    site = InstallSettings.objects.get(pk=1)
+    conf = Conference.objects.get(slug="n")
+    assert (site.after_mode, site.after_markdown, site.after_redirect_url) == (
+        AfterMode.PAGE,
+        "",
+        "",
+    )
+    assert not site.after_logo
+    assert (conf.after_mode, conf.after_markdown, conf.after_redirect_url) == (
+        AfterMode.INHERIT,
+        "",
+        "",
+    )
+    assert not conf.after_logo

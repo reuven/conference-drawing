@@ -6,6 +6,7 @@ enter and read them (see `timezones.py`).
 
 import re
 import secrets
+import unicodedata
 import uuid
 import warnings
 import zoneinfo
@@ -99,8 +100,13 @@ def new_display_token() -> str:
 MAX_REDIRECT_URL_LENGTH = 500
 MAX_AFTER_MARKDOWN_LENGTH = 20_000
 MAX_LOGO_BYTES = 2 * 1024 * 1024
-_LOGO_EXTENSIONS = {"PNG": "png", "JPEG": "jpg", "WEBP": "webp", "GIF": "gif"}
-_UNSAFE_URL_CHARS = re.compile(r"[\s\x00-\x1f\x7f]")
+_LOGO_EXTENSIONS = {
+    "PNG": "png",
+    "JPEG": "jpg",
+    "MPO": "jpg",
+    "WEBP": "webp",
+    "GIF": "gif",
+}
 
 
 class AfterMode(models.TextChoices):
@@ -117,7 +123,9 @@ def validate_redirect_url(value: str) -> None:
     Why: the entry page 302s visitors here, so a `javascript:` or credentialed
     URL, or one with control characters, must never get through.
     """
-    if len(value) > MAX_REDIRECT_URL_LENGTH or _UNSAFE_URL_CHARS.search(value):
+    if len(value) > MAX_REDIRECT_URL_LENGTH or any(
+        c.isspace() or unicodedata.category(c).startswith("C") for c in value
+    ):
         raise ValidationError("Enter a shorter https:// URL without spaces.")
     try:
         parts = urlsplit(value)
@@ -203,16 +211,26 @@ class InstallSettings(models.Model):
         max_length=10,
         choices=[(AfterMode.PAGE, "Show a page"), (AfterMode.REDIRECT, "Redirect")],
         default=AfterMode.PAGE,
+        db_default=AfterMode.PAGE,
     )
     after_logo = models.ImageField(
-        upload_to=logo_upload_to, blank=True, validators=[validate_logo]
+        upload_to=logo_upload_to,
+        blank=True,
+        default="",
+        db_default="",
+        validators=[validate_logo],
     )
     after_markdown = models.TextField(
-        blank=True, validators=[MaxLengthValidator(MAX_AFTER_MARKDOWN_LENGTH)]
+        blank=True,
+        default="",
+        db_default="",
+        validators=[MaxLengthValidator(MAX_AFTER_MARKDOWN_LENGTH)],
     )
     after_redirect_url = models.URLField(
         max_length=MAX_REDIRECT_URL_LENGTH,
         blank=True,
+        default="",
+        db_default="",
         validators=[validate_redirect_url],
     )
 
@@ -259,17 +277,29 @@ class Conference(models.Model):
     wrapped_up_at = models.DateTimeField(null=True, blank=True)
     deleted_entrant_count = models.PositiveIntegerField(null=True, blank=True)
     after_mode = models.CharField(
-        max_length=10, choices=AfterMode, default=AfterMode.INHERIT
+        max_length=10,
+        choices=AfterMode,
+        default=AfterMode.INHERIT,
+        db_default=AfterMode.INHERIT,
     )
     after_logo = models.ImageField(
-        upload_to=logo_upload_to, blank=True, validators=[validate_logo]
+        upload_to=logo_upload_to,
+        blank=True,
+        default="",
+        db_default="",
+        validators=[validate_logo],
     )
     after_markdown = models.TextField(
-        blank=True, validators=[MaxLengthValidator(MAX_AFTER_MARKDOWN_LENGTH)]
+        blank=True,
+        default="",
+        db_default="",
+        validators=[MaxLengthValidator(MAX_AFTER_MARKDOWN_LENGTH)],
     )
     after_redirect_url = models.URLField(
         max_length=MAX_REDIRECT_URL_LENGTH,
         blank=True,
+        default="",
+        db_default="",
         validators=[validate_redirect_url],
     )
 
@@ -277,14 +307,20 @@ class Conference(models.Model):
         return self.name
 
     def clean(self) -> None:
+        errors: dict[str, str] = {}
         if self.starts_on and self.ends_on and self.ends_on < self.starts_on:
-            raise ValidationError({"ends_on": "The end date is before the start date."})
-        if (
-            self.after_mode == AfterMode.REDIRECT
-            and not self.after_redirect_url
-            and not InstallSettings.get().after_redirect_url
-        ):
-            raise ValidationError({"after_redirect_url": _NEEDS_URL})
+            errors["ends_on"] = "The end date is before the start date."
+        if self.after_mode == AfterMode.REDIRECT and not self.after_redirect_url:
+            # Read-only lookup: clean() must not create the site row.
+            site_url = (
+                InstallSettings.objects.filter(pk=1)
+                .values_list("after_redirect_url", flat=True)
+                .first()
+            )
+            if not site_url:
+                errors["after_redirect_url"] = _NEEDS_URL
+        if errors:
+            raise ValidationError(errors)
 
     @property
     def excluded_emails(self) -> frozenset[str]:
