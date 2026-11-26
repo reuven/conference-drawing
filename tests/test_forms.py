@@ -39,6 +39,9 @@ def _enter(conference: Conference, **overrides: Any) -> Entrant | None:
 def conference(conference_factory: Callable[..., Conference]) -> Conference:
     conf = conference_factory()
     make_questions(conf)
+    install = InstallSettings.get()
+    install.newsletter_checkbox_text = "Also subscribe me to the newsletter"
+    install.save()
     return conf
 
 
@@ -129,6 +132,20 @@ def test_consent_texts_and_timestamps_recorded(conference: Conference) -> None:
     assert e2 is not None
     assert e2.newsletter_optin_at == NOW
     assert e2.newsletter_optin_text == "Custom BD."
+
+
+@pytest.mark.parametrize("text", ["", "   ", "\n\t "])
+def test_blank_newsletter_text_means_no_checkbox(
+    conference: Conference, text: str
+) -> None:
+    install = InstallSettings.get()
+    install.newsletter_checkbox_text = text
+    install.save()
+    form = EntryForm(conference)
+    assert "newsletter_optin" not in form.fields
+    entrant = _enter(conference, newsletter_optin="on")
+    assert entrant is not None
+    assert (entrant.newsletter_optin_text, entrant.newsletter_optin_at) == ("", None)
 
 
 def test_form_labels_use_install_texts(conference: Conference) -> None:

@@ -41,9 +41,9 @@ def test_install_settings_is_a_singleton_with_default_copy(db: None) -> None:
     assert InstallSettings.objects.count() == 1
     assert (
         first.followup_ack_text
-        == "Entering means one follow-up email from me after the conference."
+        == "Entering means one follow-up email after the conference."
     )
-    assert first.newsletter_checkbox_text == "Also subscribe me to Better Developers"
+    assert first.newsletter_checkbox_text == ""
 
 
 def test_install_settings_save_always_uses_pk_one(db: None) -> None:

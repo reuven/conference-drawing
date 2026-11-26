@@ -42,10 +42,7 @@ from .validators import (
     validate_redirect_url as validate_redirect_url,
 )
 
-DEFAULT_FOLLOWUP_ACK_TEXT = (
-    "Entering means one follow-up email from me after the conference."
-)
-DEFAULT_BD_CHECKBOX_TEXT = "Also subscribe me to Better Developers"
+DEFAULT_FOLLOWUP_ACK_TEXT = "Entering means one follow-up email after the conference."
 
 # \A and \Z, not ^ and $: `$` also matches before a trailing newline.
 _SLUG_RE = r"\A[a-z0-9]+(-[a-z0-9]+)*\Z"
@@ -224,7 +221,12 @@ class InstallSettings(models.Model):
     privacy_note = models.TextField(blank=True)
     followup_ack_text = models.TextField(default=DEFAULT_FOLLOWUP_ACK_TEXT)
     newsletter_checkbox_text = models.TextField(
-        db_column="bd_checkbox_text", default=DEFAULT_BD_CHECKBOX_TEXT
+        db_column="bd_checkbox_text",
+        default="",
+        blank=True,
+        help_text=(
+            "Optional newsletter checkbox on the entry form. Leave blank for none."
+        ),
     )
     after_mode = models.CharField(
         max_length=10,

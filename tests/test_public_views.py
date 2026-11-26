@@ -36,6 +36,9 @@ DRAW_AT = datetime.datetime(2027, 5, 11, 21, 0, tzinfo=datetime.UTC)
 def conference(conference_factory: Callable[..., Conference]) -> Conference:
     conf = conference_factory(slug="pycon", booth_location="Booth 12")
     make_questions(conf)
+    install = InstallSettings.get()
+    install.newsletter_checkbox_text = "Also subscribe me to the newsletter"
+    install.save()
     return conf
 
 
@@ -46,6 +49,17 @@ def _post(client: Client, conference: Conference, **overrides: Any) -> Any:
         "followup_ack": "on",
     }
     return client.post(reverse("entry", args=[conference.slug]), {**data, **overrides})
+
+
+def test_entry_page_has_no_newsletter_checkbox_without_text(
+    client: Client, conference: Conference
+) -> None:
+    install = InstallSettings.get()
+    install.newsletter_checkbox_text = "  "
+    install.save()
+    html = client.get(reverse("entry", args=[conference.slug])).content.decode()
+    assert 'name="followup_ack"' in html
+    assert "newsletter_optin" not in html
 
 
 def test_entry_page_renders_form(client: Client, conference: Conference) -> None:

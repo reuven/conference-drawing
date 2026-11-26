@@ -8,7 +8,9 @@ from django.core.management import call_command
 _IGNORED = {"BEGIN;", "COMMIT;"}
 
 
-@pytest.mark.parametrize("name", ["0010_reserved_slugs", "0011_newsletter_names"])
+@pytest.mark.parametrize(
+    "name", ["0010_reserved_slugs", "0011_newsletter_names", "0012_newsletter_defaults"]
+)
 def test_rename_migration_emits_no_sql(db: None, name: str) -> None:
     """A state-only migration touches no column, so rollback to v0.2.1 is safe."""
     out = io.StringIO()

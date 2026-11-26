@@ -25,7 +25,7 @@ from conference_drawing.raffle.wrapup import WrapUpResult, wrap_up
 
 NOW = datetime.datetime(2027, 5, 12, 18, 0, tzinfo=datetime.UTC)
 OPTIN = datetime.datetime(2027, 5, 11, 17, 0, tzinfo=datetime.UTC)
-CONSENT = "Also subscribe me to Better Developers"
+CONSENT = "Also subscribe me to the newsletter"
 
 
 @pytest.fixture(autouse=True)

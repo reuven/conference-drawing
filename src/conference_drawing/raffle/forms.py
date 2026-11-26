@@ -64,7 +64,13 @@ class EntryForm(forms.Form):
         self.conference = conference
         self.install = InstallSettings.get()
         self.fields["followup_ack"].label = self.install.followup_ack_text
-        self.fields["newsletter_optin"].label = self.install.newsletter_checkbox_text
+        if self.install.newsletter_checkbox_text.strip():
+            self.fields[
+                "newsletter_optin"
+            ].label = self.install.newsletter_checkbox_text
+        else:
+            # No newsletter wording means no checkbox: nothing to consent to.
+            del self.fields["newsletter_optin"]
         self.fields["leave_blank"].label = "Leave this field empty"
         self.fields["leave_blank"].widget.attrs.update(
             {"autocomplete": "off", "tabindex": "-1"}
@@ -152,7 +158,7 @@ class EntryForm(forms.Form):
             for q in self.questions
             if self.cleaned_data.get(f"q_{q.key}")
         }
-        opted_in: bool = self.cleaned_data["newsletter_optin"]
+        opted_in: bool = self.cleaned_data.get("newsletter_optin", False)
         entrant = Entrant(
             conference=self.conference,
             name=self.cleaned_data["name"],
