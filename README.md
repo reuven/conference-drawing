@@ -153,9 +153,10 @@ fieldset with four fields:
 A conference's blank fields fall back to the site's, field by field. A
 wrapped-up `/c/<slug>/` shows the conference name, "Entries for this
 conference are closed", then the logo and the Markdown (or redirects). The
-site root `/` shows the site-wide content, or redirects, or answers 404 when
-nothing is configured. With nothing set anywhere, the plain closed page is
-unchanged.
+site root `/` shows the site-wide content, or redirects. With nothing
+configured, `/` shows a short built-in page: the owner name (or "Conference
+raffle") and how to enter, with no list of conferences. The plain closed page
+is unchanged.
 
 ### If you ever retire the install
 
@@ -297,7 +298,7 @@ with mode 0600.
 | Variable | Default | What it does |
 |---|---|---|
 | `DJANGO_SECRET_KEY` | none | Required unless `DJANGO_DEBUG` is on. `init` generates it. |
-| `DJANGO_ALLOWED_HOSTS` | empty (`localhost` and friends in debug) | Comma-separated hostnames the site answers to. `init --domain` writes it. |
+| `DJANGO_ALLOWED_HOSTS` | empty | Comma-separated hostnames the site answers to. `init --domain` writes it. In debug, `localhost`, `127.0.0.1` and `[::1]` are always accepted too. |
 | `DJANGO_DEBUG` | off | `1` for local development only. `up.sh` refuses to install if the server's `.env` turns it on (1, true, yes, or on), so a server cannot run with it. |
 | `CD_DB_NAME` | `conference_drawing` | PostgreSQL database name. |
 | `CD_DB_USER` | `conference-drawing` | PostgreSQL role. |

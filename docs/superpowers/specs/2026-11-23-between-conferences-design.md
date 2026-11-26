@@ -143,7 +143,10 @@ for any input, the output contains no `<script`, no `on…=` attribute, no
   (closed page; no redirect on POST).
 - `GET /`: site-wide content. `redirect` → `302`. `page` with a logo or
   Markdown → a page with the logo, the Markdown and the footer, no
-  conference line. Nothing configured → `404`, as today.
+  conference line. Nothing configured → `404`, as today. *(Changed in
+  v0.2.1, Reuven 2026-11-26: nothing configured shows a built-in page,
+  the owner name or "Conference raffle" and how to enter, never a list
+  of conferences.)*
 - Both pages keep the footer (privacy link, version) and the global headers
   (CSP, `X-Robots-Tag: noindex`, `Cache-Control`).
 - Rough look:
