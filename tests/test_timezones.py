@@ -120,3 +120,10 @@ def test_grouping_reads_a_generator_once() -> None:
         "UTC": "UTC",
         "Asia": {"Asia/Jerusalem": "Jerusalem"},
     }
+
+
+def test_to_utc_labels_the_result_utc_not_the_machine_zone() -> None:
+    # The same instant in the server's local zone compares equal, so pin the
+    # label itself: stored and logged times must read as UTC.
+    result = to_utc(datetime.datetime(2027, 5, 11, 14, 0), LA)
+    assert result.tzinfo is UTC
