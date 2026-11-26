@@ -162,6 +162,19 @@ def test_csp_watch_catches_a_real_violation(
     assert len(csp_watch.console) == 1
 
 
+def test_bare_domain_shows_the_default_page(
+    phone_page: Page, live_server: Any, conference: Conference, csp_watch: CspWatch
+) -> None:
+    """With nothing configured, / says what the site is, lists no conference."""
+    response = phone_page.goto(f"{live_server.url}/")
+    assert response is not None and response.status == 200
+    expect(phone_page.get_by_role("heading", name="Conference raffle")).to_be_visible()
+    expect(phone_page.get_by_text("scan the QR code at the booth")).to_be_visible()
+    expect(phone_page.get_by_text(conference.name)).to_have_count(0)
+    assert csp_watch.console == []
+    assert csp_watch.violations == []
+
+
 def test_after_wrap_up_the_entry_url_shows_the_owner_page(
     phone_page: Page,
     live_server: Any,
