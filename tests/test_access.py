@@ -89,9 +89,10 @@ def test_visible_conferences_per_role() -> None:
 def test_visible_conferences_order_is_newest_first_then_name() -> None:
     import datetime
 
-    old = make_conference(name="Z", starts_on=datetime.date(2026, 1, 1))
-    new_b = make_conference(name="B", starts_on=datetime.date(2027, 1, 1))
-    new_a = make_conference(name="A", starts_on=datetime.date(2027, 1, 1))
+    # The oldest conference sorts first by name, so ordering by name alone fails.
+    old = make_conference(name="A", starts_on=datetime.date(2026, 1, 1))
+    new_b = make_conference(name="C", starts_on=datetime.date(2027, 1, 1))
+    new_a = make_conference(name="B", starts_on=datetime.date(2027, 1, 1))
     owner = _user("owner", is_superuser=True)
     helper = _user("helper")
     for c in (old, new_b, new_a):
@@ -133,3 +134,25 @@ def test_lookups_404_for_none_and_for_owner_only() -> None:
         pick_or_404(helper, pick_b.pk)
     with pytest.raises(Http404):
         pick_or_404(helper, 0)
+
+
+def test_a_user_without_a_superuser_flag_is_not_the_owner() -> None:
+    """is_owner defaults to False, never True, for a user-like object lacking it."""
+    bare: Any = type("Bare", (), {"is_active": True})()
+    assert is_owner(bare) is False
+
+
+def test_lookups_load_the_conference_with_the_drawing_or_pick(
+    django_assert_num_queries: Any,
+) -> None:
+    """The conference comes along in one query; reading it later costs none."""
+    owner = _user("owner", is_superuser=True)
+    conference = make_conference()
+    drawing = make_drawing(conference)
+    pick = make_pick(make_prize_line(drawing), make_entrant(conference))
+    with django_assert_num_queries(1):
+        found = drawing_or_404(owner, drawing.pk)
+        assert found.conference.pk == conference.pk
+    with django_assert_num_queries(1):
+        found_pick = pick_or_404(owner, pick.pk)
+        assert found_pick.prize_line.drawing.conference.pk == conference.pk
