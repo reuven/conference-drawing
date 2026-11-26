@@ -1,5 +1,11 @@
 {% extends "raffle/base.html" %}
-{% block title %}{% if install.owner_name %}{{ install.owner_name }}{% else %}Welcome{% endif %}{% endblock %}
+{% block title %}{{ install.owner_name|default:"Conference raffle" }}{% endblock %}
 {% block content %}
+{% if after.is_empty %}
+<h1>{{ install.owner_name|default:"Conference raffle" }}</h1>
+<p>This site runs prize drawings at conferences.</p>
+<p>To enter, scan the QR code at the booth.</p>
+{% else %}
 {% include "raffle/_after.html" %}
+{% endif %}
 {% endblock %}

@@ -476,9 +476,33 @@ def test_open_conference_entry_ignores_after_settings(
     assert "Hello after" not in response.content.decode()
 
 
-def test_home_404_when_nothing_configured(client: Client, db: None) -> None:
-    assert client.get(reverse("home")).status_code == 404
-    assert client.head(reverse("home")).status_code == 404
+DEFAULT_HOME = (
+    "This site runs prize drawings at conferences.",
+    "To enter, scan the QR code at the booth.",
+)
+
+
+def test_home_shows_the_default_page_when_nothing_configured(
+    client: Client, conference: Conference
+) -> None:
+    response = client.get(reverse("home"))
+    assert response.status_code == 200
+    main = _main(response.content.decode())
+    assert "<h1>Conference raffle</h1>" in main
+    for line in DEFAULT_HOME:
+        assert f"<p>{line}</p>" in main
+    # Never a list of conferences: people who weren't at the booth could enter.
+    assert conference.name not in response.content.decode()
+    assert client.head(reverse("home")).status_code == 200
+
+
+def test_default_home_page_uses_the_owner_name(client: Client, db: None) -> None:
+    install = InstallSettings.get()
+    install.owner_name = "Ada & Co"
+    install.save()
+    html = client.get(reverse("home")).content.decode()
+    assert "<h1>Ada &amp; Co</h1>" in _main(html)
+    assert "<title>Ada &amp; Co" in html
 
 
 def test_home_page_mode_shows_site_content(
@@ -490,6 +514,8 @@ def test_home_page_mode_shows_site_content(
     html = client.get(reverse("home")).content.decode()
     assert "<strong>news</strong>" in _main(html)
     assert conference.name not in html
+    for line in DEFAULT_HOME:
+        assert line not in html
     assert CLOSED not in html
 
 
