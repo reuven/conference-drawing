@@ -266,7 +266,7 @@ def test_booth_conference_shows_display_link_to_owner(
 ) -> None:
     url = reverse("booth-conference", args=[conference.slug])
     assert client.get(url).status_code == 302
-    client.force_login(User.objects.create_user("o", password="pw", is_staff=True))
+    client.force_login(User.objects.create_user("o", password="pw", is_superuser=True))
     html = client.get(url).content.decode()
     assert reverse("display", args=[conference.display_token]) in html
 

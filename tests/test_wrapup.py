@@ -277,7 +277,7 @@ def test_start_refuses_after_wrapup(
 
 @pytest.fixture
 def owner(client: Client, db: None) -> Client:
-    user = User.objects.create_user("owner", password="pw", is_staff=True)
+    user = User.objects.create_user("owner", password="pw", is_superuser=True)
     client.force_login(user)
     return client
 
