@@ -138,8 +138,8 @@ They can't see or use **Download CSV**, **Wrap up**, **Delete entrants**, or
 the Drip status and **Retry failed**, and those addresses show them "not
 found". Only you, as a superuser, can.
 
-Helpers can also see the booth display link. After someone stops helping,
-consider rotating it: select the conference in the admin and run **Rotate
+Because helpers see the booth display link, consider rotating it after
+someone stops helping: select the conference in the admin and run **Rotate
 display token** (see [The booth display](#5-the-booth-display-optional)). The
 old link stops working.
 
