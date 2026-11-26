@@ -95,19 +95,25 @@ Everything is configured by environment variables or that `.env` file; see
    cover image, an optional link. Books are reused across conferences.
 2. **Conference.** Add a conference: name, a slug (it becomes the entry URL,
    `/c/<slug>/`, and the Drip tags, such as `pycon-us-2027`), start and end
-   dates, the IANA time zone (for example `America/Denver`), the booth
-   location, and the exclusion list: the email addresses of you and your
-   staff, one per line. Excluded people can enter (to test the form) but can
-   never win, and are never sent to Drip. The default entry questions are
-   created for you; edit them in place.
+   dates, the time zone (pick it from the list: click it and type a city,
+   such as "Denver", to jump there), the booth location, and the exclusion
+   list: the email addresses of you and your staff, one per line. Excluded
+   people can enter (to test the form) but can never win, and are never sent
+   to Drip. The default entry questions are created for you; edit them in
+   place. If you follow a link away from a form you've typed into, the
+   browser asks before throwing the changes away; if a save fails, the first
+   field with a problem is highlighted and everything you typed is kept
+   (except a chosen image file, which you pick again).
 3. **Drawings.** Add each drawing at a date and time in the conference's time
    zone. Give each one or more prize lines: a book, a quantity, and a kind.
    A digital line has a prize URL (it may contain `{code}`) and either a pool
    of unique codes, which you paste one per line, or one shared code. The app
    will not start a drawing whose pool has fewer unused codes than the
    quantity.
-4. **Flyer.** From the conference page at `/booth/<slug>/`, open "Printable
-   flyer" and print it or save it as a PDF from the browser. Optionally open
+4. **Flyer.** The conference's admin page links to its booth page, its
+   printable flyer (with the entry QR code) and its entry page; every admin
+   page also has a **Booth** link at the top. Open "Printable flyer (QR
+   code)" and print it or save it as a PDF from the browser. Optionally open
    "Booth display link" on a monitor. If that link leaks, select the
    conference in the admin and run "Rotate display token": the old link stops
    working, and the conference page shows the new one.
