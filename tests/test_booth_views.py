@@ -761,3 +761,19 @@ def test_signed_out_htmx_tap_is_sent_to_sign_in(client: Client, action: str) -> 
     assert plain.status_code == 302
     assert plain["Location"].startswith(reverse("booth-login"))
     assert "HX-Redirect" not in plain
+
+
+def test_empty_booth_list_says_no_conferences_to_the_owner(owner: Client) -> None:
+    page = owner.get(reverse("booth-home")).content.decode()
+    assert "No conferences yet." in page
+    assert "Ask the organizer" not in page
+
+
+def test_empty_booth_list_tells_a_helper_to_ask_the_organizer(
+    client: Client, db: None
+) -> None:
+    client.force_login(User.objects.create_user("helper", password="pw"))
+    page = client.get(reverse("booth-home")).content.decode()
+    assert "You haven't been added to a conference yet." in page
+    assert "Ask the organizer." in page
+    assert "No conferences yet." not in page

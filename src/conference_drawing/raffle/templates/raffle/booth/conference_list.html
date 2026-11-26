@@ -6,7 +6,11 @@
   {% for conf in conferences %}
   <li><a class="tap" href="{% url 'booth-conference' conf.slug %}">{{ conf.name }}</a></li>
   {% empty %}
+  {% if is_owner %}
   <li class="note">No conferences yet.</li>
+  {% else %}
+  <li class="note">You haven't been added to a conference yet. Ask the organizer.</li>
+  {% endif %}
   {% endfor %}
 </ul>
 {% endblock %}

@@ -262,7 +262,9 @@ def home(request: HttpRequest) -> HttpResponse:
     """List the conferences this user may see, so the booth is one tap away."""
     conferences = visible_conferences(request.user)
     return render(
-        request, "raffle/booth/conference_list.html", {"conferences": conferences}
+        request,
+        "raffle/booth/conference_list.html",
+        {"conferences": conferences, "is_owner": is_owner(request.user)},
     )
 
 
