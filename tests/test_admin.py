@@ -1204,3 +1204,25 @@ def test_site_settings_page_explains_the_fallback_and_field_formats(
     assert "Links (https, http, mailto) work" in html
     assert "https only." in html
     assert "PNG, JPEG, WebP or GIF, up to 2 MB." in html
+
+
+def test_conference_time_zone_is_a_dropdown_by_region_and_city(
+    admin_client: Client,
+) -> None:
+    html = admin_client.get(reverse("admin:raffle_conference_add")).content.decode()
+    assert '<select name="time_zone"' in html
+    assert '<optgroup label="Asia">' in html
+    assert '<option value="Asia/Jerusalem">Jerusalem</option>' in html
+    assert 'value="US/Eastern"' not in html
+
+
+def test_a_bad_time_zone_is_refused_and_the_rest_of_the_form_kept(
+    admin_client: Client,
+) -> None:
+    data = _conference_post(time_zone="Jerusalem", name="Kept Conf")
+    resp = admin_client.post(reverse("admin:raffle_conference_add"), data)
+    assert resp.status_code == 200
+    html = resp.content.decode()
+    assert "Select a valid choice" in html
+    assert 'value="Kept Conf"' in html
+    assert not Conference.objects.filter(name="Kept Conf").exists()

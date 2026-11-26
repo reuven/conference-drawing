@@ -24,6 +24,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 
 from .text import normalize_email, validate_single_line_label
+from .timezones import time_zone_choices
 
 # Re-exported (`as` makes it explicit for mypy): migration 0005 names the
 # validators as `conference_drawing.raffle.models.<name>`.
@@ -270,7 +271,12 @@ class Conference(models.Model):
 
     name = models.CharField(max_length=200, validators=[validate_label])
     slug = models.CharField(max_length=60, unique=True, validators=[_slug_validator])
-    time_zone = models.CharField(max_length=64, validators=[validate_time_zone])
+    time_zone = models.CharField(
+        max_length=64,
+        choices=time_zone_choices,
+        validators=[validate_time_zone],
+        help_text="Click the list and type a city name to jump to it.",
+    )
     booth_location = models.CharField(max_length=200, blank=True)
     starts_on = models.DateField()
     ends_on = models.DateField()
