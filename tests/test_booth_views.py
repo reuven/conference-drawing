@@ -113,7 +113,7 @@ def test_booth_requires_login(
         for method in (client.get, client.post):
             response = method(url)
             assert response.status_code == 302, url
-            assert response["Location"].startswith(reverse("admin:login")), url
+            assert response["Location"].startswith(reverse("booth-login")), url
 
 
 def test_pages_list_conferences_and_drawings(

@@ -232,7 +232,7 @@ def test_export_requires_login(
     conf = conference_factory(slug="pycon")
     response = client.get(reverse("booth-export", args=[conf.slug]))
     assert response.status_code == 302
-    assert response["Location"].startswith(reverse("admin:login"))
+    assert response["Location"].startswith(reverse("booth-login"))
 
 
 def test_export_response(

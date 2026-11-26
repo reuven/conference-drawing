@@ -50,7 +50,8 @@ DATA_DIR = Path(_env("CD_DATA_DIR") or BASE_DIR / "var")
 DRIP_ACCOUNT_ID = _env("DRIP_ACCOUNT_ID")
 DRIP_API_KEY = _env("DRIP_API_KEY")
 
-LOGIN_URL = "admin:login"
+LOGIN_URL = "booth-login"
+LOGIN_REDIRECT_URL = "booth-home"
 
 # Extends ModelBackend; listing both would hash twice on every failed login.
 AUTHENTICATION_BACKENDS = ["conference_drawing.auth.EmailOrUsernameBackend"]

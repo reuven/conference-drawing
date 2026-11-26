@@ -1,3 +1,9 @@
 {% extends "raffle/base.html" %}
 {% block scripts %}{% include "raffle/_htmx.html" %}{% endblock %}
 {% block body_attrs %} class="booth" hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'{% endblock %}
+{% block footer_extra %}{% if user.is_authenticated %}
+<form method="post" action="{% url 'booth-logout' %}">
+  {% csrf_token %}
+  <button type="submit" class="secondary">Sign out</button>
+</form>
+{% endif %}{% endblock %}

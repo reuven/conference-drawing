@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from django.contrib.admin.forms import AdminAuthenticationForm
 from django.contrib.auth import get_user_model
 from django.contrib.auth.backends import ModelBackend
+from django.contrib.auth.forms import AuthenticationForm
 from django.http import HttpRequest
 from django.utils.translation import gettext_lazy as _
 
@@ -62,6 +63,18 @@ class EmailOrUsernameBackend(ModelBackend):
         if user.check_password(password) and self.user_can_authenticate(user):
             return user
         return None
+
+
+class BoothLoginForm(AuthenticationForm):
+    """The booth sign-in form, so helpers who are not staff can sign in too.
+
+    The admin form refuses non-staff accounts; this one is Django's plain
+    form, with the label saying that an email address works as well.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.fields["username"].label = _("Username or email")
 
 
 class AdminLoginForm(AdminAuthenticationForm):

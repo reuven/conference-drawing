@@ -39,7 +39,7 @@ def _flyer(client: Client, conference: Conference) -> str:
 def test_flyer_requires_login(client: Client, conference: Conference) -> None:
     response = client.get(reverse(URL, args=[conference.slug]))
     assert response.status_code == 302
-    assert response["Location"].startswith(reverse("admin:login"))
+    assert response["Location"].startswith(reverse("booth-login"))
 
 
 def test_flyer_unknown_conference_is_404(owner: Client) -> None:
