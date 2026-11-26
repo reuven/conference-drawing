@@ -157,6 +157,19 @@ ln -sfn venv-<previous> /srv/conference-drawing/venv
 systemctl restart conference-drawing-web conference-drawing-drip
 ```
 
+One catch after rolling back to 0.2.x: deleting a conference or a user that
+has helpers fails, because 0.3's helpers table is still in the database. Either
+remove the helpers from the conference first, or migrate back to the last 0.2
+migration (`0008`) before you switch the link back, while 0.3 is still the
+current version:
+
+```sh
+runuser -u conference-drawing -- env \
+  CD_ENV_FILE=/srv/conference-drawing/data/.env \
+  CD_DATA_DIR=/srv/conference-drawing/data CD_DB_HOST=/var/run/postgresql \
+  /srv/conference-drawing/venv/bin/conference-drawing migrate raffle 0008
+```
+
 ## Changing a setting on the server
 
 An upgrade only **adds** settings the server's `.env` lacks; it never changes
