@@ -63,10 +63,22 @@ def test_next_is_honored_when_local(client: Client, helper: User) -> None:
     assert response["Location"] == "/booth/a/"
 
 
-def test_next_to_another_site_is_ignored(client: Client, helper: User) -> None:
+@pytest.mark.parametrize(
+    "nxt",
+    [
+        "https://evil.example/",
+        "//evil.example/",
+        "/\\evil.example/",
+        "https:evil.example",
+        "///evil.example/",
+    ],
+)
+def test_next_to_another_site_is_ignored(
+    client: Client, helper: User, nxt: str
+) -> None:
     response = client.post(
-        LOGIN + "?next=https://evil.example/",
-        {"username": "helper-one", "password": "pw-12345"},
+        LOGIN,
+        {"username": "helper-one", "password": "pw-12345", "next": nxt},
     )
     assert response["Location"] == "/booth/"
 
@@ -74,6 +86,14 @@ def test_next_to_another_site_is_ignored(client: Client, helper: User) -> None:
 def test_signed_in_user_is_sent_to_the_booth(client: Client, helper: User) -> None:
     client.force_login(helper)
     response = client.get(LOGIN)
+    assert (response.status_code, response["Location"]) == (302, "/booth/")
+
+
+def test_signed_in_user_with_next_pointing_here_is_not_looped(
+    client: Client, helper: User
+) -> None:
+    client.force_login(helper)
+    response = client.get(LOGIN + "?next=/booth/login/")
     assert (response.status_code, response["Location"]) == (302, "/booth/")
 
 

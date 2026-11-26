@@ -6,7 +6,7 @@ from django.urls import path
 from django_ratelimit.decorators import ratelimit
 
 from conference_drawing import ops
-from conference_drawing.auth import AdminLoginForm, BoothLoginForm
+from conference_drawing.auth import AdminLoginForm, BoothLoginForm, BoothLoginView
 from conference_drawing.raffle.views import booth, display, export, flyer, public
 
 # Password guessing on the admin login would tie up the sync workers the booth
@@ -23,7 +23,7 @@ admin_login = ratelimit(key=public.client_ip, rate="10/m", method="POST", block=
 booth_login = ratelimit(
     key=public.client_ip, rate="10/m", method="POST", block=True, group="booth-login"
 )(
-    auth_views.LoginView.as_view(
+    BoothLoginView.as_view(
         template_name="raffle/booth/login.html",
         authentication_form=BoothLoginForm,
         redirect_authenticated_user=True,

@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from django.conf import settings
 from django.contrib.admin.forms import AdminAuthenticationForm
 from django.contrib.auth import get_user_model
 from django.contrib.auth.backends import ModelBackend
 from django.contrib.auth.forms import AuthenticationForm
+from django.contrib.auth.views import LoginView
 from django.http import HttpRequest
+from django.shortcuts import resolve_url
 from django.utils.translation import gettext_lazy as _
 
 if TYPE_CHECKING:  # the stubs' name for the user model instance
@@ -75,6 +78,21 @@ class BoothLoginForm(AuthenticationForm):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.fields["username"].label = _("Username or email")
+
+
+class BoothLoginView(LoginView):
+    """The booth sign-in page, safe against a ``next`` that points back at it.
+
+    Django raises (a 500) when a signed-in user opens the login page with
+    ``next`` equal to the login page itself. Sending them to the booth home
+    instead is the same answer they would get with no ``next`` at all.
+    """
+
+    def get_success_url(self) -> str:
+        url = super().get_success_url()
+        if url == self.request.path:
+            return resolve_url(settings.LOGIN_REDIRECT_URL)
+        return url
 
 
 class AdminLoginForm(AdminAuthenticationForm):
