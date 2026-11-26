@@ -73,7 +73,7 @@ uv sync
 
 The install builds whatever this checkout holds, so it must be clean (no
 uncommitted changes). To install a particular release, check out its tag,
-such as `git checkout v0.2.1`.
+such as `git checkout v0.3.0`.
 
 ## 5. Optional: connect Drip
 
@@ -137,7 +137,7 @@ and the after-conference page. Then go on to the
 To install a newer version, update the checkout and run the same command:
 
 ```sh
-git checkout main && git pull     # or: git checkout v0.2.1
+git checkout main && git pull     # or: git checkout v0.3.0
 deploy/up.sh <server> <domain>
 ```
 
