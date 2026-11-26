@@ -33,8 +33,8 @@ from conference_drawing.raffle.models import (
     OutboxJob,
     PrizeLine,
     Question,
-    create_default_questions,
 )
+from tests.factories import make_questions
 
 Factory = Callable[..., Any]
 
@@ -102,7 +102,7 @@ def test_editing_conference_with_its_default_questions_saves(
 ) -> None:
     """The browser posts the default question rows back; they must validate."""
     conf = conference_factory()
-    create_default_questions(conf)
+    make_questions(conf)
     rows = [
         {
             "id": q.pk,

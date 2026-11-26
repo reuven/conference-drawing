@@ -21,9 +21,9 @@ from conference_drawing.raffle.models import (
     Drawing,
     Entrant,
     InstallSettings,
-    create_default_questions,
 )
 from conference_drawing.raffle.views.public import client_ip
+from tests.factories import make_questions
 
 THANKS = "Thanks — you're in the drawing."
 CLOSED = "Entries for this conference are closed."
@@ -35,7 +35,7 @@ DRAW_AT = datetime.datetime(2027, 5, 11, 21, 0, tzinfo=datetime.UTC)
 @pytest.fixture
 def conference(conference_factory: Callable[..., Conference]) -> Conference:
     conf = conference_factory(slug="pycon", booth_location="Booth 12")
-    create_default_questions(conf)
+    make_questions(conf)
     return conf
 
 

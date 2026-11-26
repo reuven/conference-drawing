@@ -26,6 +26,7 @@ from conference_drawing.raffle.models import (
     create_default_questions,
     validate_time_zone,
 )
+from tests.factories import make_questions
 
 Factory = Callable[..., Any]
 
@@ -224,7 +225,7 @@ def test_default_questions_pass_their_own_validation(
     conference_factory: Factory,
 ) -> None:
     c = conference_factory()
-    create_default_questions(c)
+    make_questions(c)
     for q in c.question_set.all():
         q.full_clean()
 

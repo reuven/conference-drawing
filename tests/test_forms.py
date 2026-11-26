@@ -12,8 +12,8 @@ from conference_drawing.raffle.models import (
     Entrant,
     InstallSettings,
     Question,
-    create_default_questions,
 )
+from tests.factories import make_questions
 
 NOW = datetime.datetime(2027, 5, 11, 18, 0, tzinfo=datetime.UTC)
 
@@ -38,7 +38,7 @@ def _enter(conference: Conference, **overrides: Any) -> Entrant | None:
 @pytest.fixture
 def conference(conference_factory: Callable[..., Conference]) -> Conference:
     conf = conference_factory()
-    create_default_questions(conf)
+    make_questions(conf)
     return conf
 
 

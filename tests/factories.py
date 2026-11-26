@@ -11,6 +11,7 @@ from conference_drawing.raffle.models import (
     Entrant,
     Pick,
     PrizeLine,
+    Question,
 )
 
 _counter = itertools.count(1)
@@ -60,4 +61,38 @@ def make_pick(prize_line: PrizeLine, entrant: Entrant, **kwargs: Any) -> Pick:
     defaults: dict[str, Any] = {"slot": 1, "pool_size": 1}
     return Pick.objects.create(
         prize_line=prize_line, entrant=entrant, **{**defaults, **kwargs}
+    )
+
+
+def make_questions(conference: Conference) -> list[Question]:
+    """Create three neutral optional questions: two text, one with two choices.
+
+    Tests that need entry-form questions use these in place of any shipped
+    defaults, so they keep working whatever a new conference starts with.
+    """
+    return Question.objects.bulk_create(
+        [
+            Question(
+                conference=conference,
+                key="want_to_learn",
+                prompt="What do you most want to learn?",
+                kind=Question.Kind.TEXT,
+                position=0,
+            ),
+            Question(
+                conference=conference,
+                key="coding_style",
+                prompt="How do you code these days?",
+                kind=Question.Kind.CHOICE,
+                choices=["Mostly by hand", "With some help"],
+                position=1,
+            ),
+            Question(
+                conference=conference,
+                key="anything_else",
+                prompt="Anything else to tell me?",
+                kind=Question.Kind.TEXT,
+                position=2,
+            ),
+        ]
     )
