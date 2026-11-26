@@ -650,6 +650,22 @@ def test_helper_sees_only_their_open_conferences_on_booth_home(
     assert helper.get(reverse("booth-conference", args=["other"])).status_code == 404
 
 
+def test_helper_conference_page_hides_owner_controls(
+    helper: Client,
+    drawing: Drawing,
+    conference: Conference,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(booth, "drip_settings", lambda: object())
+    html = helper.get(reverse("booth-conference", args=["pycon"])).content.decode()
+    assert reverse("display", args=[conference.display_token]) in html
+    assert reverse("booth-flyer", args=["pycon"]) in html
+    assert reverse("booth-drawing", args=[drawing.pk]) in html
+    for href in _owner_only_hrefs("pycon"):
+        assert href not in html
+    assert "Drip:" not in html
+
+
 def test_owner_conference_page_shows_owner_controls(
     owner: Client,
     drawing: Drawing,

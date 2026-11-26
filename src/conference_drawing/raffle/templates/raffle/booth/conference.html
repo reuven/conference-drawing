@@ -5,9 +5,9 @@
 <h1>{{ conference.name }}</h1>
 <p><a href="{% url 'display' conference.display_token %}">Booth display link</a></p>
 <p><a href="{% url 'booth-flyer' conference.slug %}">Printable flyer</a></p>
-<p><a href="{% url 'booth-export' conference.slug %}">Download CSV</a></p>
+{% if is_owner %}<p><a href="{% url 'booth-export' conference.slug %}">Download CSV</a></p>{% endif %}
 {% for message in messages %}<p class="note" role="status">{{ message }}</p>{% endfor %}
-{% if drip_on %}
+{% if is_owner and drip_on %}
 <form method="post" action="{% url 'booth-retry-failed' conference.slug %}">
   {% csrf_token %}
   <p class="note">Drip: {{ drip_pending }} pending, {{ drip_failed }} failed</p>
@@ -30,9 +30,9 @@
 {% if conference.deleted_entrant_count is not None %}
 <p class="note">Entrants deleted ({{ conference.deleted_entrant_count }})</p>
 {% else %}
-<p><a class="tap" href="{% url 'booth-delete-entrants' conference.slug %}">Delete entrants</a></p>
+{% if is_owner %}<p><a class="tap" href="{% url 'booth-delete-entrants' conference.slug %}">Delete entrants</a></p>{% endif %}
 {% endif %}
 {% else %}
-<p><a class="tap" href="{% url 'booth-wrapup' conference.slug %}">Wrap up</a></p>
+{% if is_owner %}<p><a class="tap" href="{% url 'booth-wrapup' conference.slug %}">Wrap up</a></p>{% endif %}
 {% endif %}
 {% endblock %}
