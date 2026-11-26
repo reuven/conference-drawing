@@ -140,3 +140,35 @@ def test_cache_table_exists_and_round_trips(db: None) -> None:
 
     cache.set("k", "v")
     assert cache.get("k") == "v"
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ("localhost", ["localhost", "127.0.0.1", "[::1]"]),
+        ("raffle.example", ["raffle.example", "localhost", "127.0.0.1", "[::1]"]),
+    ],
+)
+def test_debug_mode_always_accepts_the_loopback_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    configured: str,
+    expected: list[str],
+) -> None:
+    # `init --domain localhost` writes only "localhost", but runserver prints
+    # http://127.0.0.1:8000/; in debug both must work.
+    monkeypatch.setenv("DJANGO_DEBUG", "1")
+    monkeypatch.setenv("DJANGO_ALLOWED_HOSTS", configured)
+    monkeypatch.setenv("CD_ENV_FILE", str(tmp_path / "absent.env"))
+    importlib.reload(cd_settings)
+    assert cd_settings.ALLOWED_HOSTS == expected
+
+
+def test_production_accepts_only_the_configured_hosts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("DJANGO_DEBUG", raising=False)
+    monkeypatch.setenv("DJANGO_ALLOWED_HOSTS", "localhost")
+    monkeypatch.setenv("CD_ENV_FILE", str(tmp_path / "absent.env"))
+    importlib.reload(cd_settings)
+    assert cd_settings.ALLOWED_HOSTS == ["localhost"]

@@ -34,13 +34,16 @@ if not SECRET_KEY:
         raise ImproperlyConfigured("DJANGO_SECRET_KEY is required when DEBUG is off")
     SECRET_KEY = "insecure-development-key-never-use-in-production"  # noqa: S105
 
+_LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
+
 ALLOWED_HOSTS = [
-    h.strip()
-    for h in _env(
-        "DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]" if DEBUG else ""
-    ).split(",")
-    if h.strip()
+    h.strip() for h in _env("DJANGO_ALLOWED_HOSTS").split(",") if h.strip()
 ]
+if DEBUG:
+    # On a laptop, `init --domain localhost` writes only "localhost", yet
+    # runserver prints http://127.0.0.1:8000/. Debug never runs on a server,
+    # so accepting every loopback name there loosens nothing in production.
+    ALLOWED_HOSTS += [h for h in _LOOPBACK_HOSTS if h not in ALLOWED_HOSTS]
 
 DATA_DIR = Path(_env("CD_DATA_DIR") or BASE_DIR / "var")
 
