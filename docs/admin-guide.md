@@ -56,7 +56,8 @@ Add a conference:
   and are never sent to Drip.
 
 A new conference starts with no entry questions; add any you want on the
-conference page. Pick its **Helpers** there too ([see below](#helpers)). Once the conference is saved, its **Pages** row links to
+conference page. Pick its **Helpers** there too ([see below](#helpers)).
+Once the conference is saved, its **Pages** row links to
 its booth page, its printable flyer, and its entry page.
 
 If you follow a link away from a form you've typed into, the browser asks
@@ -120,9 +121,11 @@ Who can be picked:
 
 To let someone else run drawings on their own phone:
 
-1. In the admin, open **Users** and add a user with a username and password.
-   Leave **Staff status** and **Superuser status** unticked: a helper never
-   needs the admin.
+1. In the admin, open **Users** and add a user. The Add user form asks only
+   for a username and a password. On the next screen, fill in the **Email
+   address** if you want them to sign in with it; without one they can sign
+   in only by username. Leave **Staff status** and **Superuser status**
+   unticked: a helper never needs the admin.
 2. Open the conference and, in **Helpers**, move that user from the left list
    to the right. Save. (The list shows active accounts that aren't
    superusers.)
@@ -135,6 +138,11 @@ They can't see or use **Download CSV**, **Wrap up**, **Delete entrants**, or
 the Drip status and **Retry failed**, and those addresses show them "not
 found". Only you, as a superuser, can.
 
+Helpers can also see the booth display link. After someone stops helping,
+consider rotating it: select the conference in the admin and run **Rotate
+display token** (see [The booth display](#5-the-booth-display-optional)). The
+old link stops working.
+
 A helper's access ends when you take them out of **Helpers**, when you
 deactivate the account, or when the conference is wrapped up. If you later
 deactivate a helper or make them a superuser, the next save of that
@@ -143,6 +151,11 @@ doesn't put them back, so add them again. Passwords are reset on the server
 ([Passwords and logins](server-setup.md#passwords-and-logins)). Signing in
 tries 10 times a minute per address. Each booth page has a **Sign out**
 button.
+
+**Upgrading from 0.2.x:** before 0.3, a helper was an account with **Staff
+status** ticked. Staff status no longer reaches the booth. Add each of those
+accounts to the **Helpers** list of every conference they should work on
+(they can then untick **Staff status**).
 
 ## After the last drawing
 
