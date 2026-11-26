@@ -7,8 +7,8 @@ two workflows.
 
 The app only ever adds tags in the scheme below. It never removes or renames
 a tag, never sends a subscriber status (so it cannot resubscribe someone who
-unsubscribed), and never adds anyone to a Drip campaign or to Better
-Developers itself.
+unsubscribed), and never adds anyone to a Drip campaign or to your
+newsletter itself.
 
 ## Before you start
 
@@ -53,15 +53,20 @@ the conference's slug (for example `pycon-us-2027`):
 | `<slug>-raffle` | every entrant sent |
 | `<slug>-raffle-winner` | winners: a Claimed physical pick, or any digital pick |
 | `<slug>-raffle-nonwinner` | everyone else |
-| `<slug>-bd-optin` | entrants who ticked "Also subscribe me to Better Developers" |
+| `<slug>-newsletter-optin` | entrants who ticked the newsletter checkbox (the text you set in Install settings) |
+
+Before version 0.3 this tag was `<slug>-bd-optin`. Conferences wrapped up
+earlier keep that tag in Drip, and a workflow that branches on it needs the
+new name for conferences from 0.3 on.
 
 Only people who ticked that box also carry an EU consent grant, with the
 wording they saw. Everyone else carries no consent fields.
 
 Each entrant also gets an `Entered raffle` event, dated when they entered.
 Its properties are `conference` (the conference's name) plus one property per
-entry question, named by the question's key (by default `want_to_learn`,
-`coding_style`, and `anything_else`), holding the answer they gave. Use these
+entry question you added, named by the question's key (for example
+`want_to_learn`), holding the answer they gave. A conference with no
+questions sends none. Use these
 to personalize the follow-up: `{{ event.want_to_learn }}`.
 
 ## Workflow A: send the prize
@@ -86,13 +91,13 @@ wrap-up, so the tag is applied to everyone at about the same time.
 2. **Branch on `<slug>-raffle-nonwinner`.** If the person has the tag, send
    the consolation message with the consolation code. The app never knows
    that code; it lives in Drip. Winners skip this branch.
-3. **Branch on `<slug>-bd-optin`.**
-   - **Has the tag:** add them to Better Developers now. They asked for it,
+3. **Branch on `<slug>-newsletter-optin`.**
+   - **Has the tag:** add them to your newsletter now. They asked for it,
      and the app recorded their consent.
    - **Does not have the tag:** send a short notice that you will add them to
-     Better Developers and how to remove themselves, wait (a week is
-     typical), then add them unless they opted out. Better Developers has no
-     double opt-in, so this notice is the opt-out path. An opt-out notice is
+     your newsletter and how to remove themselves, wait (a week is
+     typical), then add them unless they opted out. If your newsletter has no
+     double opt-in, this notice is the opt-out path. An opt-out notice is
      not consent under the GDPR, so you may want to limit this branch to
      entrants outside the EU.
 
