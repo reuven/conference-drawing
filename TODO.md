@@ -67,3 +67,20 @@ Approved by Reuven, 2026-11-26.
 - [x] 3. `docs/admin-guide.md` (running conferences in the admin and at the booth, in order)
 - [x] 4. `docs/booth-staff-guide.md` (non-technical: what attendees scan, what to tell them, FAQs)
 - [x] 5. README.md cut to an overview linking the four; check nothing was lost
+
+## v0.3.0 — conference helpers, owner-neutral defaults
+
+Spec: `docs/superpowers/specs/2026-11-26-helpers-and-generic-defaults-design.md` (approved 2026-11-26)
+Plan: `docs/superpowers/plans/2026-11-26-helpers-and-generic-defaults.md`
+
+- [x] Design doc approved
+- [x] Implementation plan written
+- [ ] 1. Access rule (owner / helper / none) and `Conference.helpers`
+- [ ] 2. Booth, flyer and export views enforce it; helpers don't see owner controls
+- [ ] 3. Route crawler over every booth URL and role
+- [ ] 4. `/booth/login/` and sign-out; reserved slugs
+- [ ] 5. Helpers picker in the conference admin
+- [ ] 6. Newsletter names, hidden-when-empty checkbox, neutral defaults, no default questions
+- [ ] 7. e2e helper flow, docs, mutmut on access.py, version 0.3.0
+- [ ] Release v0.3.0 (CI gate on the branch, tag)
+- [ ] Upgrade wp2 when Reuven is ready
