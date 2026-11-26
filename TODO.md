@@ -62,8 +62,8 @@ Approved by Reuven, 2026-11-26.
 
 Approved by Reuven, 2026-11-26.
 
-- [ ] 1. `docs/development.md` (Reuven's laptop, checks, releases, layout); CONTRIBUTING.md points to it
-- [ ] 2. `docs/server-setup.md` (fresh server to running site, Drip, upgrades, backups, rollback, retiring)
-- [ ] 3. `docs/admin-guide.md` (running conferences in the admin and at the booth, in order)
-- [ ] 4. `docs/booth-staff-guide.md` (non-technical: what attendees scan, what to tell them, FAQs)
-- [ ] 5. README.md cut to an overview linking the four; check nothing was lost
+- [x] 1. `docs/development.md` (Reuven's laptop, checks, releases, layout); CONTRIBUTING.md points to it
+- [x] 2. `docs/server-setup.md` (fresh server to running site, Drip, upgrades, backups, rollback, retiring)
+- [x] 3. `docs/admin-guide.md` (running conferences in the admin and at the booth, in order)
+- [x] 4. `docs/booth-staff-guide.md` (non-technical: what attendees scan, what to tell them, FAQs)
+- [x] 5. README.md cut to an overview linking the four; check nothing was lost
