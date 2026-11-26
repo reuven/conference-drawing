@@ -84,3 +84,22 @@ Plan: `docs/superpowers/plans/2026-11-26-helpers-and-generic-defaults.md`
 - [x] 7. e2e helper flow, docs, mutmut on access.py, version 0.3.0
 - [x] Release v0.3.0 (CI gate on the branch, tag)
 - [ ] Upgrade wp2 when Reuven is ready
+
+## v0.4.0 — security hardening before the public announcement
+
+Plan: `docs/superpowers/plans/2026-11-26-security-hardening.md`
+Spec: `docs/superpowers/specs/2026-11-26-security-hardening-design.md`
+
+- [x] Security review of 0.3.0 (three reviewers; 0 Critical, 0 High, 4 Medium)
+- [x] Design doc approved (Reuven, 2026-11-26)
+- [x] Implementation plan written
+- [ ] 1. Rerolls cost a person (a slot never redraws someone voided for it)
+- [ ] 2. The owner sees the history (Audit events admin, undo/void counts)
+- [ ] 3. One person per mailbox (`+tag` and IDNA email key)
+- [ ] 4. Entry window (conference dates only) and per-network entry cap
+- [ ] 5. Password rules and per-account login limit
+- [ ] 6. No early starts for helpers (15 minutes; owner confirms)
+- [ ] 7. App-side smaller fixes (debug key, X-Forwarded-For, CSV, images, logging, admin action)
+- [ ] 8. Drip fixes (lease timing, 429 backoff, deadline, first name)
+- [ ] 9. Deploy fixes (snapshot age, key rotation, PostgreSQL log, systemd)
+- [ ] 10. Docs, privacy text, probe re-run, mutation testing, e2e, version 0.4.0
