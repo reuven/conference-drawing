@@ -75,12 +75,12 @@ Plan: `docs/superpowers/plans/2026-11-26-helpers-and-generic-defaults.md`
 
 - [x] Design doc approved
 - [x] Implementation plan written
-- [ ] 1. Access rule (owner / helper / none) and `Conference.helpers`
-- [ ] 2. Booth, flyer and export views enforce it; helpers don't see owner controls
-- [ ] 3. Route crawler over every booth URL and role
-- [ ] 4. `/booth/login/` and sign-out; reserved slugs
-- [ ] 5. Helpers picker in the conference admin
-- [ ] 6. Newsletter names, hidden-when-empty checkbox, neutral defaults, no default questions
-- [ ] 7. e2e helper flow, docs, mutmut on access.py, version 0.3.0
-- [ ] Release v0.3.0 (CI gate on the branch, tag)
+- [x] 1. Access rule (owner / helper / none) and `Conference.helpers`
+- [x] 2. Booth, flyer and export views enforce it; helpers don't see owner controls
+- [x] 3. Route crawler over every booth URL and role
+- [x] 4. `/booth/login/` and sign-out; reserved slugs
+- [x] 5. Helpers picker in the conference admin
+- [x] 6. Newsletter names, hidden-when-empty checkbox, neutral defaults, no default questions
+- [x] 7. e2e helper flow, docs, mutmut on access.py, version 0.3.0
+- [x] Release v0.3.0 (CI gate on the branch, tag)
 - [ ] Upgrade wp2 when Reuven is ready
