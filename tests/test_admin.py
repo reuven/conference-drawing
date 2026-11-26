@@ -1304,3 +1304,15 @@ def test_saving_helpers_on_a_conference(admin_client: Client) -> None:
     )
     assert resp.status_code == 302
     assert list(Conference.objects.get(slug="pycon").helpers.all()) == [helper]
+
+
+def test_other_many_to_many_fields_keep_their_full_choice_list(
+    rf: Any, admin_user: Any
+) -> None:
+    """Only `helpers` is narrowed; any other many-to-many field is left alone."""
+    request = rf.get("/")
+    request.user = admin_user
+    model_admin = ConferenceAdmin(Conference, admin.site)
+    groups = get_user_model()._meta.get_field("groups")
+    field = model_admin.formfield_for_manytomany(groups, request)
+    assert field.queryset.model is groups.related_model
