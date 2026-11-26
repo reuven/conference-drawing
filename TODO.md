@@ -51,8 +51,8 @@ Approved by Reuven, 2026-11-26.
 - [x] 3. e2e: the default home page
 - [x] 4. README and v0.2 spec: no more "404 when nothing configured"
 - [x] 6. Conference time zone: a dropdown grouped by region, labeled by city
-- [ ] 7. Admin forms warn before leaving with unsaved changes
-- [ ] 8. After a failed save, jump to the first field with an error
+- [x] 7. Admin forms warn before leaving with unsaved changes
+- [x] 8. After a failed save, jump to the first field with an error
 - [ ] 9. Say that a chosen logo/cover must be picked again after a failed save
 - [ ] 10. Admin links to the booth: conference page (booth, flyer, entry page) and a Booth link in the header
 - [ ] 5. Release v0.2.1 (CI gate on the branch, tag), wp2 upgrade by Reuven, post-check
