@@ -1226,3 +1226,11 @@ def test_a_bad_time_zone_is_refused_and_the_rest_of_the_form_kept(
     assert "Select a valid choice" in html
     assert 'value="Kept Conf"' in html
     assert not Conference.objects.filter(name="Kept Conf").exists()
+
+
+def test_admin_pages_load_the_form_helper_and_keep_their_header(
+    admin_client: Client,
+) -> None:
+    html = admin_client.get(reverse("admin:raffle_conference_add")).content.decode()
+    assert 'src="/static/raffle/admin-forms.js" defer' in html
+    assert 'id="site-name"' in html  # Django's own base_site is still extended

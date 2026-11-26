@@ -86,7 +86,8 @@ WSGI_APPLICATION = "conference_drawing.wsgi.application"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        # Project-wide overrides of Django's admin templates (see admin/base_site.html).
+        "DIRS": [Path(__file__).resolve().parent / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [

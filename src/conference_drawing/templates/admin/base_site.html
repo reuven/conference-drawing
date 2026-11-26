@@ -1,0 +1,4 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+{# Django's own admin/base_site.html, plus the form helper on every admin page. #}
+{% block extrahead %}{{ block.super }}<script src="{% static 'raffle/admin-forms.js' %}" defer></script>{% endblock %}
