@@ -47,11 +47,13 @@ their own phone. At set times we draw winners at random.
 ## Signing in
 
 If the organizer asked you to run drawings on your own phone, they will give
-you an account: a username (or your email address) and a password.
+you an account: a username and a password (and your email address works
+too, if the organizer set one).
 
 1. Open the booth address the organizer gave you, which ends in `/booth/`. If
    you aren't signed in, you land on **Booth sign in**.
-2. Type your username or email address and your password, and tap **Sign in**.
+2. Type your username, or your email if the organizer set one, and your
+   password, and tap **Sign in**.
 3. Tap the conference. You will see only the conferences you were added to.
 4. When you're done, tap **Sign out** at the bottom of the page.
 
