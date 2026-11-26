@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.views import redirect_to_login
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.template.loader import render_to_string
@@ -123,6 +124,48 @@ def _refresh_on_404[**P](
             return response
 
     return wrapper
+
+
+def _htmx_login_required[**P](
+    *, drawing_route: bool
+) -> Callable[[Callable[P, HttpResponse]], Callable[P, HttpResponse]]:
+    """`login_required` that HTMX taps survive.
+
+    When a helper's account is deactivated or their session expires mid-draw,
+    the next tap is anonymous. A plain 302 would make HTMX swap the whole login
+    page into the pick row, so an anonymous HTMX request gets a 200 with
+    `HX-Redirect` to the sign-in page instead (HTMX ignores HX-* headers on a
+    3xx). Drawing routes return to that drawing afterward; pick routes go to
+    the booth home, since looking a pick up for an anonymous user would leak
+    whether it exists. Plain requests keep the usual 302.
+    """
+
+    def decorator(view: Callable[P, HttpResponse]) -> Callable[P, HttpResponse]:
+        protected = login_required(view)
+
+        @functools.wraps(view)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> HttpResponse:
+            request = args[0]
+            if (
+                not isinstance(request, HttpRequest)
+                or request.user.is_authenticated
+                or not _is_htmx(request)
+            ):
+                return protected(*args, **kwargs)
+            back = (
+                reverse("booth-drawing", args=[kwargs["pk"]])
+                if drawing_route
+                else reverse("booth-home")
+            )
+            response = HttpResponse()
+            response["HX-Redirect"] = redirect_to_login(
+                back, reverse("booth-login")
+            ).url
+            return response
+
+        return wrapper
+
+    return decorator
 
 
 def _local_label(drawing: Drawing) -> str:
@@ -349,7 +392,7 @@ def _redirect(request: HttpRequest, drawing_id: int) -> HttpResponse:
     return _back(drawing_id)
 
 
-@login_required
+@_htmx_login_required(drawing_route=True)
 @require_POST
 @_refresh_on_404
 def start(request: HttpRequest, pk: int) -> HttpResponse:
@@ -368,7 +411,7 @@ def start(request: HttpRequest, pk: int) -> HttpResponse:
     return _redirect(request, obj.pk)
 
 
-@login_required
+@_htmx_login_required(drawing_route=True)
 @require_POST
 @_refresh_on_404
 def close(request: HttpRequest, pk: int) -> HttpResponse:
@@ -417,7 +460,7 @@ def _act(
     return HttpResponse(body)
 
 
-@login_required
+@_htmx_login_required(drawing_route=False)
 @require_POST
 @_refresh_on_404
 def claim(request: HttpRequest, pk: int) -> HttpResponse:
@@ -425,7 +468,7 @@ def claim(request: HttpRequest, pk: int) -> HttpResponse:
     return _act(request, pk, lambda p: mark_claimed(p, now=timezone.now()))
 
 
-@login_required
+@_htmx_login_required(drawing_route=False)
 @require_POST
 @_refresh_on_404
 def not_here(request: HttpRequest, pk: int) -> HttpResponse:
@@ -433,7 +476,7 @@ def not_here(request: HttpRequest, pk: int) -> HttpResponse:
     return _act(request, pk, lambda p: mark_not_here(p, now=timezone.now(), rng=_rng()))
 
 
-@login_required
+@_htmx_login_required(drawing_route=False)
 @require_POST
 @_refresh_on_404
 def undo(request: HttpRequest, pk: int) -> HttpResponse:

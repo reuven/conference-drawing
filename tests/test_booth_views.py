@@ -746,3 +746,18 @@ def test_helper_is_refused_owner_only_routes_with_404(
     assert helper.post(delete, {"slug": "pycon"}).status_code == 404
     assert helper.post(retry).status_code == 404
     assert helper.get(reverse("booth-flyer", args=["pycon"])).status_code == 200
+
+
+@pytest.mark.parametrize("action", ["start", "close", "claim", "not-here", "undo"])
+def test_signed_out_htmx_tap_is_sent_to_sign_in(client: Client, action: str) -> None:
+    on_drawing = action in ("start", "close")
+    url = reverse(f"booth-{action}", args=[7])
+    back = reverse("booth-drawing", args=[7]) if on_drawing else reverse("booth-home")
+    response = client.post(url, headers=HX)
+    assert response.status_code == 200
+    assert response["HX-Redirect"] == f"{reverse('booth-login')}?next={back}"
+    assert response.content == b""
+    plain = client.post(url)
+    assert plain.status_code == 302
+    assert plain["Location"].startswith(reverse("booth-login"))
+    assert "HX-Redirect" not in plain
