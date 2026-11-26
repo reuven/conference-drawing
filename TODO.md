@@ -57,3 +57,13 @@ Approved by Reuven, 2026-11-26.
 - [x] 10. Admin links to the booth: conference page (booth, flyer, entry page) and a Booth link in the header
 - [x] 5. Release v0.2.1 (CI gate on the branch, mutmut on timezones.py, tag v0.2.1 on 9e7536e)
 - [ ] 11. Upgrade wp2 to v0.2.1 when Reuven is ready (he's testing on localhost first)
+
+## Docs split into four guides (no release)
+
+Approved by Reuven, 2026-11-26.
+
+- [ ] 1. `docs/development.md` (Reuven's laptop, checks, releases, layout); CONTRIBUTING.md points to it
+- [ ] 2. `docs/server-setup.md` (fresh server to running site, Drip, upgrades, backups, rollback, retiring)
+- [ ] 3. `docs/admin-guide.md` (running conferences in the admin and at the booth, in order)
+- [ ] 4. `docs/booth-staff-guide.md` (non-technical: what attendees scan, what to tell them, FAQs)
+- [ ] 5. README.md cut to an overview linking the four; check nothing was lost
