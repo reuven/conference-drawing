@@ -8,8 +8,9 @@ from django.contrib import admin, messages
 from django.contrib.admin.widgets import AdminSplitDateTime
 from django.db.models import Count, Q, QuerySet
 from django.http import HttpRequest
+from django.urls import reverse
 from django.utils import timezone
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
 
 from .codes import parse_codes
 from .drip.outbox import requeue_failed
@@ -118,6 +119,7 @@ class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
     list_display = ("name", "slug", "starts_on", "ends_on", "time_zone")
     search_fields = ("name", "slug")
     readonly_fields = (
+        "pages",
         "display_token",
         "wrapped_up_at",
         "deleted_entrant_count",
@@ -130,6 +132,7 @@ class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
                 "fields": (
                     "name",
                     "slug",
+                    "pages",
                     "time_zone",
                     "booth_location",
                     "starts_on",
@@ -151,6 +154,27 @@ class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
         ),
     )
     inlines = [QuestionInline]
+
+    @admin.display(description="Pages")
+    def pages(self, obj: Conference | None) -> Any:
+        """Link to the booth pages from here, where the owner sets things up.
+
+        The flyer with the entry QR code lives under /booth/, which nothing in
+        the admin linked to, so owners couldn't find it.
+        """
+        if obj is None or obj.pk is None:
+            return "Save the conference to get its booth, flyer and entry links."
+        links = (
+            ("booth-conference", "Booth page"),
+            ("booth-flyer", "Printable flyer (QR code)"),
+            ("entry", "Entry page"),
+        )
+        return format_html_join(
+            " · ",
+            '<a href="{}">{}</a>',
+            ((reverse(name, args=[obj.slug]), label) for name, label in links),
+        )
+
     actions = ["rotate_display_token"]
 
     @admin.action(description="Rotate display token")

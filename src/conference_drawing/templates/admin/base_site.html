@@ -1,4 +1,5 @@
 {% extends "admin/base_site.html" %}
 {% load static %}
-{# Django's own admin/base_site.html, plus the form helper on every admin page. #}
+{# Django's own admin/base_site.html, plus the form helper and a Booth link. #}
 {% block extrahead %}{{ block.super }}<script src="{% static 'raffle/admin-forms.js' %}" defer></script>{% endblock %}
+{% block userlinks %}<a href="{% url 'booth-home' %}">Booth</a> / {{ block.super }}{% endblock %}

@@ -1255,3 +1255,27 @@ def test_install_settings_logo_says_to_choose_the_file_again(
     install = InstallSettings.get()
     url = reverse("admin:raffle_installsettings_change", args=[install.pk])
     assert FILE_AGAIN in admin_client.get(url).content.decode()
+
+
+def test_conference_admin_links_to_its_booth_flyer_and_entry_pages(
+    admin_client: Client, conference_factory: Factory
+) -> None:
+    conf = conference_factory()
+    url = reverse("admin:raffle_conference_change", args=[conf.pk])
+    html = admin_client.get(url).content.decode()
+    for name, target in (
+        ("Booth page", reverse("booth-conference", args=[conf.slug])),
+        ("Printable flyer (QR code)", reverse("booth-flyer", args=[conf.slug])),
+        ("Entry page", reverse("entry", args=[conf.slug])),
+    ):
+        assert f'<a href="{target}">{name}</a>' in html
+
+
+def test_new_conference_says_links_come_after_saving(admin_client: Client) -> None:
+    html = admin_client.get(reverse("admin:raffle_conference_add")).content.decode()
+    assert "Save the conference to get its booth, flyer and entry links." in html
+
+
+def test_admin_header_links_to_the_booth(admin_client: Client) -> None:
+    html = admin_client.get(reverse("admin:index")).content.decode()
+    assert f'<a href="{reverse("booth-home")}">Booth</a>' in html
