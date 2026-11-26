@@ -599,9 +599,9 @@ def test_booth_hides_outbox_when_drip_unconfigured(
 ) -> None:
     settings.DRIP_ACCOUNT_ID = ""
     settings.DRIP_API_KEY = ""
-    page = owner.get(
-        reverse("booth-conference", args=[conference.slug])
-    ).content.decode()
+    response = owner.get(reverse("booth-conference", args=[conference.slug]))
+    assert response.status_code == 200
+    page = response.content.decode()
     assert "Drip:" not in page
     assert "retry-failed" not in page
     response = owner.post(reverse("booth-retry-failed", args=[conference.slug]))
