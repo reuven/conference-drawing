@@ -25,7 +25,6 @@ from .models import (
     OutboxJob,
     PrizeLine,
     Question,
-    create_default_questions,
     new_display_token,
 )
 from .timezones import to_local, to_utc
@@ -218,13 +217,6 @@ class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
     @admin.display(description="Current logo")
     def after_logo_preview(self, obj: Conference | None) -> Any:
         return _logo_preview(obj)
-
-    def save_model(
-        self, request: HttpRequest, obj: Conference, form: Any, change: bool
-    ) -> None:
-        super().save_model(request, obj, form, change)
-        if not change:
-            create_default_questions(obj)
 
 
 def _frozen(drawing: Drawing | None) -> bool:

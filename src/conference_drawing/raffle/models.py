@@ -434,38 +434,6 @@ class Question(models.Model):
             raise ValidationError({"choices": "A choice question needs choices."})
 
 
-_DEFAULT_QUESTIONS: tuple[tuple[str, str, str, list[str]], ...] = (
-    ("want_to_learn", "What do you most want to learn?", "text", []),
-    (
-        "coding_style",
-        "How do you code these days?",
-        "choice",
-        [
-            "I'm just starting to code",
-            "I write my own code, and use AI a little or not at all",
-            "I work alongside AI: chat, autocomplete, asking it to explain",
-            "AI agents write most of my code; I direct and review",
-        ],
-    ),
-    ("anything_else", "Anything else to tell me?", "text", []),
-)
-
-
-def create_default_questions(conference: Conference) -> None:
-    """Give a new conference the standard three optional entry questions."""
-    Question.objects.bulk_create(
-        Question(
-            conference=conference,
-            key=key,
-            prompt=prompt,
-            kind=kind,
-            choices=choices,
-            position=position,
-        )
-        for position, (key, prompt, kind, choices) in enumerate(_DEFAULT_QUESTIONS)
-    )
-
-
 class Entrant(models.Model):
     """A person who entered a conference's drawings, with their consent record."""
 

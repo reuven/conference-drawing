@@ -23,7 +23,6 @@ from conference_drawing.raffle.models import (
     Pick,
     PrizeLine,
     Question,
-    create_default_questions,
     validate_time_zone,
 )
 from tests.factories import make_questions
@@ -168,34 +167,6 @@ def test_conference_str(conference_factory: Factory) -> None:
 # --- Question --------------------------------------------------------------
 
 
-def test_default_questions_exact(conference_factory: Factory) -> None:
-    c = conference_factory()
-    create_default_questions(c)
-    assert [q.key for q in c.question_set.order_by("position")] == [
-        "want_to_learn",
-        "coding_style",
-        "anything_else",
-    ]
-    style = c.question_set.get(key="coding_style")
-    assert style.kind == "choice"
-    assert style.prompt == "How do you code these days?"
-    assert style.choices == [
-        "I'm just starting to code",
-        "I write my own code, and use AI a little or not at all",
-        "I work alongside AI: chat, autocomplete, asking it to explain",
-        "AI agents write most of my code; I direct and review",
-    ]
-    assert style.choices[3] == "AI agents write most of my code; I direct and review"
-    learn = c.question_set.get(key="want_to_learn")
-    assert (learn.prompt, learn.kind, learn.choices) == (
-        "What do you most want to learn?",
-        "text",
-        [],
-    )
-    assert c.question_set.get(key="anything_else").prompt == "Anything else to tell me?"
-    assert str(learn) == "want_to_learn"
-
-
 def test_question_key_unique_per_conference(conference_factory: Factory) -> None:
     a, b = conference_factory(), conference_factory()
     Question.objects.create(conference=a, key="k", prompt="p")
@@ -221,7 +192,7 @@ def test_question_key_accepts_the_default_style(
     Question(conference=conference_factory(), key=good, prompt="p").full_clean()
 
 
-def test_default_questions_pass_their_own_validation(
+def test_factory_questions_pass_validation(
     conference_factory: Factory,
 ) -> None:
     c = conference_factory()

@@ -78,11 +78,11 @@ def _conference_post(**over: Any) -> dict[str, Any]:
     return {**data, **over}
 
 
-def test_new_conference_gets_default_questions(admin_client: Client) -> None:
+def test_new_conference_gets_no_questions(admin_client: Client) -> None:
     resp = admin_client.post(reverse("admin:raffle_conference_add"), _conference_post())
     assert resp.status_code == 302
     conf = Conference.objects.get(slug="pycon")
-    assert Question.objects.filter(conference=conf).count() == 3
+    assert Question.objects.filter(conference=conf).count() == 0
 
 
 def test_editing_conference_does_not_add_questions_again(
