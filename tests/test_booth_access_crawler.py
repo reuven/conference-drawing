@@ -16,7 +16,7 @@ import pytest
 from django.contrib.auth.models import User
 from django.db import transaction
 from django.test import Client
-from django.urls import URLPattern, URLResolver, get_resolver
+from django.urls import URLPattern, URLResolver, get_resolver, reverse
 
 from conference_drawing.raffle.models import Conference, Drawing, Pick
 
@@ -112,12 +112,16 @@ class _Rollback(Exception):
     """Raised to undo one request's database changes."""
 
 
-def _request(client: Client, method: str, url: str) -> tuple[int, str]:
-    """Send one request and roll its writes back; return (status, body)."""
+def _request(client: Client, method: str, url: str) -> tuple[int, str, str]:
+    """Send one request and roll its writes back; return (status, body, Location)."""
     try:
         with transaction.atomic():
             response = getattr(client, method)(url)
-            result = (response.status_code, response.content.decode(errors="ignore"))
+            result = (
+                response.status_code,
+                response.content.decode(errors="ignore"),
+                response.get("Location", ""),
+            )
             raise _Rollback
     except _Rollback:
         return result
@@ -171,13 +175,16 @@ def test_every_booth_url_for_every_role(seeds: dict[str, Seed], settings: Any) -
     for who, client in users.items():
         for t in targets:
             for method in METHODS:
-                status, body = _request(client, method, t.url)
-                if who == "owner":
+                status, body, location = _request(client, method, t.url)
+                if status == 403:
+                    ok = False  # a refusal is a 404 (or a sign-in redirect)
+                elif who == "owner":
                     ok = status != 404
                 elif who in ("anonymous", "inactive"):
                     # An inactive account's session is dropped: same as anonymous.
-                    # Task 4 tightens this to the booth login URL.
-                    ok = status == 302
+                    ok = status == 302 and location.startswith(
+                        reverse("booth-login") + "?next="
+                    )
                 elif who == "helper-a" and t.conference in ("A", "-"):
                     if ROUTES[t.route] == HELPER:
                         ok = status != 404
@@ -204,3 +211,15 @@ def test_crawler_rejects_unknown_booth_route(monkeypatch: pytest.MonkeyPatch) ->
     seed = Seed("s", 1, 1, "n")
     with pytest.raises(AssertionError, match="booth-undo"):
         _targets({"A": seed, "B": seed})
+
+
+def test_sign_in_routes_are_public_and_logout_is_post_only(db: None) -> None:
+    """Ruling R1: login and logout are the way in, so anonymous may reach them."""
+    anonymous = Client()
+    assert anonymous.get(reverse("booth-login")).status_code == 200
+    assert anonymous.get(reverse("booth-logout")).status_code == 405
+    assert anonymous.post(reverse("booth-logout")).status_code == 302
+    _, signed_in = _login("someone")
+    response = signed_in.get(reverse("booth-login"))
+    assert (response.status_code, response["Location"]) == (302, "/booth/")
+    assert signed_in.get(reverse("booth-logout")).status_code == 405
