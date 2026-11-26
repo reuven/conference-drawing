@@ -41,3 +41,13 @@ Spec: `docs/superpowers/specs/2026-11-23-between-conferences-design.md`
 - [x] 7. Docs, privacy line, e2e, version 0.2.0
 - [x] Release v0.2.0 (mutmut, CI gate, tag v0.2.0 on 4d85e3d)
 - [x] Upgrade wp2 to v0.2.0 (2026-11-23; checked against baseline)
+
+## v0.2.1 — default home page, local hosts
+
+Approved by Reuven, 2026-11-26.
+
+- [ ] 1. `/` shows a built-in default page when nothing is configured (was 404)
+- [ ] 2. Debug mode always accepts localhost, 127.0.0.1 and [::1]
+- [ ] 3. e2e: the default home page
+- [ ] 4. README and v0.2 spec: no more "404 when nothing configured"
+- [ ] 5. Release v0.2.1 (CI gate on the branch, tag), wp2 upgrade by Reuven, post-check
