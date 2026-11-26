@@ -4,11 +4,11 @@ import io
 
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse
-from django.shortcuts import get_object_or_404
 from django.views.decorators.http import require_GET
 
+from ..access import conference_or_404
 from ..csv_export import export_rows, write_csv
-from ..models import Conference, Question
+from ..models import Question
 
 
 @login_required
@@ -21,7 +21,7 @@ def export_csv(request: HttpRequest, slug: str) -> HttpResponse:
     in memory (a conference has hundreds to low thousands of rows) and marked
     `private, no-store` because it holds every entrant's email and answers.
     """
-    conf = get_object_or_404(Conference, slug=slug)
+    conf = conference_or_404(request.user, slug, owner_only=True)
     questions = list(Question.objects.filter(conference=conf))
     out = io.StringIO(newline="")
     out.write("﻿")

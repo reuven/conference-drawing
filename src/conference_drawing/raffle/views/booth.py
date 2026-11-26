@@ -8,6 +8,7 @@ one copy's rows in place; without JavaScript the same forms POST and redirect.
 """
 
 import datetime
+import functools
 import random
 import secrets
 from collections.abc import Callable
@@ -16,12 +17,19 @@ from dataclasses import dataclass, field
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import render
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
+from ..access import (
+    conference_or_404,
+    drawing_or_404,
+    is_owner,
+    pick_or_404,
+    visible_conferences,
+)
 from ..codes import render_prize_url
 from ..deletion import delete_entrants
 from ..draw import (
@@ -36,7 +44,6 @@ from ..draw import (
 from ..drip.config import drip_settings
 from ..drip.outbox import enqueue_won_prize, failed_count, pending_count, requeue_failed
 from ..models import (
-    Conference,
     CouponCode,
     Drawing,
     Entrant,
@@ -90,6 +97,32 @@ class LineView:
 
 def _is_htmx(request: HttpRequest) -> bool:
     return request.headers.get("HX-Request") == "true"
+
+
+def _refresh_on_404[**P](
+    view: Callable[P, HttpResponse],
+) -> Callable[P, HttpResponse]:
+    """Tell HTMX to reload the page when a tap is refused with a 404.
+
+    A helper whose access was removed (or whose conference was wrapped up)
+    still has the drawing page open. Their next tap gets a 404, which HTMX
+    would swallow silently; `HX-Refresh` makes the page reload into a normal
+    404 instead. Plain requests keep Django's usual 404.
+    """
+
+    @functools.wraps(view)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> HttpResponse:
+        try:
+            return view(*args, **kwargs)
+        except Http404:
+            request = args[0]
+            if not isinstance(request, HttpRequest) or not _is_htmx(request):
+                raise
+            response = HttpResponse(status=404)
+            response["HX-Refresh"] = "true"
+            return response
+
+    return wrapper
 
 
 def _local_label(drawing: Drawing) -> str:
@@ -183,8 +216,8 @@ def _back(drawing_id: int) -> HttpResponseRedirect:
 @login_required
 @require_GET
 def home(request: HttpRequest) -> HttpResponse:
-    """List conferences, newest first, so the booth is one tap from the drawing."""
-    conferences = Conference.objects.order_by("-starts_on", "name")
+    """List the conferences this user may see, so the booth is one tap away."""
+    conferences = visible_conferences(request.user)
     return render(
         request, "raffle/booth/conference_list.html", {"conferences": conferences}
     )
@@ -194,7 +227,7 @@ def home(request: HttpRequest) -> HttpResponse:
 @require_GET
 def conference_page(request: HttpRequest, slug: str) -> HttpResponse:
     """List a conference's drawings with their local times and states."""
-    conf = get_object_or_404(Conference, slug=slug)
+    conf = conference_or_404(request.user, slug)
     drawings = [
         (d, _local_label(d))
         for d in Drawing.objects.filter(conference=conf).select_related("conference")
@@ -205,6 +238,7 @@ def conference_page(request: HttpRequest, slug: str) -> HttpResponse:
         "raffle/booth/conference.html",
         {
             "conference": conf,
+            "is_owner": is_owner(request.user),
             "drawings": drawings,
             "drip_on": drip_on,
             "drip_pending": pending_count(conf) if drip_on else 0,
@@ -217,7 +251,7 @@ def conference_page(request: HttpRequest, slug: str) -> HttpResponse:
 @require_POST
 def retry_failed(request: HttpRequest, slug: str) -> HttpResponse:
     """Requeue this conference's failed Drip jobs; 404 when Drip isn't in use."""
-    conf = get_object_or_404(Conference, slug=slug)
+    conf = conference_or_404(request.user, slug, owner_only=True)
     if drip_settings() is None:
         raise Http404
     count = requeue_failed(
@@ -235,7 +269,7 @@ def wrapup_page(request: HttpRequest, slug: str) -> HttpResponse:
     GET only counts; nothing is queued until the owner posts. A refusal comes
     back as a message on the same page, never a 500.
     """
-    conf = get_object_or_404(Conference, slug=slug)
+    conf = conference_or_404(request.user, slug, owner_only=True)
     drip_on = drip_settings() is not None
     if request.method == "POST":
         try:
@@ -272,7 +306,7 @@ def delete_entrants_page(request: HttpRequest, slug: str) -> HttpResponse:
     The owner must type the conference's slug; whitespace around it is ignored.
     A wrong slug or any refusal comes back as a message, never a 500.
     """
-    conf = get_object_or_404(Conference, slug=slug)
+    conf = conference_or_404(request.user, slug, owner_only=True)
     here = reverse("booth-delete-entrants", args=[conf.slug])
     if request.method == "POST":
         if request.POST.get("slug", "").strip() != conf.slug:
@@ -301,7 +335,7 @@ def delete_entrants_page(request: HttpRequest, slug: str) -> HttpResponse:
 @require_GET
 def drawing_page(request: HttpRequest, pk: int) -> HttpResponse:
     """Show one drawing: Start when scheduled, copies and buttons while open."""
-    obj = get_object_or_404(Drawing.objects.select_related("conference"), pk=pk)
+    obj = drawing_or_404(request.user, pk)
     context = {**_status_context(obj), "when": _local_label(obj), "lines": _build(obj)}
     return render(request, "raffle/booth/drawing.html", context)
 
@@ -317,9 +351,10 @@ def _redirect(request: HttpRequest, drawing_id: int) -> HttpResponse:
 
 @login_required
 @require_POST
+@_refresh_on_404
 def start(request: HttpRequest, pk: int) -> HttpResponse:
     """Run the drawing; refusals come back as a message on the drawing page."""
-    obj = get_object_or_404(Drawing, pk=pk)
+    obj = drawing_or_404(request.user, pk)
     now = timezone.now()
     try:
         start_drawing(
@@ -335,9 +370,10 @@ def start(request: HttpRequest, pk: int) -> HttpResponse:
 
 @login_required
 @require_POST
+@_refresh_on_404
 def close(request: HttpRequest, pk: int) -> HttpResponse:
     """Close an open drawing, leaving unclaimed copies unawarded."""
-    obj = get_object_or_404(Drawing, pk=pk)
+    obj = drawing_or_404(request.user, pk)
     try:
         close_drawing(obj, now=timezone.now())
     except DrawingError as exc:
@@ -353,7 +389,7 @@ def _act(
     HTMX gets the copy's rows plus the status block (out of band); a plain form
     gets a redirect with any refusal as a message.
     """
-    pick = get_object_or_404(Pick.objects.select_related("prize_line"), pk=pk)
+    pick = pick_or_404(request.user, pk)
     drawing_id = pick.prize_line.drawing_id
     error = ""
     try:
@@ -364,7 +400,7 @@ def _act(
         if error:
             messages.error(request, error)
         return _back(drawing_id)
-    obj = Drawing.objects.select_related("conference").get(pk=drawing_id)
+    obj = drawing_or_404(request.user, drawing_id)
     slot = next(
         s
         for lv in _build(obj)
@@ -383,6 +419,7 @@ def _act(
 
 @login_required
 @require_POST
+@_refresh_on_404
 def claim(request: HttpRequest, pk: int) -> HttpResponse:
     """The winner came to the booth and took the book."""
     return _act(request, pk, lambda p: mark_claimed(p, now=timezone.now()))
@@ -390,6 +427,7 @@ def claim(request: HttpRequest, pk: int) -> HttpResponse:
 
 @login_required
 @require_POST
+@_refresh_on_404
 def not_here(request: HttpRequest, pk: int) -> HttpResponse:
     """The winner is absent: pass over them and draw a replacement at once."""
     return _act(request, pk, lambda p: mark_not_here(p, now=timezone.now(), rng=_rng()))
@@ -397,6 +435,7 @@ def not_here(request: HttpRequest, pk: int) -> HttpResponse:
 
 @login_required
 @require_POST
+@_refresh_on_404
 def undo(request: HttpRequest, pk: int) -> HttpResponse:
     """Reverse a mis-tapped Claimed or Not here."""
     return _act(request, pk, lambda p: undo_last(p, now=timezone.now()))

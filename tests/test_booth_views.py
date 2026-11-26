@@ -618,3 +618,115 @@ def test_drip_check_rejects_malformed_account_id(settings: Any) -> None:
     messages = run_checks(tags=["conference_drawing"])
     assert [m.id for m in messages] == ["conference_drawing.E002"]
     assert "sekrit" not in str(messages[0])
+
+
+# --- helpers and owner-only controls ----------------------------------------
+
+
+@pytest.fixture
+def helper(client: Client, conference: Conference) -> Client:
+    user = User.objects.create_user("helper", password="pw")
+    conference.helpers.add(user)
+    client.force_login(user)
+    return client
+
+
+def _owner_only_hrefs(slug: str) -> list[str]:
+    return [
+        reverse(f"booth-{name}", args=[slug])
+        for name in ("export", "wrapup", "delete-entrants", "retry-failed")
+    ]
+
+
+def test_helper_sees_only_their_open_conferences_on_booth_home(
+    helper: Client,
+    conference: Conference,
+    conference_factory: Callable[..., Conference],
+) -> None:
+    conference_factory(slug="other", name="Other Expo")
+    html = helper.get(reverse("booth-home")).content.decode()
+    assert conference.name in html
+    assert "Other Expo" not in html
+    assert helper.get(reverse("booth-conference", args=["other"])).status_code == 404
+
+
+def test_owner_conference_page_shows_owner_controls(
+    owner: Client,
+    drawing: Drawing,
+    conference: Conference,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(booth, "drip_settings", lambda: object())
+    url = reverse("booth-conference", args=["pycon"])
+    html = owner.get(url).content.decode()
+    for name in ("export", "wrapup", "retry-failed"):
+        assert reverse(f"booth-{name}", args=["pycon"]) in html
+    conference.wrapped_up_at = STARTED
+    conference.save()
+    html = owner.get(url).content.decode()
+    assert reverse("booth-delete-entrants", args=["pycon"]) in html
+
+
+def test_helper_can_run_a_drawing(
+    helper: Client,
+    drawing: Drawing,
+    conference: Conference,
+    prize_line_factory: Callable[..., PrizeLine],
+    entrant_factory: Callable[..., Entrant],
+) -> None:
+    _entrants(entrant_factory, conference, 6)
+    prize_line_factory(drawing, quantity=2)
+    assert helper.get(reverse("booth-drawing", args=[drawing.pk])).status_code == 200
+    assert helper.post(reverse("booth-start", args=[drawing.pk])).status_code == 302
+    first, second = Pick.objects.order_by("id")
+    for name, pick in (("claim", first), ("undo", first), ("claim", first)):
+        assert helper.post(reverse(f"booth-{name}", args=[pick.pk])).status_code == 302
+    not_here = reverse("booth-not-here", args=[second.pk])
+    assert helper.post(not_here).status_code == 302
+    replacement = Pick.objects.get(replaces=second)
+    claim = reverse("booth-claim", args=[replacement.pk])
+    assert helper.post(claim).status_code == 302
+    assert helper.post(reverse("booth-close", args=[drawing.pk])).status_code == 302
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.FINISHED
+    assert Pick.objects.filter(status=S.CLAIMED).count() == 2
+
+
+def test_removed_helper_htmx_tap_gets_404_with_refresh(
+    helper: Client,
+    drawing: Drawing,
+    conference: Conference,
+    prize_line_factory: Callable[..., PrizeLine],
+    pick_factory: Callable[..., Pick],
+    entrant_factory: Callable[..., Entrant],
+) -> None:
+    pick = pick_factory(prize_line_factory(drawing), entrant_factory(conference))
+    conference.helpers.clear()
+    url = reverse("booth-claim", args=[pick.pk])
+    response = helper.post(url, headers=HX)
+    assert response.status_code == 404
+    assert response["HX-Refresh"] == "true"
+    plain = helper.post(url)
+    assert plain.status_code == 404
+    assert "HX-Refresh" not in plain
+
+
+def test_wrapping_up_ends_helper_access(helper: Client, conference: Conference) -> None:
+    url = reverse("booth-conference", args=["pycon"])
+    assert helper.get(url).status_code == 200
+    conference.wrapped_up_at = STARTED
+    conference.save()
+    assert helper.get(url).status_code == 404
+
+
+def test_helper_is_refused_owner_only_routes_with_404(
+    helper: Client, conference: Conference
+) -> None:
+    export, wrapup, delete, retry = _owner_only_hrefs("pycon")
+    assert helper.get(export).status_code == 404
+    assert helper.get(wrapup).status_code == 404
+    assert helper.post(wrapup).status_code == 404
+    assert helper.get(delete).status_code == 404
+    assert helper.post(delete, {"slug": "pycon"}).status_code == 404
+    assert helper.post(retry).status_code == 404
+    assert helper.get(reverse("booth-flyer", args=["pycon"])).status_code == 200

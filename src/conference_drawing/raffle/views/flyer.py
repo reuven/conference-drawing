@@ -3,11 +3,11 @@
 import segno
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse
-from django.shortcuts import get_object_or_404, render
+from django.shortcuts import render
 from django.urls import reverse
 from django.views.decorators.http import require_GET
 
-from ..models import Conference
+from ..access import conference_or_404
 from ..schedule import MUST_BE_PRESENT, books_in, days, upcoming_drawings
 
 
@@ -21,7 +21,7 @@ def flyer(request: HttpRequest, slug: str) -> HttpResponse:
     slightly creased or low-quality printout still scans. The SVG carries no
     style attributes, so the page's CSP needs no exception, and it needs no JS.
     """
-    conference = get_object_or_404(Conference, slug=slug)
+    conference = conference_or_404(request.user, slug)
     entry_url = request.build_absolute_uri(reverse("entry", args=[slug]))
     qr = segno.make(entry_url, error="m").svg_inline(scale=10)
     return render(
