@@ -177,9 +177,12 @@ A new domain also needs a new Caddy site file, so after editing `.env`, run
 
 The admin login accepts the username, or the email address in any case
 (usernames are case-sensitive). If two accounts share an email address, that
-address can't be used to sign in, but each can still sign in by username.
+address can't be used to sign in, but each can still sign in by username. The
+admin only lets in staff accounts. Booth helpers are ordinary accounts that
+sign in at `/booth/login/` instead (see the
+[admin guide](admin-guide.md#helpers)).
 
-To reset a password:
+To reset a password, for the owner or any helper:
 
 ```sh
 deploy/owner-password.sh <server> <username>
