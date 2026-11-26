@@ -86,8 +86,8 @@ RESERVED_QUESTION_KEYS = frozenset(
         "digital_codes",
         "digital_urls",
         "followup_ack_at",
-        "bd_optin",
-        "bd_optin_at",
+        "newsletter_optin",
+        "newsletter_optin_at",
         "conference",
     }
 )
@@ -214,7 +214,7 @@ class ConferenceTags(NamedTuple):
     all: str
     winner: str
     nonwinner: str
-    bd_optin: str
+    newsletter_optin: str
 
 
 class InstallSettings(models.Model):
@@ -223,7 +223,9 @@ class InstallSettings(models.Model):
     owner_name = models.CharField(max_length=200, blank=True)
     privacy_note = models.TextField(blank=True)
     followup_ack_text = models.TextField(default=DEFAULT_FOLLOWUP_ACK_TEXT)
-    bd_checkbox_text = models.TextField(default=DEFAULT_BD_CHECKBOX_TEXT)
+    newsletter_checkbox_text = models.TextField(
+        db_column="bd_checkbox_text", default=DEFAULT_BD_CHECKBOX_TEXT
+    )
     after_mode = models.CharField(
         max_length=10,
         choices=[(AfterMode.PAGE, "Show a page"), (AfterMode.REDIRECT, "Redirect")],
@@ -391,7 +393,7 @@ class Conference(models.Model):
             all=f"{s}-raffle",
             winner=f"{s}-raffle-winner",
             nonwinner=f"{s}-raffle-nonwinner",
-            bd_optin=f"{s}-bd-optin",
+            newsletter_optin=f"{s}-newsletter-optin",
         )
 
 
@@ -471,8 +473,10 @@ class Entrant(models.Model):
     answers = models.JSONField(default=dict, blank=True)
     followup_ack_text = models.TextField(blank=True)
     followup_ack_at = models.DateTimeField(default=timezone.now)
-    bd_optin_text = models.TextField(blank=True)
-    bd_optin_at = models.DateTimeField(null=True, blank=True)
+    newsletter_optin_text = models.TextField(blank=True, db_column="bd_optin_text")
+    newsletter_optin_at = models.DateTimeField(
+        null=True, blank=True, db_column="bd_optin_at"
+    )
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:

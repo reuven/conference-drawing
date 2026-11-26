@@ -70,7 +70,7 @@ class InstallSettingsAdmin(admin.ModelAdmin[InstallSettings], _AfterLogoMedia):
                     "owner_name",
                     "privacy_note",
                     "followup_ack_text",
-                    "bd_checkbox_text",
+                    "newsletter_checkbox_text",
                 )
             },
         ),

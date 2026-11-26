@@ -55,7 +55,7 @@ def test_entry_page_renders_form(client: Client, conference: Conference) -> None
     assert 'for="id_name"' in html
     assert 'for="id_email"' in html
     assert "What do you most want to learn?" in html
-    assert 'name="bd_optin"' in html
+    assert 'name="newsletter_optin"' in html
     assert "checked" not in html
     assert "style=" not in html
     assert "<script" not in html

@@ -838,7 +838,7 @@ def _site_post(**over: Any) -> dict[str, Any]:
         "owner_name": "",
         "privacy_note": "",
         "followup_ack_text": "ack",
-        "bd_checkbox_text": "box",
+        "newsletter_checkbox_text": "box",
         "after_mode": "page",
         "after_markdown": "",
         "after_redirect_url": "",

@@ -59,7 +59,7 @@ class WrapUpCounts(NamedTuple):
 
 
 def counts(conference: Conference) -> WrapUpCounts:
-    """Count entrants, winners, nonwinners and Better Developers opt-ins.
+    """Count entrants, winners, nonwinners and Newsletter opt-ins.
 
     Read-only, so the confirmation page can show what wrap-up will do without
     doing any of it.
@@ -69,7 +69,7 @@ def counts(conference: Conference) -> WrapUpCounts:
     winners = entrants.filter(
         id__in=winning_picks(conference).values("entrant_id")
     ).count()
-    optins = entrants.filter(bd_optin_at__isnull=False).count()
+    optins = entrants.filter(newsletter_optin_at__isnull=False).count()
     excluded = entrants.filter(email__in=conference.excluded_emails).count()
     return WrapUpCounts(total, winners, total - winners, optins, excluded)
 
@@ -137,7 +137,7 @@ def _enqueue_entrants(
     """
     tags = conference.tags()
     winner_ids = set(winning_picks(conference).values_list("entrant_id", flat=True))
-    install_text = InstallSettings.get().bd_checkbox_text
+    install_text = InstallSettings.get().newsletter_checkbox_text
     subscribers: list[dict[str, object]] = []
     events: list[dict[str, object]] = []
     skipped = 0
@@ -149,16 +149,16 @@ def _enqueue_entrants(
             tags.all,
             tags.winner if entrant.pk in winner_ids else tags.nonwinner,
         ]
-        optin = entrant.bd_optin_at is not None
+        optin = entrant.newsletter_optin_at is not None
         if optin:
-            entrant_tags.append(tags.bd_optin)
+            entrant_tags.append(tags.newsletter_optin)
         try:
             subscriber = SubscriberPayload.from_entrant(
                 entrant,
                 tags=entrant_tags,
                 # The wording this person actually saw; the install's current
                 # text only if the record somehow has none.
-                consent_message=(entrant.bd_optin_text or install_text)
+                consent_message=(entrant.newsletter_optin_text or install_text)
                 if optin
                 else None,
             )

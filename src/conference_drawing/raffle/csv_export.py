@@ -51,8 +51,8 @@ class CsvRow(BaseModel):
     digital_codes: list[str] = Field(default_factory=list)
     digital_urls: list[str] = Field(default_factory=list)
     followup_ack_at: str
-    bd_optin: Literal["yes", "no"]
-    bd_optin_at: str
+    newsletter_optin: Literal["yes", "no"]
+    newsletter_optin_at: str
 
 
 def _iso(value: object, tz: str) -> str:
@@ -111,8 +111,8 @@ def export_rows(conference: Conference) -> list[CsvRow]:
                 digital_codes=[c for _, c, _ in cells if c],
                 digital_urls=[u for _, _, u in cells if u],
                 followup_ack_at=_iso(entrant.followup_ack_at, tz),
-                bd_optin="yes" if entrant.bd_optin_at else "no",
-                bd_optin_at=_iso(entrant.bd_optin_at, tz),
+                newsletter_optin="yes" if entrant.newsletter_optin_at else "no",
+                newsletter_optin_at=_iso(entrant.newsletter_optin_at, tz),
             )
         )
     return rows
@@ -122,7 +122,7 @@ def write_csv(rows: list[CsvRow], questions: list[Question], out: TextIO) -> Non
     """Write `rows` to `out` as CSV, one answer column per question in order.
 
     Columns: name, email, entered_at, <question keys by position>, status, won,
-    digital_codes, digital_urls, followup_ack_at, bd_optin, bd_optin_at.
+    digital_codes, digital_urls, followup_ack_at, newsletter_optin, newsletter_optin_at.
     `out` should be opened with `newline=""` so embedded line breaks survive.
     """
     keys = [q.key for q in sorted(questions, key=lambda q: (q.position, q.id))]
@@ -138,8 +138,8 @@ def write_csv(rows: list[CsvRow], questions: list[Question], out: TextIO) -> Non
             "digital_codes",
             "digital_urls",
             "followup_ack_at",
-            "bd_optin",
-            "bd_optin_at",
+            "newsletter_optin",
+            "newsletter_optin_at",
         ]
     )
     for row in rows:
@@ -156,8 +156,8 @@ def write_csv(rows: list[CsvRow], questions: list[Question], out: TextIO) -> Non
                     _JOIN.join(row.digital_codes),
                     _JOIN.join(row.digital_urls),
                     row.followup_ack_at,
-                    row.bd_optin,
-                    row.bd_optin_at,
+                    row.newsletter_optin,
+                    row.newsletter_optin_at,
                 )
             ]
         )

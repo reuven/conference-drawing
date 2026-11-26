@@ -42,7 +42,7 @@ def test_install_settings_is_a_singleton_with_default_copy(db: None) -> None:
         first.followup_ack_text
         == "Entering means one follow-up email from me after the conference."
     )
-    assert first.bd_checkbox_text == "Also subscribe me to Better Developers"
+    assert first.newsletter_checkbox_text == "Also subscribe me to Better Developers"
 
 
 def test_install_settings_save_always_uses_pk_one(db: None) -> None:
@@ -81,9 +81,9 @@ def test_conference_tags_follow_scheme(conference_factory: Factory) -> None:
         "pycon-us-2027-raffle",
         "pycon-us-2027-raffle-winner",
         "pycon-us-2027-raffle-nonwinner",
-        "pycon-us-2027-bd-optin",
+        "pycon-us-2027-newsletter-optin",
     )
-    assert c.tags().bd_optin == "pycon-us-2027-bd-optin"
+    assert c.tags().newsletter_optin == "pycon-us-2027-newsletter-optin"
 
 
 def test_unknown_time_zone_rejected(conference_factory: Factory) -> None:
@@ -274,7 +274,7 @@ def test_entrant_email_normalized_on_save(
     e = entrant_factory(conference_factory(), email="  Alice@Example.COM ")
     e.refresh_from_db()
     assert e.email == "alice@example.com"
-    assert e.bd_optin_at is None
+    assert e.newsletter_optin_at is None
     assert e.answers == {}
     assert str(e) == e.name
 

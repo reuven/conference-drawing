@@ -76,7 +76,10 @@ def test_tags_per_entrant(
     digital = entrant_factory(conference, email="dig@example.com")
     lost = entrant_factory(conference, email="lost@example.com")
     entrant_factory(
-        conference, email="opt@example.com", bd_optin_at=OPTIN, bd_optin_text=CONSENT
+        conference,
+        email="opt@example.com",
+        newsletter_optin_at=OPTIN,
+        newsletter_optin_text=CONSENT,
     )
     give_pick(conference, won, Pick.Status.CLAIMED)
     give_pick(conference, digital, Pick.Status.DIGITAL)
@@ -93,7 +96,7 @@ def test_tags_per_entrant(
     assert subs["opt@example.com"]["tags"] == [
         "pycon-raffle",
         "pycon-raffle-nonwinner",
-        "pycon-bd-optin",
+        "pycon-newsletter-optin",
     ]
     assert (result.entrants, result.winners, result.jobs) == (4, 2, 5)
 
@@ -114,9 +117,12 @@ def test_winner_in_another_conference_does_not_count(
 def test_eu_consent_only_for_optins(
     conference: Conference, entrant_factory: Callable[..., Entrant]
 ) -> None:
-    InstallSettings.objects.create(bd_checkbox_text=CONSENT)
+    InstallSettings.objects.create(newsletter_checkbox_text=CONSENT)
     entrant_factory(
-        conference, email="in@example.com", bd_optin_at=OPTIN, bd_optin_text=CONSENT
+        conference,
+        email="in@example.com",
+        newsletter_optin_at=OPTIN,
+        newsletter_optin_text=CONSENT,
     )
     entrant_factory(conference, email="out@example.com")
     wrap_up(conference, now=NOW)
@@ -131,8 +137,8 @@ def test_eu_consent_only_for_optins(
 def test_optin_without_recorded_text_uses_install_text(
     conference: Conference, entrant_factory: Callable[..., Entrant]
 ) -> None:
-    InstallSettings.objects.create(bd_checkbox_text="Install wording")
-    entrant_factory(conference, email="in@example.com", bd_optin_at=OPTIN)
+    InstallSettings.objects.create(newsletter_checkbox_text="Install wording")
+    entrant_factory(conference, email="in@example.com", newsletter_optin_at=OPTIN)
     wrap_up(conference, now=NOW)
     assert _subscribers()["in@example.com"]["eu_consent_message"] == "Install wording"
 
@@ -297,7 +303,9 @@ def test_confirmation_page_shows_counts_without_enqueueing(
     give_pick: Callable[[Conference, Entrant, Pick.Status], None],
 ) -> None:
     winner = entrant_factory(conference)
-    entrant_factory(conference, bd_optin_at=OPTIN, bd_optin_text=CONSENT)
+    entrant_factory(
+        conference, newsletter_optin_at=OPTIN, newsletter_optin_text=CONSENT
+    )
     entrant_factory(conference)
     give_pick(conference, winner, Pick.Status.CLAIMED)
     page = owner.get(reverse("booth-wrapup", args=["pycon"]))
@@ -306,7 +314,7 @@ def test_confirmation_page_shows_counts_without_enqueueing(
     assert "<dt>Entrants</dt><dd>3</dd>" in body
     assert "<dt>Winners</dt><dd>1</dd>" in body
     assert "<dt>Nonwinners</dt><dd>2</dd>" in body
-    assert "<dt>Better Developers opt-ins</dt><dd>1</dd>" in body
+    assert "<dt>Newsletter opt-ins</dt><dd>1</dd>" in body
     assert "handed to Drip" in body
     assert not OutboxJob.objects.exists()
     conference.refresh_from_db()

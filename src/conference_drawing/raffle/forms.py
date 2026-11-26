@@ -53,7 +53,7 @@ class EntryForm(forms.Form):
         error_messages={"invalid": "Please enter a valid email address."},
     )
     followup_ack = forms.BooleanField(required=True)
-    bd_optin = forms.BooleanField(required=False, initial=False)
+    newsletter_optin = forms.BooleanField(required=False, initial=False)
     # Honeypot: hidden from people by CSS, irresistible to form-filling bots.
     # Not named like anything browser autofill fills (website, url, company),
     # so a real person's autofill can't trip it.
@@ -64,7 +64,7 @@ class EntryForm(forms.Form):
         self.conference = conference
         self.install = InstallSettings.get()
         self.fields["followup_ack"].label = self.install.followup_ack_text
-        self.fields["bd_optin"].label = self.install.bd_checkbox_text
+        self.fields["newsletter_optin"].label = self.install.newsletter_checkbox_text
         self.fields["leave_blank"].label = "Leave this field empty"
         self.fields["leave_blank"].widget.attrs.update(
             {"autocomplete": "off", "tabindex": "-1"}
@@ -152,7 +152,7 @@ class EntryForm(forms.Form):
             for q in self.questions
             if self.cleaned_data.get(f"q_{q.key}")
         }
-        opted_in: bool = self.cleaned_data["bd_optin"]
+        opted_in: bool = self.cleaned_data["newsletter_optin"]
         entrant = Entrant(
             conference=self.conference,
             name=self.cleaned_data["name"],
@@ -160,8 +160,10 @@ class EntryForm(forms.Form):
             answers=answers,
             followup_ack_text=self.install.followup_ack_text,
             followup_ack_at=now,
-            bd_optin_text=self.install.bd_checkbox_text if opted_in else "",
-            bd_optin_at=now if opted_in else None,
+            newsletter_optin_text=self.install.newsletter_checkbox_text
+            if opted_in
+            else "",
+            newsletter_optin_at=now if opted_in else None,
             created_at=now,
         )
         try:

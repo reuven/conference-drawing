@@ -35,8 +35,8 @@ FIXED_TAIL = [
     "digital_codes",
     "digital_urls",
     "followup_ack_at",
-    "bd_optin",
-    "bd_optin_at",
+    "newsletter_optin",
+    "newsletter_optin_at",
 ]
 
 
@@ -160,21 +160,21 @@ def test_times_in_conference_zone(
         conf,
         created_at=datetime.datetime(2027, 5, 11, 20, 30, tzinfo=datetime.UTC),
         followup_ack_at=datetime.datetime(2027, 5, 11, 20, 31, tzinfo=datetime.UTC),
-        bd_optin_at=datetime.datetime(2027, 5, 11, 20, 32, tzinfo=datetime.UTC),
+        newsletter_optin_at=datetime.datetime(2027, 5, 11, 20, 32, tzinfo=datetime.UTC),
     )
     entrant_factory(
         conf,
         created_at=datetime.datetime(2027, 5, 11, 21, 0, tzinfo=datetime.UTC),
-        bd_optin_at=None,
+        newsletter_optin_at=None,
     )
     head, first, second = _read(conf)
     col = {h: i for i, h in enumerate(head)}
     assert first[col["entered_at"]] == "2027-05-11T13:30:00-07:00"
     assert first[col["followup_ack_at"]] == "2027-05-11T13:31:00-07:00"
-    assert first[col["bd_optin_at"]] == "2027-05-11T13:32:00-07:00"
-    assert first[col["bd_optin"]] == "yes"
-    assert second[col["bd_optin_at"]] == ""
-    assert second[col["bd_optin"]] == "no"
+    assert first[col["newsletter_optin_at"]] == "2027-05-11T13:32:00-07:00"
+    assert first[col["newsletter_optin"]] == "yes"
+    assert second[col["newsletter_optin_at"]] == ""
+    assert second[col["newsletter_optin"]] == "no"
 
 
 @pytest.mark.parametrize("bad", ["=1+1", "+x", "-x", "@x", "\tx", "\rx"])
@@ -197,14 +197,14 @@ def test_neutralize_leaves_safe_text() -> None:
 
 
 def test_csv_row_rejects_bad_optin() -> None:
-    with pytest.raises(ValueError, match="bd_optin"):
+    with pytest.raises(ValueError, match="newsletter_optin"):
         CsvRow(
             name="a",
             email="a@example.com",
             entered_at="",
             followup_ack_at="",
-            bd_optin="maybe",  # type: ignore[arg-type]
-            bd_optin_at="",
+            newsletter_optin="maybe",  # type: ignore[arg-type]
+            newsletter_optin_at="",
             status="winner",
         )
 

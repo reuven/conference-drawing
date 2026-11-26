@@ -59,8 +59,8 @@ def test_form_rejects_addresses_drip_would_refuse(
     assert form.errors["email"] == ["Please enter a valid email address."]
 
 
-def test_bd_optin_unchecked_by_default(conference: Conference) -> None:
-    html = str(EntryForm(conference)["bd_optin"])
+def test_newsletter_optin_unchecked_by_default(conference: Conference) -> None:
+    html = str(EntryForm(conference)["newsletter_optin"])
     assert "checkbox" in html
     assert "checked" not in html
 
@@ -114,7 +114,7 @@ def test_name_rejects_unsafe_values(conference: Conference, name: str) -> None:
 def test_consent_texts_and_timestamps_recorded(conference: Conference) -> None:
     install = InstallSettings.get()
     install.followup_ack_text = "Custom ack."
-    install.bd_checkbox_text = "Custom BD."
+    install.newsletter_checkbox_text = "Custom BD."
     install.save()
 
     e1 = _enter(conference)
@@ -122,20 +122,20 @@ def test_consent_texts_and_timestamps_recorded(conference: Conference) -> None:
     assert e1.followup_ack_text == "Custom ack."
     assert e1.followup_ack_at == NOW
     assert e1.created_at == NOW
-    assert e1.bd_optin_at is None
-    assert e1.bd_optin_text == ""
+    assert e1.newsletter_optin_at is None
+    assert e1.newsletter_optin_text == ""
 
-    e2 = _enter(conference, email="b@example.com", bd_optin="on")
+    e2 = _enter(conference, email="b@example.com", newsletter_optin="on")
     assert e2 is not None
-    assert e2.bd_optin_at == NOW
-    assert e2.bd_optin_text == "Custom BD."
+    assert e2.newsletter_optin_at == NOW
+    assert e2.newsletter_optin_text == "Custom BD."
 
 
 def test_form_labels_use_install_texts(conference: Conference) -> None:
     install = InstallSettings.get()
     form = EntryForm(conference)
     assert form.fields["followup_ack"].label == install.followup_ack_text
-    assert form.fields["bd_optin"].label == install.bd_checkbox_text
+    assert form.fields["newsletter_optin"].label == install.newsletter_checkbox_text
 
 
 def test_repeat_entry_with_case_variant_does_not_duplicate(
@@ -275,8 +275,8 @@ def test_unknown_and_server_side_keys_cannot_be_mass_assigned(
         q_want_to_learn="Async",
         answers='{"evil": 1}',
         followup_ack_text="I agree to anything",
-        bd_optin_text="forged consent",
-        bd_optin_at="2000-01-01T00:00:00Z",
+        newsletter_optin_text="forged consent",
+        newsletter_optin_at="2000-01-01T00:00:00Z",
         conference=str(other.pk),
         created_at="2000-01-01T00:00:00Z",
     )
@@ -289,7 +289,7 @@ def test_unknown_and_server_side_keys_cannot_be_mass_assigned(
     assert entrant.answers == {"want_to_learn": "Async"}
     assert entrant.conference_id == conference.pk
     assert entrant.followup_ack_text == install.followup_ack_text
-    assert (entrant.bd_optin_text, entrant.bd_optin_at) == ("", None)
+    assert (entrant.newsletter_optin_text, entrant.newsletter_optin_at) == ("", None)
     assert entrant.created_at == NOW
 
 
