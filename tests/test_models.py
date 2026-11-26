@@ -538,3 +538,23 @@ def test_validate_time_zone_refuses_a_bare_city_name() -> None:
     with pytest.raises(ValidationError, match="Unknown time zone: 'Jerusalem'"):
         validate_time_zone("Jerusalem")
     validate_time_zone("Asia/Jerusalem")
+
+
+@pytest.mark.parametrize("word", ["login", "logout", "drawing", "pick"])
+def test_reserved_slug_is_refused_by_name(
+    word: str, conference_factory: Factory
+) -> None:
+    """These words are booth URL segments, so a conference can't take them."""
+    conf = conference_factory(slug="fine-slug")
+    conf.slug = word
+    with pytest.raises(ValidationError, match=f"\u201c{word}\u201d is reserved"):
+        conf.full_clean()
+
+
+@pytest.mark.parametrize("slug", ["pick-up-2027", "login-day"])
+def test_slug_containing_a_reserved_word_is_fine(
+    slug: str, conference_factory: Factory
+) -> None:
+    conf = conference_factory(slug="fine-slug")
+    conf.slug = slug
+    conf.full_clean()

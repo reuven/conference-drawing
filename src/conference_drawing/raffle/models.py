@@ -53,6 +53,24 @@ _slug_validator = RegexValidator(
     _SLUG_RE, "Use lowercase letters, digits and single hyphens."
 )
 
+# Booth URL segments that sit beside /booth/<slug>/; a conference with one of
+# these slugs would be shadowed by (or shadow) the sign-in and action routes.
+RESERVED_SLUGS = frozenset({"login", "logout", "drawing", "pick"})
+
+
+def validate_slug_not_reserved(value: str) -> None:
+    """Refuse a slug that a fixed /booth/ route already owns.
+
+    Why: ``/booth/login/`` must always be the sign-in page, never a conference.
+    """
+    if value in RESERVED_SLUGS:
+        raise ValidationError(
+            "\u201c%(word)s\u201d is reserved; choose another slug.",
+            code="reserved_slug",
+            params={"word": value},
+        )
+
+
 # Question keys: the default ones use underscores (want_to_learn).
 _QUESTION_KEY_RE = re.compile(r"\A[a-z0-9]+([_-][a-z0-9]+)*\Z")
 
@@ -278,7 +296,11 @@ class Conference(models.Model):
     """One event at which drawings are run; owns its entrants and settings."""
 
     name = models.CharField(max_length=200, validators=[validate_label])
-    slug = models.CharField(max_length=60, unique=True, validators=[_slug_validator])
+    slug = models.CharField(
+        max_length=60,
+        unique=True,
+        validators=[_slug_validator, validate_slug_not_reserved],
+    )
     time_zone = models.CharField(
         max_length=64,
         choices=time_zone_choices,
