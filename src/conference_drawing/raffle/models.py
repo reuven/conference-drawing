@@ -91,6 +91,11 @@ def validate_question_key(value: str) -> None:
         )
 
 
+# Browsers always empty a file picker when a form comes back with errors, so
+# every file field says so; nothing else on the form is lost.
+CHOOSE_FILE_AGAIN = "If a save fails, choose the file again."
+
+
 def validate_time_zone(value: str) -> None:
     """Reject anything that is not an IANA zone name known to this system."""
     if value not in zoneinfo.available_timezones():
@@ -212,7 +217,7 @@ class InstallSettings(models.Model):
         default="",
         db_default="",
         validators=[validate_logo],
-        help_text="PNG, JPEG, WebP or GIF, up to 2 MB.",
+        help_text="PNG, JPEG, WebP or GIF, up to 2 MB. " + CHOOSE_FILE_AGAIN,
     )
     after_markdown = models.TextField(
         blank=True,
@@ -259,7 +264,9 @@ class Book(models.Model):
     """A book that can be a prize; reused across conferences."""
 
     title = models.CharField(max_length=200, validators=[validate_label])
-    cover = models.ImageField(upload_to="covers/", blank=True)
+    cover = models.ImageField(
+        upload_to="covers/", blank=True, help_text=CHOOSE_FILE_AGAIN
+    )
     link = models.URLField(blank=True)
 
     def __str__(self) -> str:
@@ -296,7 +303,7 @@ class Conference(models.Model):
         default="",
         db_default="",
         validators=[validate_logo],
-        help_text="PNG, JPEG, WebP or GIF, up to 2 MB.",
+        help_text="PNG, JPEG, WebP or GIF, up to 2 MB. " + CHOOSE_FILE_AGAIN,
     )
     after_markdown = models.TextField(
         blank=True,

@@ -1234,3 +1234,24 @@ def test_admin_pages_load_the_form_helper_and_keep_their_header(
     html = admin_client.get(reverse("admin:raffle_conference_add")).content.decode()
     assert 'src="/static/raffle/admin-forms.js" defer' in html
     assert 'id="site-name"' in html  # Django's own base_site is still extended
+
+
+FILE_AGAIN = "If a save fails, choose the file again."
+
+
+@pytest.mark.parametrize(
+    "url_name", ["admin:raffle_conference_add", "admin:raffle_book_add"]
+)
+def test_file_fields_say_to_choose_the_file_again_after_a_failed_save(
+    admin_client: Client, url_name: str
+) -> None:
+    # Browsers always clear a file picker when a form comes back with errors.
+    assert FILE_AGAIN in admin_client.get(reverse(url_name)).content.decode()
+
+
+def test_install_settings_logo_says_to_choose_the_file_again(
+    admin_client: Client,
+) -> None:
+    install = InstallSettings.get()
+    url = reverse("admin:raffle_installsettings_change", args=[install.pk])
+    assert FILE_AGAIN in admin_client.get(url).content.decode()
