@@ -44,16 +44,33 @@ their own phone. At set times we draw winners at random.
   so more people get a chance.
 - **"Ebook winners get an email."** No need to stay for those.
 
+## Signing in
+
+If the organizer asked you to run drawings on your own phone, they will give
+you an account: a username (or your email address) and a password.
+
+1. Open the booth address the organizer gave you, which ends in `/booth/`. If
+   you aren't signed in, you land on **Booth sign in**.
+2. Type your username or email address and your password, and tap **Sign in**.
+3. Tap the conference. You will see only the conferences you were added to.
+4. When you're done, tap **Sign out** at the bottom of the page.
+
+You can start and close drawings and mark winners **Claimed** or **Not here**.
+The organizer does the rest (wrapping up, the list of entrants). Once the
+organizer wraps up a conference, it disappears from your list. Forgot your
+password, or a page says "not found" when it shouldn't? Ask the organizer.
+
 ## During a drawing
 
-The organizer starts the drawing on their phone, and the winners' names
-appear there (and on the booth screen, if there is one). For a printed book:
+The organizer, or a helper who has signed in, starts the drawing on their
+phone, and the winners' names appear there (and on the booth screen, if there
+is one). For a printed book:
 
 1. Call the name out.
-2. If the person comes forward, hand over the book. The organizer marks it
-   **Claimed**.
-3. If nobody comes forward after a reasonable wait, the organizer taps **Not
-   here**, and a new name is drawn right away.
+2. If the person comes forward, hand over the book. Whoever runs
+   the drawing taps **Claimed**.
+3. If nobody comes forward after a reasonable wait, whoever runs
+   the drawing taps **Not here**, and a new name is drawn right away.
 
 ## Common questions
 
