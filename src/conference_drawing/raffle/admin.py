@@ -6,6 +6,7 @@ from typing import Any
 from django import forms
 from django.contrib import admin, messages
 from django.contrib.admin.widgets import AdminSplitDateTime
+from django.contrib.auth import get_user_model
 from django.db.models import Count, Q, QuerySet
 from django.http import HttpRequest
 from django.urls import reverse
@@ -133,6 +134,7 @@ class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
                     "name",
                     "slug",
                     "pages",
+                    "helpers",
                     "time_zone",
                     "booth_location",
                     "starts_on",
@@ -153,7 +155,23 @@ class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
             },
         ),
     )
+    filter_horizontal = ("helpers",)
     inlines = [QuestionInline]
+
+    def formfield_for_manytomany(
+        self, db_field: Any, request: HttpRequest, **kwargs: Any
+    ) -> Any:
+        """Offer only people who can be helpers: active, and not owners.
+
+        Superusers are owners already; an inactive account can't sign in.
+        """
+        if db_field.name == "helpers":
+            kwargs["queryset"] = (
+                get_user_model()
+                .objects.filter(is_active=True, is_superuser=False)
+                .order_by("username")
+            )
+        return super().formfield_for_manytomany(db_field, request, **kwargs)
 
     @admin.display(description="Pages")
     def pages(self, obj: Conference | None) -> Any:

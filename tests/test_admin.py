@@ -1279,3 +1279,28 @@ def test_new_conference_says_links_come_after_saving(admin_client: Client) -> No
 def test_admin_header_links_to_the_booth(admin_client: Client) -> None:
     html = admin_client.get(reverse("admin:index")).content.decode()
     assert f'<a href="{reverse("booth-home")}">Booth</a>' in html
+
+
+def test_conference_admin_offers_only_active_non_superusers_as_helpers(
+    admin_client: Client,
+) -> None:
+    user_model = get_user_model()
+    user_model.objects.create_user("plain", "plain@example.com", "pw")
+    user_model.objects.create_user(
+        "staffer", "staffer@example.com", "pw", is_staff=True
+    )
+    user_model.objects.create_user("gone", "gone@example.com", "pw", is_active=False)
+    resp = admin_client.get(reverse("admin:raffle_conference_add"))
+    offered = [
+        u.username for u in resp.context["adminform"].form.fields["helpers"].queryset
+    ]
+    assert offered == ["plain", "staffer"]
+
+
+def test_saving_helpers_on_a_conference(admin_client: Client) -> None:
+    helper = get_user_model().objects.create_user("plain", "plain@example.com", "pw")
+    resp = admin_client.post(
+        reverse("admin:raffle_conference_add"), _conference_post(helpers=[helper.pk])
+    )
+    assert resp.status_code == 302
+    assert list(Conference.objects.get(slug="pycon").helpers.all()) == [helper]
