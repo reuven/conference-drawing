@@ -5,7 +5,8 @@ scan a QR code and enter on their phones; you run the drawings from your own
 phone at the booth; afterward the entrants go to
 [Drip](https://www.drip.com/) with tags, and Drip sends the follow-up email.
 
-One install has one owner and serves one conference after another.
+One install has one owner and serves one conference after another. The owner
+can add helpers who sign in to run a conference's drawings.
 
 What it does:
 
