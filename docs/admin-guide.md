@@ -25,8 +25,10 @@ In the admin, open **Install settings**:
   The page always starts with "We keep your entry until the organizer
   deletes it."
 - **Followup ack text**: the required checkbox on the entry form (by default
-  "Entering means one follow-up email from me after the conference.").
-- **Bd checkbox text**: the optional newsletter opt-in checkbox on the form.
+  "Entering means one follow-up email after the conference.").
+- **Newsletter checkbox text**: the optional newsletter opt-in checkbox on
+  the form, in your own words. It starts blank, and while it is blank (or only
+  spaces) the form shows no newsletter checkbox at all.
 - **After a conference**: what people see once a conference is over (see
   [After a conference](#after-a-conference)).
 
@@ -53,8 +55,8 @@ Add a conference:
   line. Excluded people can enter (handy for testing the form) but never win
   and are never sent to Drip.
 
-Three optional entry questions are created for you; edit or remove them on
-the conference page. Once the conference is saved, its **Pages** row links to
+A new conference starts with no entry questions; add any you want on the
+conference page. Pick its **Helpers** there too ([see below](#helpers)). Once the conference is saved, its **Pages** row links to
 its booth page, its printable flyer, and its entry page.
 
 If you follow a link away from a form you've typed into, the browser asks
@@ -114,11 +116,33 @@ Who can be picked:
 - Someone marked **Not here** can still win a later drawing.
 - People on the exclusion list never win.
 
-**Helpers.** To let someone else run drawings on their own phone, add a user
-in the admin (**Users**) and tick **Staff status**, without giving them any
-permissions. They can then sign in and use every booth page, but change
-nothing in the admin. Every booth page includes **Wrap up** and **Delete
-entrants**, so only give an account to someone you trust with those.
+### Helpers
+
+To let someone else run drawings on their own phone:
+
+1. In the admin, open **Users** and add a user with a username and password.
+   Leave **Staff status** and **Superuser status** unticked: a helper never
+   needs the admin.
+2. Open the conference and, in **Helpers**, move that user from the left list
+   to the right. Save. (The list shows active accounts that aren't
+   superusers.)
+3. Give them the username (or email address) and password. They sign in at
+   `/booth/login/` and see only the conferences you listed them on.
+
+A helper can open the conference's booth page, the booth display link and the
+flyer; start and close drawings; and tap **Claimed**, **Not here**, or undo.
+They can't see or use **Download CSV**, **Wrap up**, **Delete entrants**, or
+the Drip status and **Retry failed**, and those addresses show them "not
+found". Only you, as a superuser, can.
+
+A helper's access ends when you take them out of **Helpers**, when you
+deactivate the account, or when the conference is wrapped up. If you later
+deactivate a helper or make them a superuser, the next save of that
+conference removes them from its Helpers list; reactivating the account
+doesn't put them back, so add them again. Passwords are reset on the server
+([Passwords and logins](server-setup.md#passwords-and-logins)). Signing in
+tries 10 times a minute per address. Each booth page has a **Sign out**
+button.
 
 ## After the last drawing
 
