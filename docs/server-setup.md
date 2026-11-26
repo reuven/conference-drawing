@@ -208,8 +208,8 @@ deleted when the backup was taken (see the
 removes old ones for you.
 
 **Starting a new server from a backup.** `--restore` loads a backup into a
-**fresh** install, so the new site starts with the old one's books, prizes,
-and codes:
+**fresh** install (run `down.sh` first if the app is already there), so the
+new site starts with the old one's books, prizes, and codes:
 
 ```sh
 deploy/up.sh <server> <domain> --restore backups/<file>.tar.gz

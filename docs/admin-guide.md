@@ -146,7 +146,8 @@ conference** section with four fields:
 
 - **Mode**: *page* shows the logo and text below; *redirect* sends visitors
   to the redirect URL. A conference can also *inherit* the site's mode.
-- **Logo**: PNG, JPEG, WebP, or GIF, at most 2 MB.
+- **Logo**: PNG, JPEG, WebP, or GIF, at most 2 MB. SVG is refused (it can
+  carry scripts).
 - **Markdown**: your text, at most 20,000 characters. Links (https, http, and
   mailto) work; raw HTML and images don't, so put images in the logo field.
 - **Redirect URL**: `https` only, for example `https://example.com/books`.
