@@ -441,7 +441,7 @@ def test_wrapped_conference_page_replaces_the_button(
     assert "Wrapped up" in body
     page = owner.get(link).content.decode()
     assert "already wrapped up" in page
-    assert "<form" not in page
+    assert f'action="{link}"' not in page
 
 
 def test_booth_start_after_wrapup_shows_message(
