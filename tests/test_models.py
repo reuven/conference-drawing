@@ -24,6 +24,7 @@ from conference_drawing.raffle.models import (
     PrizeLine,
     Question,
     create_default_questions,
+    validate_time_zone,
 )
 
 Factory = Callable[..., Any]
@@ -529,3 +530,11 @@ def test_outbox_job_defaults(conference_factory: Factory) -> None:
     assert job.last_error_class == ""
     assert job.next_attempt_at is not None
     assert str(job) == f"event job {job.pk} (pending)"
+
+
+def test_validate_time_zone_refuses_a_bare_city_name() -> None:
+    # The dropdown's choices now refuse bad values first, but migrations
+    # reference this validator, and it still guards the field on its own.
+    with pytest.raises(ValidationError, match="Unknown time zone: 'Jerusalem'"):
+        validate_time_zone("Jerusalem")
+    validate_time_zone("Asia/Jerusalem")
