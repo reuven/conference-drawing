@@ -149,25 +149,34 @@ out of the admin once (0.2 did, because the login method changed).
 
 **Rolling back.** The previous version stays on the server for one release.
 Database changes in this app only ever add, so the previous version runs on
-the new database. On the server, as root:
+the new database.
+
+From 0.3 back to 0.2.x, first deal with the Helpers lists. They stay in the
+database and 0.2 doesn't know about them, so after a plain rollback, deleting
+a conference, or a user who is on a Helpers list, fails. While 0.3 is still
+running, do one of these:
+
+- In the admin, empty the **Helpers** list of every conference. 0.2's admin
+  has no Helpers field, so this can't be done after the rollback.
+- Or undo 0.3's database changes. This deletes every Helpers list, and
+  upgrading to 0.3 again starts with them empty, so note who was on them
+  first. As root, while `venv` still points at 0.3:
+
+  ```sh
+  systemctl stop conference-drawing-snapshot.timer conference-drawing-web.socket conference-drawing-web conference-drawing-drip
+  cd / && runuser -u conference-drawing -- env \
+    CD_ENV_FILE=/srv/conference-drawing/data/.env \
+    CD_DATA_DIR=/srv/conference-drawing/data CD_DB_HOST=/var/run/postgresql \
+    /srv/conference-drawing/venv/bin/conference-drawing migrate raffle 0008
+  ```
+
+Then, on the server, as root:
 
 ```sh
 ls -d /srv/conference-drawing/venv-*        # the newest is current
 ln -sfn venv-<previous> /srv/conference-drawing/venv
+systemctl start conference-drawing-web.socket conference-drawing-web conference-drawing-drip conference-drawing-snapshot.timer
 systemctl restart conference-drawing-web conference-drawing-drip
-```
-
-One catch after rolling back to 0.2.x: deleting a conference or a user that
-has helpers fails, because 0.3's helpers table is still in the database. Either
-remove the helpers from the conference first, or migrate back to the last 0.2
-migration (`0008`) before you switch the link back, while 0.3 is still the
-current version:
-
-```sh
-runuser -u conference-drawing -- env \
-  CD_ENV_FILE=/srv/conference-drawing/data/.env \
-  CD_DATA_DIR=/srv/conference-drawing/data CD_DB_HOST=/var/run/postgresql \
-  /srv/conference-drawing/venv/bin/conference-drawing migrate raffle 0008
 ```
 
 ## Changing a setting on the server
