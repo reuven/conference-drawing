@@ -1,10 +1,17 @@
 import datetime
+import zoneinfo
 from zoneinfo import ZoneInfo
 
 from hypothesis import given
 from hypothesis import strategies as st
 
-from conference_drawing.raffle.timezones import to_local, to_utc
+from conference_drawing.raffle.timezones import (
+    REGIONS,
+    group_time_zones,
+    time_zone_choices,
+    to_local,
+    to_utc,
+)
 
 UTC = datetime.UTC
 LA = "America/Los_Angeles"
@@ -42,3 +49,74 @@ def test_utc_instant_survives_local_round_trip(
     # to_local never changes the instant, and to_utc always returns UTC.
     assert to_local(utc, tz) == utc
     assert to_utc(naive, tz).utcoffset() == datetime.timedelta(0)
+
+
+# --- the time zone dropdown ---------------------------------------------------
+
+ALL_ZONES = sorted(zoneinfo.available_timezones())
+
+
+Choices = dict[str, str | dict[str, str]]
+
+
+def _flat(choices: Choices) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key, value in choices.items():
+        if isinstance(value, dict):
+            out.update(value)
+        else:
+            out[key] = value
+    return out
+
+
+def _group(choices: Choices, region: str) -> dict[str, str]:
+    group = choices[region]
+    assert isinstance(group, dict)
+    return group
+
+
+def test_choices_label_zones_by_city_under_their_region() -> None:
+    choices = time_zone_choices()
+    assert _group(choices, "Asia")["Asia/Jerusalem"] == "Jerusalem"
+    assert _group(choices, "America")["America/Los_Angeles"] == "Los Angeles"
+    assert (
+        _group(choices, "America")["America/Argentina/Buenos_Aires"]
+        == "Argentina / Buenos Aires"
+    )
+    assert list(choices)[0] == "UTC"
+    assert choices["UTC"] == "UTC"
+
+
+def test_choices_leave_out_legacy_aliases() -> None:
+    flat = _flat(time_zone_choices())
+    for alias in ("US/Eastern", "Etc/GMT+3", "EST5EDT", "Israel", "GMT", "Zulu"):
+        assert alias not in flat
+
+
+def test_choices_are_sorted_for_typing_to_jump() -> None:
+    choices = time_zone_choices()
+    groups = [k for k in choices if k != "UTC"]
+    assert groups == sorted(groups)
+    for group in groups:
+        labels = list(_group(choices, group).values())
+        assert labels == sorted(labels, key=str.casefold)
+
+
+@given(
+    st.lists(st.one_of(st.sampled_from(ALL_ZONES), st.text(max_size=30)), max_size=40)
+)
+def test_grouping_keeps_exactly_the_regional_zones(zones: list[str]) -> None:
+    flat = _flat(group_time_zones(zones))
+    expected = {
+        z for z in zones if z == "UTC" or z.split("/", 1)[0] in REGIONS and "/" in z
+    }
+    assert set(flat) == expected
+    assert all(label.strip() for label in flat.values())
+
+
+def test_grouping_reads_a_generator_once() -> None:
+    zones = ["UTC", "Asia/Jerusalem"]
+    assert group_time_zones(z for z in zones) == {
+        "UTC": "UTC",
+        "Asia": {"Asia/Jerusalem": "Jerusalem"},
+    }

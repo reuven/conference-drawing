@@ -102,6 +102,7 @@ only_mutate = [
     "*/raffle/codes.py",
     "*/raffle/text.py",
     "*/raffle/after.py",
+    "*/raffle/timezones.py",
     "*/raffle/markup.py",
     "*/raffle/validators.py",
     "*/auth.py",
