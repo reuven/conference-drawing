@@ -1,4 +1,5 @@
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,18 @@ def test_version_has_all_keys_and_never_500s(
     assert set(body) == {"version", "commit", "commit_short", "built_at", "branch"}
     assert body["commit"] == ""
     assert body["version"] == __version__
+
+
+def test_version_matches_pyproject(
+    client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One source of truth: /version reports what pyproject.toml declares."""
+    monkeypatch.delenv("CD_VERSION_FILE", raising=False)
+    root = Path(__file__).resolve().parent.parent
+    declared = tomllib.loads((root / "pyproject.toml").read_text())["project"][
+        "version"
+    ]
+    assert client.get("/version").json()["version"] == declared
 
 
 def test_version_reads_deploy_file(
