@@ -10,6 +10,7 @@ import zoneinfo
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.files.storage import Storage
 from django.core.validators import (
@@ -322,6 +323,15 @@ class Conference(models.Model):
         db_default="",
         validators=[validate_redirect_url],
         help_text="https only.",
+    )
+    helpers = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        blank=True,
+        related_name="helped_conferences",
+        help_text=(
+            "People who can run this conference's drawings, until it is wrapped "
+            "up. Add accounts under Users."
+        ),
     )
 
     def __str__(self) -> str:

@@ -106,6 +106,7 @@ only_mutate = [
     "*/raffle/markup.py",
     "*/raffle/validators.py",
     "*/auth.py",
+    "*/raffle/access.py",
 ]
 # mutants/ gets a copy of pyproject.toml, so pytest's env (the Postgres test
 # database settings) applies there too. e2e needs a browser, and tests/deploy
