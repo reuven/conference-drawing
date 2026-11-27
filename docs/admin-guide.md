@@ -50,7 +50,16 @@ Add a conference:
 - **Time zone**: click the list and type a city, such as "Denver", to jump
   there. Drawing times are entered and shown in this zone.
 - **Booth location**, shown on the flyer.
-- **Starts on** and **ends on**.
+- **Starts on** and **ends on**. The entry form accepts entries only from the
+  start date through the end date, in the conference's time zone. Before the
+  start date, visitors see an "opens on" page. After the end date, they see
+  the closed page. To try the form before a conference, change the dates
+  temporarily so today falls inside them, then change them back.
+- **Entries per network per hour** (default 60; 0 means no limit). A venue's
+  Wi-Fi, or a mobile carrier's shared address, counts as one network. Raise
+  it for a conference where many people will enter through one address at the
+  same time. Only entries that are actually created count; repeat submissions
+  of an address already entered do not.
 - **Exclusion list**: the email addresses of you and your staff, one per
   line. Excluded people can enter (handy for testing the form) but never win
   and are never sent to Drip.
@@ -138,6 +147,10 @@ They can't see or use **Download CSV**, **Wrap up**, **Delete entrants**, or
 the Drip status and **Retry failed**, and those addresses show them "not
 found". Only you, as a superuser, can.
 
+A helper can start a drawing from 15 minutes before its scheduled time. You,
+as the owner, can start it earlier: the app shows a confirmation screen
+first.
+
 Because helpers see the booth display link, consider rotating it after
 someone stops helping: select the conference in the admin and run **Rotate
 display token** (see [The booth display](#5-the-booth-display-optional)). The
@@ -148,9 +161,22 @@ deactivate the account, or when the conference is wrapped up. If you later
 deactivate a helper or make them a superuser, the next save of that
 conference removes them from its Helpers list; reactivating the account
 doesn't put them back, so add them again. Passwords are reset on the server
-([Passwords and logins](server-setup.md#passwords-and-logins)). Signing in
-tries 10 times a minute per address. Each booth page has a **Sign out**
-button.
+([Passwords and logins](server-setup.md#passwords-and-logins)). Each booth
+page has a **Sign out** button.
+
+**Passwords.** A password must be at least 12 characters and pass Django's
+standard checks (not too common, not all digits, not too like the username).
+Existing passwords keep working until they are changed. If you create a
+superuser with `createsuperuser` on the server, it offers to bypass password
+validation. Don't.
+
+**Sign-in lockout.** After 10 failed sign-ins for one account name, that name
+is locked out of both login pages (`/admin/login/` and `/booth/login/`) for 15
+minutes from the latest failure. The window slides: each new failure
+restarts it. A username and an email address are counted separately. The
+tradeoff: someone who knows your username can keep your account locked by
+failing on purpose. A session you are already signed in to is not affected.
+Sign-in attempts are also limited to 10 a minute per address.
 
 **Upgrading from 0.2.x:** before 0.3, a helper was an account with **Staff
 status** ticked. Staff status no longer reaches the booth. Add each of those
@@ -198,6 +224,14 @@ fill in Install settings once and leave conferences blank.
   With nothing set, it shows a short built-in page: your owner name (or
   "Conference raffle") and how to enter, with no list of conferences.
 
+## Drawing history
+
+Every start, claim, "Not here", undo, and void is recorded. In the admin, open
+**Audit events** to read them; the list is read-only. The conference's booth
+page shows undo and void counts, to you only. A slot never redraws someone who
+was already voided for it, so undoing "Not here" and marking it again draws a
+new person.
+
 ## Privacy and personal data
 
 - **What the entry form collects.** Name, email address, answers to the
@@ -205,7 +239,13 @@ fill in Install settings once and leave conferences blank.
   when it was accepted), and, if ticked, the newsletter opt-in (the wording
   shown and when). That box is unchecked by default. Entering the same email
   again changes nothing and shows the same thanks page, so the form can't be
-  used to find out who has entered.
+  used to find out who has entered. Two spellings of one mailbox count as the
+  same person: `ada+1@example.com` and `Ada@example.com` are one entry, and
+  so are the two spellings of an international domain name. Only `+` tags are
+  removed; dots are kept. Anyone can type someone else's email address, and
+  tick the newsletter box for them. The booth form cannot prove who typed an
+  address. Tell people this when they ask, and see
+  [Setting up Drip](drip-setup.md) for what it means there.
 - **Who sees names.** Winners' names appear on your phone and on the booth
   display. The flyer and entry pages never show them. Every page tells search
   engines not to index it, and the server's logs never hold names or emails
@@ -235,7 +275,9 @@ fill in Install settings once and leave conferences blank.
 - **Backups still hold what you deleted.** Anything saved **before** a
   deletion still contains the deleted people until it ages out or you delete
   it. The server's hourly snapshots, and the one taken before each upgrade,
-  keep the newest 48, so deleted entrants can live on there for up to 48
-  hours. Backups on your laptop (`backups/`) never age out and are not
+  are deleted after about 48 hours (they rotate by age, and by count), so
+  deleted entrants can live on there for that long. The web server's access
+  log, which records the address and time of each request, is kept 14 days,
+  also after deletion. The default privacy page says both. Backups on your laptop (`backups/`) never age out and are not
   encrypted: delete entrants **before** taking one you mean to keep, and
   delete old backups yourself.
