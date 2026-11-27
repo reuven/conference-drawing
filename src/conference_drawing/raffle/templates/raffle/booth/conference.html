@@ -15,11 +15,12 @@
 </form>
 {% endif %}
 <ul class="booth-list">
-  {% for drawing, when in drawings %}
+  {% for drawing, when, history_note in drawings %}
   <li>
     <a class="tap" href="{% url 'booth-drawing' drawing.pk %}">
       {{ when }} <span class="state state-{{ drawing.status }}">{{ drawing.get_status_display }}</span>
     </a>
+    {% if is_owner %}<span class="note">{{ history_note }}</span>{% endif %}
   </li>
   {% empty %}
   <li class="note">No drawings scheduled.</li>

@@ -13,10 +13,12 @@ import random
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import redirect_to_login
+from django.db.models import Count, Q
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.template.loader import render_to_string
@@ -45,6 +47,8 @@ from ..draw import (
 from ..drip.config import drip_settings
 from ..drip.outbox import enqueue_won_prize, failed_count, pending_count, requeue_failed
 from ..models import (
+    AuditEvent,
+    Conference,
     CouponCode,
     Drawing,
     Entrant,
@@ -268,22 +272,53 @@ def home(request: HttpRequest) -> HttpResponse:
     )
 
 
+def _history_label(undos: int, voids: int) -> str:
+    """Words for one drawing's counts, e.g. "1 undo, 1 voided"."""
+    return f"{undos} undo{'' if undos == 1 else 's'}, {voids} voided"
+
+
+def _history_counts(
+    conf: Conference, drawing_ids: list[int]
+) -> dict[int, tuple[int, int]]:
+    """Count undos and voided picks per drawing, in one query, for the owner.
+
+    Why: a helper misusing Not here / Undo shows up as a high count here; every
+    drawing is present (0, 0 when untouched) so the page can show it plainly.
+    """
+    rows = (
+        AuditEvent.objects.filter(drawing__conference=conf)
+        .values("drawing_id")
+        .annotate(
+            undos=Count("pk", filter=Q(kind=AuditEvent.Kind.UNDO)),
+            voids=Count("pk", filter=Q(kind=AuditEvent.Kind.VOID)),
+        )
+    )
+    found = {r["drawing_id"]: (r["undos"], r["voids"]) for r in rows}
+    return {pk: found.get(pk, (0, 0)) for pk in drawing_ids}
+
+
 @login_required
 @require_GET
 def conference_page(request: HttpRequest, slug: str) -> HttpResponse:
     """List a conference's drawings with their local times and states."""
     conf = conference_or_404(request.user, slug)
-    drawings = [
-        (d, _local_label(d))
-        for d in Drawing.objects.filter(conference=conf).select_related("conference")
-    ]
+    rows = list(Drawing.objects.filter(conference=conf).select_related("conference"))
     drip_on = drip_settings() is not None
+    owner = is_owner(request.user)
+    extra: dict[str, Any] = {}
+    if owner:
+        extra["history"] = _history_counts(conf, [d.pk for d in rows])
+    drawings = [
+        (d, _local_label(d), _history_label(*extra["history"][d.pk]) if owner else "")
+        for d in rows
+    ]
     return render(
         request,
         "raffle/booth/conference.html",
         {
+            **extra,
             "conference": conf,
-            "is_owner": is_owner(request.user),
+            "is_owner": owner,
             "drawings": drawings,
             "drip_on": drip_on,
             "drip_pending": pending_count(conf) if drip_on else 0,

@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from conference_drawing.raffle.draw import start_drawing
 from conference_drawing.raffle.drip.config import DripSettings, drip_settings
 from conference_drawing.raffle.models import (
+    AuditEvent,
     Conference,
     CouponCode,
     Drawing,
@@ -777,3 +778,47 @@ def test_empty_booth_list_tells_a_helper_to_ask_the_organizer(
     assert "You haven't been added to a conference yet." in page
     assert "Ask the organizer." in page
     assert "No conferences yet." not in page
+
+
+def test_owner_sees_undo_and_void_counts(
+    owner: Client,
+    drawing: Drawing,
+    conference: Conference,
+    prize_line_factory: Callable[..., PrizeLine],
+    entrant_factory: Callable[..., Entrant],
+) -> None:
+    line = _open_drawing(drawing, conference, prize_line_factory, entrant_factory)
+    pick = Pick.objects.get(prize_line=line)
+    owner.post(reverse("booth-not-here", args=[pick.pk]), headers=HX)
+    owner.post(reverse("booth-undo", args=[pick.pk]), headers=HX)
+    page = owner.get(reverse("booth-conference", args=["pycon"]))
+    assert page.context["history"] == {drawing.pk: (1, 1)}
+    assert "1 undo, 1 voided" in page.content.decode()
+
+
+def test_history_counts_are_pluralized_and_zero_when_untouched(
+    owner: Client,
+    drawing: Drawing,
+    drawing_factory: Callable[..., Drawing],
+    conference: Conference,
+) -> None:
+    other = drawing_factory(conference)
+    for _ in range(2):
+        AuditEvent.objects.create(drawing=drawing, kind=AuditEvent.Kind.UNDO)
+    page = owner.get(reverse("booth-conference", args=["pycon"]))
+    html = page.content.decode()
+    assert "2 undos, 0 voided" in html
+    assert "0 undos, 0 voided" in html
+    assert page.context["history"][other.pk] == (0, 0)
+
+
+def test_helper_does_not_see_history_counts(
+    helper: Client,
+    drawing: Drawing,
+) -> None:
+    AuditEvent.objects.create(drawing=drawing, kind=AuditEvent.Kind.UNDO)
+    page = helper.get(reverse("booth-conference", args=["pycon"]))
+    assert "history" not in page.context
+    html = page.content.decode()
+    assert "undo" not in html.lower()
+    assert "voided" not in html
