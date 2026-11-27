@@ -179,6 +179,60 @@ systemctl start conference-drawing-web.socket conference-drawing-web conference-
 systemctl restart conference-drawing-web conference-drawing-drip
 ```
 
+### Upgrading to 0.4
+
+0.4 adds database columns: an `email_key` on each entrant (the lowercased
+mailbox with any `+tag` removed, filled in for existing entrants) and the
+per-network entry limit on each conference. Both are add-only, so 0.3 still
+runs on the new database.
+
+The units are also tighter (see
+[Hardening the services](#hardening-the-services)), and on a PostgreSQL the
+installer set up, PostgreSQL restarts once (see
+[PostgreSQL on the server](#postgresql-on-the-server)). The app restarts with
+it. After the first 0.4 install, check these, in order:
+
+1. `systemctl status conference-drawing-web conference-drawing-drip` shows
+   both active, and `systemctl --failed` lists nothing.
+2. This prints nothing:
+
+   ```sh
+   journalctl -u conference-drawing-web -u conference-drawing-drip -u conference-drawing-snapshot --since "10 min ago" | grep -iE "seccomp|SIGSYS|bad system call|Operation not permitted|Address family"
+   ```
+
+3. Load the site, run a drawing and the wrap-up, and confirm the Drip outbox
+   drains (`outbox_status.sh`) and Drip sends.
+4. Start a snapshot once and check that it exited 0 and left a new file in
+   `data/snapshots/`:
+
+   ```sh
+   systemctl start conference-drawing-snapshot.service
+   ```
+
+5. Look at the units' exposure scores:
+
+   ```sh
+   systemd-analyze verify /etc/systemd/system/conference-drawing-*.service
+   systemd-analyze security conference-drawing-web.service
+   ```
+
+   Run the second command for the Drip and snapshot units too.
+6. If a unit fails on a system call, `journalctl` (or
+   `dmesg | grep -i audit`) names it. Roll back with the steps above.
+7. On a server where the installer put PostgreSQL, this prints 1:
+
+   ```sh
+   grep -c log_min_error_statement /etc/postgresql/*/main/conf.d/conference-drawing.conf
+   ```
+
+   On a PostgreSQL you already had, set it by hand (see below).
+8. After you rotate the Drip key, `.env` on the server has the key once, mode
+   0600, owned by `conference-drawing`, and no `.env.XXXXXX` files beside it.
+
+**Rolling back from 0.4 to 0.3.** Entrants created under 0.3, then carried
+through a rollback and forward again, have no mailbox key. Exclusions still
+match them by exact email, but `+` aliases of them are not caught.
+
 ## Changing a setting on the server
 
 An upgrade only **adds** settings the server's `.env` lacks; it never changes
@@ -217,7 +271,11 @@ may not start with `-`.
 ## Backups
 
 The server takes a database snapshot every hour, and one before each upgrade,
-and keeps the newest 48 in `/srv/conference-drawing/data/snapshots/`.
+and keeps them in `/srv/conference-drawing/data/snapshots/`. Snapshots rotate
+by age and by count: dumps older than 48 hours are deleted before each new
+one, and so are stale partial dumps from a run that died. With an hourly timer
+the oldest snapshot can be up to about 49 hours old. They still exist for that
+long after you delete entrants.
 
 To keep a copy on your laptop:
 
@@ -257,6 +315,26 @@ socket, as a role named `conference-drawing` with no password.
   (refusing a `conference_drawing` database that someone else owns), and
   warns you if that PostgreSQL listens on the network.
 
+The app's error log can quote the statement that failed, and a statement can
+hold an entrant's name or email. So the app wants `log_min_error_statement =
+panic`. On a PostgreSQL the installer set up, its drop-in file has the
+setting, and PostgreSQL restarts once on the 0.4 upgrade, when the drop-in
+gains it. On a PostgreSQL you already had, the installer prints a hint and
+changes nothing: add `log_min_error_statement = panic` yourself.
+
+## Hardening the services
+
+The systemd units run with a small set of powers:
+
+- **Web:** unix sockets only (`AF_UNIX`). It talks to PostgreSQL and to
+  Gunicorn's socket, and nothing else.
+- **Drip worker:** unix sockets, plus IP (`AF_INET`, `AF_INET6`) to reach
+  Drip's API.
+- **Snapshot:** unix sockets only.
+- **All three:** `CapabilityBoundingSet=` (no capabilities),
+  `SystemCallFilter=@system-service`, and `RestrictSUIDSGID=yes`. The web and
+  Drip units also have `ProtectProc=invisible`. The snapshot unit does not.
+
 ## Logs
 
 - The app's own logs (`journalctl -u conference-drawing-web`, and `-drip` for
@@ -267,7 +345,9 @@ socket, as a role named `conference-drawing` with no password.
   `/var/log/caddy/conference-drawing.access.log`. It records each visitor's IP
   address and the page they asked for, with display tokens replaced by
   `REDACTED`, query strings dropped, and no headers. It is rotated and kept
-  for up to 14 days.
+  for up to 14 days, also after you delete entrants.
+- Django's security errors are logged at WARNING. If you ever set `ADMINS`,
+  they are still not emailed.
 
 ## Retiring the install
 
@@ -298,7 +378,8 @@ with mode 0600.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `DJANGO_SECRET_KEY` | none | Required unless `DJANGO_DEBUG` is on. `init` generates it. |
+| `DJANGO_SECRET_KEY` | none | Required unless `DJANGO_DEBUG` is on. `init` generates it. Debug mode never uses a fixed key: it makes a random one for each process. |
+| `CD_TRUSTED_PROXIES` | empty | Comma-separated IP addresses of proxies you trust. The app honors `X-Forwarded-For` only from the unix socket (Caddy) or from these addresses. An invalid value stops startup. |
 | `DJANGO_ALLOWED_HOSTS` | empty | Comma-separated hostnames the site answers to. `init --domain` writes it. In debug, `localhost`, `127.0.0.1` and `[::1]` are always accepted too. |
 | `DJANGO_DEBUG` | off | `1` for local development only. `up.sh` refuses to install if the server's `.env` turns it on (1, true, yes, or on). |
 | `CD_DB_NAME` | `conference_drawing` | PostgreSQL database name. |
