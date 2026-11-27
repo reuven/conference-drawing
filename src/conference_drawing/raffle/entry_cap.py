@@ -9,12 +9,10 @@ key carries a hash of the network, never the address.
 """
 
 import datetime
-import hashlib
-import hmac
 
-from django.conf import settings
 from django.core.cache import cache
 
+from ..keyed_hash import keyed_digest
 from .models import Conference
 
 # A bucket is one clock hour; outlive it a little so a slow clock can't cut it.
@@ -23,10 +21,7 @@ _BUCKET_SECONDS = 3700
 
 def cache_key(conference: Conference, key: str, now: datetime.datetime) -> str:
     """Return the cache key for `key`'s counter in the hour containing `now`."""
-    # Keyed, so the stored digest of an IPv4 address can't be brute-forced.
-    digest = hmac.new(
-        settings.SECRET_KEY.encode(), key.encode(), hashlib.sha256
-    ).hexdigest()
+    digest = keyed_digest(key)
     hour = now.astimezone(datetime.UTC).strftime("%Y%m%d%H")
     return f"entrycap:{conference.pk}:{digest}:{hour}"
 

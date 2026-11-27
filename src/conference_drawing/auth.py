@@ -8,8 +8,6 @@ login slower or leakier than Django's own.
 from __future__ import annotations
 
 import functools
-import hashlib
-import hmac
 import unicodedata
 from collections.abc import Callable
 from http import HTTPStatus
@@ -27,6 +25,8 @@ from django.http.response import HttpResponseBase
 from django.shortcuts import resolve_url
 from django.utils.translation import gettext_lazy as _
 from django_ratelimit.exceptions import Ratelimited
+
+from .keyed_hash import keyed_digest
 
 if TYPE_CHECKING:  # the stubs' name for the user model instance
     from django.contrib.auth.models import _User
@@ -130,10 +130,7 @@ def login_failure_key(name: str) -> str:
     account = unicodedata.normalize(
         "NFKC", unicodedata.normalize("NFKC", name).strip().casefold()
     )
-    digest = hmac.new(
-        settings.SECRET_KEY.encode(), f"acct:{account}".encode(), hashlib.sha256
-    ).hexdigest()
-    return f"loginfail:{digest}"
+    return f"loginfail:{keyed_digest(f'acct:{account}')}"
 
 
 def _record_failure(name: str) -> None:
