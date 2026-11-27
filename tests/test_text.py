@@ -3,7 +3,11 @@ from django.core.exceptions import ValidationError
 from hypothesis import given
 from hypothesis import strategies as st
 
-from conference_drawing.raffle.text import normalize_email, validate_single_line_label
+from conference_drawing.raffle.text import (
+    email_key,
+    normalize_email,
+    validate_single_line_label,
+)
 
 
 def test_normalize_email_examples() -> None:
@@ -108,3 +112,47 @@ def test_label_error_code_and_message(bad: str, code: str, message: str) -> None
         validate_single_line_label(bad)
     [error] = caught.value.error_list
     assert (error.code, error.message) == (code, message)
+
+
+@pytest.mark.parametrize(
+    ("raw", "key"),
+    [
+        ("Ada+x@Example.com", "ada@example.com"),
+        ("ada+a+b@example.com", "ada@example.com"),
+        ("ada+@example.com", "ada@example.com"),
+        ("ada-x@example.com", "ada-x@example.com"),
+        ("a.da@example.com", "a.da@example.com"),
+        ("ada@Bücher.example", "ada@xn--bcher-kva.example"),
+        ("ada@xn--bcher-kva.example", "ada@xn--bcher-kva.example"),
+        ("+x@example.com", "+x@example.com"),
+        ("no-at-sign", "no-at-sign"),
+        ("ada@" + "a" * 70 + ".example", "ada@" + "a" * 70 + ".example"),
+    ],
+)
+def test_email_key_known_answers(raw: str, key: str) -> None:
+    assert email_key(raw) == key
+
+
+def test_email_key_idna_spellings_agree() -> None:
+    assert email_key("ada@bücher.example") == email_key("ADA@xn--bcher-kva.example")
+
+
+@given(st.emails())
+def test_email_key_idempotent(e: str) -> None:
+    assert email_key(email_key(e)) == email_key(e)
+
+
+@given(st.text())
+def test_email_key_idempotent_on_any_text(raw: str) -> None:
+    once = email_key(raw)
+    assert email_key(once) == once
+
+
+_PART = st.text("abcdefghijklmnopqrstuvwxyz0123456789", min_size=1, max_size=10)
+
+
+@given(_PART, _PART, _PART)
+def test_email_key_ignores_plus_tag(user: str, tag: str, domain: str) -> None:
+    assert email_key(f"{user}+{tag}@{domain}.example") == email_key(
+        f"{user}@{domain}.example"
+    )

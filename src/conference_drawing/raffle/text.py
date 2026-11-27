@@ -37,6 +37,29 @@ def normalize_email(raw: str) -> str:
     return unicodedata.normalize("NFC", raw.strip()).lower()
 
 
+def email_key(raw: str) -> str:
+    """Return the "same mailbox" key for an address, for duplicate and exclusion checks.
+
+    One person should be one entrant however they spell their address, so the
+    key drops a `+tag` from the local part (`ada+1@x` is `ada@x`) and puts the
+    domain in its IDNA ASCII form (`bücher.example` is `xn--bcher-kva.example`).
+    It is only for asking "is this the same person"; mail still goes to the
+    entrant's real stored address. A domain that cannot be encoded keeps its
+    lowercased form, and a local part that is empty once the tag is gone
+    (`+x@x`) is left whole: the entry form refuses those addresses anyway.
+    Pure and import-light so a migration can use it.
+    """
+    local, at, domain = normalize_email(raw).rpartition("@")
+    if not at:
+        return domain
+    untagged = local.split("+", 1)[0]
+    try:
+        domain = domain.encode("idna").decode("ascii")
+    except UnicodeError:
+        pass
+    return f"{untagged or local}@{domain}".lower()
+
+
 def validate_deliverable_email(value: str) -> str:
     """Return `value` if Drip's payload validation will accept it, else raise.
 
