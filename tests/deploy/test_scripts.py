@@ -833,6 +833,35 @@ def test_services_set_paths_user_and_hardening(name: str) -> None:
         assert unit[f"Service.{key}"] == [value], key
 
 
+# Web and snapshot reach PostgreSQL only through CD_DB_HOST=/var/run/postgresql
+# (a unix socket), and only the Drip worker calls out to the internet.
+ADDRESS_FAMILIES = {
+    "conference-drawing-web.service": "AF_UNIX",
+    "conference-drawing-drip.service": "AF_UNIX AF_INET AF_INET6",
+    "conference-drawing-snapshot.service": "AF_UNIX",
+}
+
+
+@pytest.mark.parametrize("name", SERVICES)
+def test_services_are_sandboxed_beyond_the_basics(name: str) -> None:
+    unit = _unit(name)
+    expected = {
+        "ProtectProc": "invisible",
+        "CapabilityBoundingSet": "",
+        "SystemCallFilter": "@system-service",
+        "RestrictSUIDSGID": "yes",
+        "RestrictAddressFamilies": ADDRESS_FAMILIES[name],
+    }
+    for key, value in expected.items():
+        assert unit[f"Service.{key}"] == [value], key
+
+
+def test_only_the_drip_worker_may_open_ip_sockets() -> None:
+    for name in SERVICES:
+        families = _unit(name)["Service.RestrictAddressFamilies"][0].split()
+        assert ("AF_INET" in families) == (name == "conference-drawing-drip.service")
+
+
 SOCKET_PATH = "/run/conference-drawing/web.sock"
 
 

@@ -36,6 +36,13 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictNamespaces=yes
 LockPersonality=yes
+# No capabilities, no setuid files, a system-call allowlist, other users'
+# processes hidden. Only the Drip worker calls out to the internet.
+ProtectProc=invisible
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target
