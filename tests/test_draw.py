@@ -450,6 +450,36 @@ def test_undo_not_here_voids_replacement_and_restores_pick(
     assert Pick.objects.filter(replaces=pick).count() == 2
 
 
+def test_reroll_never_redraws_someone_voided_for_that_slot(
+    conf: Conference, drawing: Drawing, entrant_factory: Callable[..., Entrant]
+) -> None:
+    for _ in range(20):
+        entrant_factory(conf, created_at=BEFORE)
+    [pick] = started_single(drawing)
+    seen: list[int] = []
+    while (replacement := mark_not_here(pick, now=LATER, rng=rng())) is not None:
+        seen.append(replacement.entrant_id)
+        undo_last(pick, now=LATER)
+    assert len(seen) == len(set(seen)) == 19
+    assert pick.entrant_id not in seen
+    assert kinds(drawing)[-1] == K.EXHAUSTED
+
+
+def test_voided_person_can_still_win_another_slot(
+    conf: Conference, drawing: Drawing, entrant_factory: Callable[..., Entrant]
+) -> None:
+    for _ in range(3):
+        entrant_factory(conf, created_at=BEFORE)
+    first, second = started_single(drawing, quantity=2)
+    voided = mark_not_here(first, now=LATER, rng=rng())
+    assert voided is not None
+    undo_last(first, now=LATER)
+    other = mark_not_here(second, now=LATER, rng=rng())
+    assert other is not None
+    assert other.slot == 2
+    assert other.entrant_id == voided.entrant_id
+
+
 def test_undo_refused_after_replacement_marked(
     drawing: Drawing, entrants: list[int]
 ) -> None:
@@ -954,3 +984,37 @@ class DrawProperty(TestCase):
                     prize_line__drawing=d, status__in=[S.CLAIMED, S.DIGITAL]
                 ).count()
             )
+
+
+class RerollProperty(TestCase):
+    @settings(deadline=None, max_examples=15)
+    @given(
+        n_entrants=st.integers(2, 8),
+        ops=st.lists(st.booleans(), max_size=30),
+        seed=st.integers(0, 2**16),
+    )
+    @example(n_entrants=3, ops=[True, False] * 6, seed=0)
+    def test_reroll_sequences_never_repeat_a_voided_entrant_for_the_slot(
+        self, n_entrants: int, ops: list[bool], seed: int
+    ) -> None:
+        """True is Not here, False is Undo; a voided entrant never returns."""
+        r = random.Random(seed)
+        conf = factories.make_conference()
+        for _ in range(n_entrants):
+            factories.make_entrant(conf, created_at=BEFORE)
+        drawing = factories.make_drawing(conf, scheduled_at=SCHEDULED)
+        factories.make_prize_line(drawing, quantity=1)
+        [original] = start_drawing(drawing, now=NOW, rng=r)
+        voided: set[int] = set()
+        live: Pick | None = None
+        for not_here in ops:
+            original.refresh_from_db()
+            if not_here and original.status == S.PENDING:
+                live = mark_not_here(original, now=LATER, rng=r)
+                if live is not None:
+                    assert live.entrant_id not in voided
+            elif not not_here and original.status == S.NOT_HERE:
+                undo_last(original, now=LATER)
+                if live is not None:
+                    voided.add(live.entrant_id)
+                live = None

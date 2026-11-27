@@ -105,8 +105,18 @@ def _draw_slot(
     rng: random.Random,
     replaces: Pick | None = None,
 ) -> Pick | None:
-    """Pick one eligible entrant for `slot`, or audit `exhausted` if nobody is left."""
-    pool = eligible_entrant_ids(drawing)
+    """Pick one eligible entrant for `slot`, or audit `exhausted` if nobody is left.
+
+    Anyone already voided for this same prize line and slot is left out, so
+    Not here, Undo, Not here can't reroll a slot until a chosen person wins:
+    each reroll costs a person. A voided person stays eligible for other slots.
+    """
+    voided_here = set(
+        Pick.objects.filter(
+            prize_line=line, slot=slot, status=Pick.Status.VOID
+        ).values_list("entrant_id", flat=True)
+    )
+    pool = [e for e in eligible_entrant_ids(drawing) if e not in voided_here]
     if not pool:
         _audit(drawing, AuditEvent.Kind.EXHAUSTED, now, prize_line=line.pk, slot=slot)
         return None
