@@ -10,11 +10,24 @@ a tag, never sends a subscriber status (so it cannot resubscribe someone who
 unsubscribed), and never adds anyone to a Drip campaign or to your
 newsletter itself.
 
+## Two cautions
+
+- **Not everyone opted in.** Entrants who did not tick the newsletter box are
+  still Drip subscribers (the app sends no status). Never send an
+  account-wide broadcast to every subscriber. Send to a tag, such as
+  `<slug>-newsletter-optin`.
+- **Anyone can enter, and opt in, someone else's address.** The entry form
+  cannot prove who typed an email address. That is why the follow-up email is
+  a single message, and why the newsletter branch below starts with a notice
+  for people who did not tick the box.
+
 ## Before you start
 
 1. Put your Drip account id (digits only) and API key in the `.env` of the
    checkout you deploy from, as `DRIP_ACCOUNT_ID` and `DRIP_API_KEY`. `up.sh`
    copies them to the server. Set both, or neither.
+   If you rotate the key in the `.env` on your laptop, the next `up.sh`
+   copies the new key to the server, replacing the old one.
 2. Drip jobs are queued in the app's database and sent by a background
    worker, so Drip being slow or down never delays a drawing. The conference
    page at `/booth/<slug>/` shows how many are pending or failed and has a
@@ -68,6 +81,18 @@ entry question you added, named by the question's key (for example
 `want_to_learn`), holding the answer they gave. A conference with no
 questions sends none. Use these
 to personalize the follow-up: `{{ event.want_to_learn }}`.
+
+### How the worker behaves
+
+- **Delivery is at least once.** When Drip is slow, a request the app gave up
+  on may still have been accepted. An event such as `Won raffle prize` can
+  therefore arrive twice. Design your automations to tolerate a repeat.
+- **First names** are sent only when they are plain: letters, marks, spaces,
+  and the characters `'`, `-`, and `.`, up to 40 characters. Anything else is
+  sent without a first name.
+- **Rate limits.** When Drip answers 429 (too many requests), the worker
+  waits as long as Drip asks, at least a few seconds and at most an hour. That
+  wait does not use up the job's retries.
 
 ## Workflow A: send the prize
 
