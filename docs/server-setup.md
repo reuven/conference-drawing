@@ -231,7 +231,9 @@ it. After the first 0.4 install, check these, in order:
 
 **Rolling back from 0.4 to 0.3.** Entrants created under 0.3, then carried
 through a rollback and forward again, have no mailbox key. Exclusions still
-match them by exact email, but `+` aliases of them are not caught.
+match them by exact email, and so does the entry form's repeat check, but `+`
+aliases of them are not caught: a `+` alias of such an entrant is accepted as
+a new entry, and an alias of an excluded host is not excluded.
 
 ## Changing a setting on the server
 
