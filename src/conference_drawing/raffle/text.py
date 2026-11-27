@@ -41,23 +41,39 @@ def email_key(raw: str) -> str:
     """Return the "same mailbox" key for an address, for duplicate and exclusion checks.
 
     One person should be one entrant however they spell their address, so the
-    key drops a `+tag` from the local part (`ada+1@x` is `ada@x`) and puts the
-    domain in its IDNA ASCII form (`bücher.example` is `xn--bcher-kva.example`).
-    It is only for asking "is this the same person"; mail still goes to the
-    entrant's real stored address. A domain that cannot be encoded keeps its
-    lowercased form, and a local part that is empty once the tag is gone
-    (`+x@x`) is left whole: the entry form refuses those addresses anyway.
-    Pure and import-light so a migration can use it.
+    key drops a `+tag` from the local part (`ada+1@x` is `ada@x`) and uses the
+    domain's IDNA ASCII form (`bücher.example` is `xn--bcher-kva.example`).
+    The domain comes from `email-validator`, the same library that validates
+    entry emails, so there is one IDNA implementation (IDNA 2008/UTS-46), not
+    two that can disagree. The key is only for "is this the same person"; mail
+    still goes to the entrant's real stored address.
+
+    Raises ValueError if the address cannot be normalized or nothing is left of
+    the local part once the tag is removed (`+x@example.com`); the entry form
+    turns that into "invalid email". Use `lenient_email_key` for stored data.
     """
-    local, at, domain = normalize_email(raw).rpartition("@")
-    if not at:
-        return domain
-    untagged = local.split("+", 1)[0]
     try:
-        domain = domain.encode("idna").decode("ascii")
-    except UnicodeError:
-        pass
-    return f"{untagged or local}@{domain}".lower()
+        parsed = validate_email(normalize_email(raw), check_deliverability=False)
+    except EmailNotValidError as err:
+        raise ValueError("not a normalizable email address") from err
+    local = parsed.local_part.split("+", 1)[0]
+    if not local:
+        raise ValueError("nothing left of the local part after removing the tag")
+    return f"{local}@{parsed.ascii_domain}".lower()
+
+
+def lenient_email_key(raw: str) -> str:
+    """`email_key`, or the plain normalized address if it has no proper key.
+
+    For stored rows and staff exclusion lists, which Django's looser
+    `EmailField` may have admitted before the entry form was strict: they must
+    still get a key (so exact repeats and exact exclusions keep matching)
+    instead of crashing a migration or a wrap-up. Never use it on new entries.
+    """
+    try:
+        return email_key(raw)
+    except ValueError:
+        return normalize_email(raw)
 
 
 def validate_deliverable_email(value: str) -> str:
