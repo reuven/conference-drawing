@@ -221,6 +221,17 @@ def test_same_email_in_another_conference_is_not_a_repeat(
     assert Entrant.objects.count() == 2
 
 
+def test_exact_repeat_of_a_null_key_row_is_a_quiet_repeat(
+    conference: Conference,
+) -> None:
+    """A row inserted by 0.3 during a rollback has no key; no 500, no second row."""
+    entrant = _enter(conference)
+    assert entrant is not None
+    Entrant.objects.filter(pk=entrant.pk).update(email_key=None)
+    assert _enter(conference, name="Someone Else") is None
+    assert Entrant.objects.count() == 1
+
+
 def test_race_on_unique_constraint_is_treated_as_repeat(
     conference: Conference, monkeypatch: pytest.MonkeyPatch
 ) -> None:

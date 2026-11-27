@@ -6,6 +6,7 @@ from typing import Any
 from django import forms
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 
 from .models import Conference, Entrant, InstallSettings, Question
 from .text import (
@@ -132,14 +133,17 @@ class EntryForm(forms.Form):
         """True if something was typed into the hidden field (a bot, not a person)."""
         return bool(self.data.get("leave_blank", "").strip())
 
-    def _already_entered(self, key: str) -> bool:
-        """True if someone in this conference already has this mailbox key.
+    def _already_entered(self, email: str) -> bool:
+        """True if someone in this conference already has this mailbox.
 
-        Exact-email and key checks differ for aliases (`ada+1@x` vs `ada@x`);
-        rows that predate the key have it backfilled by migration 0014.
+        Matches by mailbox key (so `ada+1@x` is a repeat of `ada@x`), and by
+        exact address for rows whose key is NULL (v0.3.0 inserts them after
+        the backfill ran); without that a NULL-key exact repeat would reach
+        the unique constraint instead of being treated as the repeat it is.
         """
         return Entrant.objects.filter(
-            conference=self.conference, email_key=key
+            Q(email_key=email_key(email)) | Q(email_key__isnull=True, email=email),
+            conference=self.conference,
         ).exists()
 
     def save(self, now: datetime.datetime) -> Entrant | None:
@@ -165,7 +169,7 @@ class EntryForm(forms.Form):
 
     def _create(self, now: datetime.datetime) -> Entrant | None:
         email: str = self.cleaned_data["email"]
-        if self._already_entered(email_key(email)):
+        if self._already_entered(email):
             return None
         answers = {
             q.key: self.cleaned_data[f"q_{q.key}"]
@@ -190,7 +194,7 @@ class EntryForm(forms.Form):
             with transaction.atomic():
                 entrant.save()
         except IntegrityError:
-            if self._already_entered(email_key(email)):
+            if self._already_entered(email):
                 return None
             raise
         return entrant
