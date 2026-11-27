@@ -455,3 +455,17 @@ def test_booth_start_after_wrapup_shows_message(
     wrap_up(conference, now=NOW)
     response = owner.post(reverse("booth-start", args=[drawing.pk]), follow=True)
     assert "wrapped up" in response.content.decode()
+
+
+def test_null_keyed_excluded_entrant_is_still_excluded(
+    conference: Conference, entrant_factory: Callable[..., Entrant]
+) -> None:
+    """A row 0.3 inserted after the backfill (NULL key) is excluded by exact email."""
+    conference.exclusion_emails = "Staff@example.com"
+    conference.save()
+    staff = entrant_factory(conference, email="staff@example.com")
+    entrant_factory(conference, email="guest@example.com")
+    Entrant.objects.filter(pk=staff.pk).update(email_key=None)
+    result = wrap_up(conference, now=NOW)
+    assert list(_subscribers()) == ["guest@example.com"]
+    assert (result.entrants, result.excluded, result.jobs) == (2, 1, 2)

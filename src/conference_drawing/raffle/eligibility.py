@@ -45,7 +45,7 @@ def eligible_entrant_ids(drawing: Drawing) -> list[int]:
     ).values("entrant_id")
     return list(
         Entrant.objects.filter(conference=conference, created_at__lt=drawing.cutoff_at)
-        .exclude(email_key__in=conference.excluded_keys)
+        .exclude(conference.excluded_entrants_q())
         .exclude(id__in=won)
         .exclude(id__in=picked_here)
         .order_by("id")
