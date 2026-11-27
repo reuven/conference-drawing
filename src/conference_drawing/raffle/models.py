@@ -24,7 +24,7 @@ from django.db.models.signals import post_delete
 from django.dispatch import receiver
 from django.utils import timezone
 
-from .text import normalize_email, validate_single_line_label
+from .text import email_key, normalize_email, validate_single_line_label
 from .timezones import time_zone_choices
 
 # Re-exported (`as` makes it explicit for mypy): migration 0005 names the
@@ -440,6 +440,13 @@ class Entrant(models.Model):
     conference = models.ForeignKey(Conference, on_delete=models.CASCADE)
     name = models.CharField(max_length=200, validators=[validate_label])
     email = models.EmailField()
+    # "Same mailbox" key (see text.email_key); set on save. Nullable and not
+    # unique so rows from before it existed, which may already hold aliases of
+    # one person, load and migrate; the entry form enforces one per key.
+    # NULL (not "") marks a row v0.3.0 inserted that the backfill has not keyed.
+    email_key = models.CharField(  # noqa: DJ001
+        max_length=320, null=True, blank=True, db_index=True, editable=False
+    )
     answers = models.JSONField(default=dict, blank=True)
     followup_ack_text = models.TextField(blank=True)
     followup_ack_at = models.DateTimeField(default=timezone.now)
@@ -462,6 +469,7 @@ class Entrant(models.Model):
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         self.email = normalize_email(self.email)
+        self.email_key = email_key(self.email)
         super().save(*args, **kwargs)
 
 

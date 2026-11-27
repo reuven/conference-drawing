@@ -530,3 +530,12 @@ def test_slug_containing_a_reserved_word_is_fine(
     conf = conference_factory(slug="fine-slug")
     conf.slug = slug
     conf.full_clean()
+
+
+def test_entrant_email_key_set_on_save(
+    conference_factory: Factory, entrant_factory: Factory
+) -> None:
+    e = entrant_factory(conference_factory(), email="Ada+Raffle@Bücher.example")
+    e.refresh_from_db()
+    assert e.email == "ada+raffle@bücher.example"
+    assert e.email_key == "ada@xn--bcher-kva.example"
