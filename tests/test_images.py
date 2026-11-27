@@ -1,6 +1,8 @@
 """Uploaded images are re-encoded without metadata; covers are validated like logos."""
 
 import io
+import re
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -8,7 +10,9 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image
 
+from conference_drawing.raffle.models import InstallSettings
 from conference_drawing.raffle.validators import reencode_image
+from tests.factories import make_conference
 
 _GPS = {1: "N", 2: (37.0, 25.0, 19.0), 3: "W", 4: (122.0, 5.0, 6.0)}
 
@@ -139,3 +143,33 @@ def test_transparent_animated_gif_stays_transparent() -> None:
 def test_xmp_is_dropped(fmt: str) -> None:
     upload = _upload(Image.new("RGB", (5, 5)), fmt, xmp=b"<x:xmpmeta/>")
     assert b"xmpmeta" not in reencode_image(upload).read()
+
+
+@pytest.fixture
+def media(settings: Any, tmp_path: Path) -> Path:
+    settings.MEDIA_ROOT = tmp_path
+    return tmp_path
+
+
+def _stored(upload_dir: Path) -> Image.Image:
+    (path,) = list(upload_dir.iterdir())
+    return Image.open(path)
+
+
+@pytest.mark.django_db
+def test_saving_a_conference_logo_stores_it_without_metadata(media: Path) -> None:
+    img = Image.new("RGB", (20, 10), "red")
+    conf = make_conference(after_logo=_upload(img, "JPEG", "l.jpg", exif=_gps_exif()))
+    conf.refresh_from_db()
+    assert dict(_stored(media / "logos").getexif()) == {}
+    assert re.fullmatch(r"logos/[0-9a-f]{32}\.jpg", str(conf.after_logo.name))
+
+
+@pytest.mark.django_db
+def test_saving_install_settings_logo_stores_it_without_metadata(media: Path) -> None:
+    site = InstallSettings.get()
+    site.after_logo = _upload(
+        Image.new("RGB", (20, 10), "red"), "JPEG", "l.jpg", exif=_gps_exif()
+    )
+    site.save()
+    assert dict(_stored(media / "logos").getexif()) == {}

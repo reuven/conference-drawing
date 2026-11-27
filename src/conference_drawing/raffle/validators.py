@@ -186,3 +186,14 @@ def _encode(img: Image.Image, fmt: str) -> bytes:
             out, format=fmt, optimize=True, **({"icc_profile": icc} if icc else {})
         )
     return out.getvalue()
+
+
+def reencode_pending_upload(field_file: FieldFile) -> None:
+    """Swap a not-yet-stored upload for its metadata-free re-encoding.
+
+    Why: call it from a model's `save()` so every path that stores an image
+    (admin form, shell, tests) strips EXIF. A file already stored, or an empty
+    field, is left alone, so a re-save never rewrites what is on disk.
+    """
+    if field_file and not field_file._committed:  # type: ignore[attr-defined]
+        field_file.file = reencode_image(field_file.file)

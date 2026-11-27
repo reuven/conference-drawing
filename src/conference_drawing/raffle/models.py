@@ -32,6 +32,7 @@ from .timezones import time_zone_choices
 # validators as `conference_drawing.raffle.models.<name>`.
 from .validators import (
     MAX_REDIRECT_URL_LENGTH,
+    reencode_pending_upload,
 )
 from .validators import (
     logo_upload_to as logo_upload_to,
@@ -196,6 +197,7 @@ def _save_replacing_logo(
     if fields is not None and "after_logo" not in fields:
         save(*args, **kwargs)
         return
+    reencode_pending_upload(instance.after_logo)  # type: ignore[attr-defined]
     with transaction.atomic():
         old = _stored_logo_name(instance)
         save(*args, **kwargs)
