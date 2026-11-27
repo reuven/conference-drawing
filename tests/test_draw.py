@@ -16,6 +16,7 @@ from hypothesis import strategies as st
 from hypothesis.extra.django import TestCase
 
 from conference_drawing.raffle.draw import (
+    EARLY_START_WINDOW,
     DrawingError,
     close_drawing,
     mark_claimed,
@@ -39,7 +40,7 @@ from tests import factories
 
 NOW = datetime.datetime(2027, 5, 11, 20, 30, tzinfo=datetime.UTC)
 LATER = NOW + datetime.timedelta(minutes=1)
-SCHEDULED = datetime.datetime(2027, 5, 11, 21, 0, tzinfo=datetime.UTC)
+SCHEDULED = NOW + datetime.timedelta(minutes=10)
 BEFORE = NOW - datetime.timedelta(hours=1)
 S = Pick.Status
 K = AuditEvent.Kind
@@ -104,6 +105,43 @@ def dismiss_pending(drawing: Drawing) -> None:
 
 
 # --- start -------------------------------------------------------------------
+
+
+def test_start_refused_more_than_window_early(conf: Conference) -> None:
+    d = factories.make_drawing(
+        conf, scheduled_at=NOW + EARLY_START_WINDOW + datetime.timedelta(minutes=1)
+    )
+    factories.make_prize_line(d)
+    with pytest.raises(DrawingError, match=r"can start at .*\d:\d\d [AP]M"):
+        start_drawing(d, now=NOW, rng=rng())
+    d.refresh_from_db()
+    assert d.status == Drawing.Status.SCHEDULED
+    assert not AuditEvent.objects.filter(drawing=d).exists()
+
+
+def test_start_message_names_local_time(conf: Conference) -> None:
+    # SCHEDULED is 20:40 UTC, 1:40 PM in America/Los_Angeles (PDT); plus 15 min.
+    d = factories.make_drawing(conf, scheduled_at=SCHEDULED + EARLY_START_WINDOW)
+    with pytest.raises(DrawingError) as excinfo:
+        start_drawing(d, now=NOW - EARLY_START_WINDOW, rng=rng())
+    assert str(excinfo.value) == "This drawing can start at 1:55 PM."
+
+
+def test_start_allowed_exactly_at_window_edge(conf: Conference) -> None:
+    d = factories.make_drawing(conf, scheduled_at=NOW + EARLY_START_WINDOW)
+    factories.make_prize_line(d)
+    start_drawing(d, now=NOW, rng=rng())
+    d.refresh_from_db()
+    assert d.status == Drawing.Status.OPEN
+
+
+def test_early_ok_overrides_the_window(conf: Conference) -> None:
+    d = factories.make_drawing(conf, scheduled_at=NOW + datetime.timedelta(hours=2))
+    factories.make_prize_line(d)
+    start_drawing(d, now=NOW, rng=rng(), early_ok=True)
+    d.refresh_from_db()
+    assert d.status == Drawing.Status.OPEN
+    assert d.cutoff_at == NOW
 
 
 @pytest.mark.parametrize(

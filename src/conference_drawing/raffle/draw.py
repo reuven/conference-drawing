@@ -24,8 +24,13 @@ from django.db.models import Sum
 
 from .eligibility import WINNING_STATUSES, eligible_entrant_ids
 from .models import AuditEvent, Conference, CouponCode, Drawing, Pick, PrizeLine
+from .timezones import to_local
 
 _SYSTEM_RNG = secrets.SystemRandom()
+
+# How long before its scheduled time a drawing may be started without the
+# owner's say-so, so a helper can't run the drawing at the wrong moment.
+EARLY_START_WINDOW = datetime.timedelta(minutes=15)
 
 
 class DrawingError(Exception):
@@ -175,6 +180,7 @@ def start_drawing(
     now: datetime.datetime,
     rng: random.Random = _SYSTEM_RNG,
     on_digital_pick: Callable[[Pick], None] = _ignore_digital_pick,
+    early_ok: bool = False,
 ) -> list[Pick]:
     """Open a scheduled drawing and pick a winner for every copy, line by line.
 
@@ -182,10 +188,16 @@ def start_drawing(
     never admits entries made after the announced time. `on_digital_pick` runs
     inside this transaction, so whatever it writes commits or rolls back with
     the pick.
+
+    Starting more than `EARLY_START_WINDOW` before the scheduled time is
+    refused unless `early_ok`, which only the owner's confirmed start sets.
     """
     drawing = _lock_conference_then(drawing.pk)
     if drawing.status != Drawing.Status.SCHEDULED:
         raise DrawingError("This drawing has already started.")
+    if not early_ok and now < drawing.scheduled_at - EARLY_START_WINDOW:
+        local = to_local(drawing.scheduled_at, drawing.conference.time_zone)
+        raise DrawingError(f"This drawing can start at {local.strftime('%-I:%M %p')}.")
     if _another_open(drawing):
         raise DrawingError("Another drawing is open. Close it first.")
     lines = list(
