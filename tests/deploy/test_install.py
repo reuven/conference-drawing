@@ -382,6 +382,35 @@ def test_install_leaves_an_unchanged_env_byte_for_byte(server: Server) -> None:
     assert "wrote" not in result.stderr
 
 
+def test_install_tightens_a_loosened_env_without_changing_it(server: Server) -> None:
+    server.data.mkdir(parents=True)
+    env = server.data / ".env"
+    env.write_text("DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='same'\n")
+    env.chmod(0o644)
+    assert server.install(stdin="DRIP_API_KEY=same\n").returncode == 0
+    assert env.read_text() == "DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='same'\n"
+    assert os_mode(env) == 0o600
+
+
+def test_write_env_keys_itself_refuses_a_symlinked_env(fakes: Fakes) -> None:
+    """install.sh's earlier data-dir check also refuses a planted link; this
+    drives write_env_keys alone, so its own guard (a race backstop) is tested."""
+    fakes.set("runuser", [{"match": "", "passthrough": True}])
+    sentinel = fakes.root / "sentinel"
+    sentinel.write_text("untouched\n")
+    link = fakes.root / "env"
+    link.symlink_to(sentinel)
+    script = (
+        'source "$1"; eval "$(sed -n "/^write_env_keys()/,/^}/p" "$2")"; '
+        "ENV_FILE=$3 drip_api_key=new drip_account_id= write_env_keys"
+    )
+    install = str(DEPLOY / "remote" / "install.sh")
+    result = fakes.run(["-c", script, "_", COMMON, install, str(link)])
+    assert result.returncode != 0
+    assert "symbolic link" in result.stderr
+    assert sentinel.read_text() == "untouched\n"
+
+
 def test_install_replaces_every_stale_copy_of_a_drip_key(server: Server) -> None:
     server.data.mkdir(parents=True)
     env = server.data / ".env"

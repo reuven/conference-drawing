@@ -226,6 +226,7 @@ write_env_keys() {
 		tmp=
 		trap '"'"'[ -z "$tmp" ] || rm -f -- "$tmp"'"'"' EXIT
 		[ -e "$env" ] || : >"$env"
+		chmod 0600 "$env"
 		while IFS= read -r line; do
 			key=${line%%=*}
 			total=$(grep -c "^$key=" "$env" || true)
