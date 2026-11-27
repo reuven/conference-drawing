@@ -11,7 +11,11 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image
 
 from conference_drawing.raffle.models import Book, InstallSettings
-from conference_drawing.raffle.validators import cover_upload_to, reencode_image
+from conference_drawing.raffle.validators import (
+    cover_upload_to,
+    reencode_image,
+    validate_logo,
+)
 from tests.factories import make_conference
 
 _GPS = {1: "N", 2: (37.0, 25.0, 19.0), 3: "W", 4: (122.0, 5.0, 6.0)}
@@ -218,3 +222,53 @@ def test_cover_upload_name_ignores_user_name_and_uses_detected_extension() -> No
     bad = Book(cover=SimpleUploadedFile("x.png", b"nope"))
     with pytest.raises(ValidationError):
         cover_upload_to(bad, "x.png")
+
+
+def test_jpeg_and_gif_comments_are_dropped() -> None:
+    jpeg = _upload(Image.new("RGB", (5, 5)), "JPEG", comment=b"secret-jpeg-note")
+    assert b"secret-jpeg-note" in jpeg.read()
+    jpeg.seek(0)
+    assert b"secret-jpeg-note" not in reencode_image(jpeg).read()
+    still = _upload(Image.new("P", (5, 5)), "GIF", comment=b"secret-gif-note")
+    assert b"secret-gif-note" not in reencode_image(still).read()
+    frames = [Image.new("P", (5, 5), i) for i in range(2)]
+    anim = _upload(
+        frames[0],
+        "GIF",
+        save_all=True,
+        append_images=frames[1:],
+        comment=b"secret-anim-note",
+    )
+    assert b"secret-anim-note" in anim.read()
+    anim.seek(0)
+    assert b"secret-anim-note" not in reencode_image(anim).read()
+
+
+def test_play_once_gif_stays_play_once() -> None:
+    frames = [Image.new("RGB", (5, 5), c) for c in ("red", "blue")]
+    once = _upload(frames[0], "GIF", save_all=True, append_images=frames[1:])
+    assert "loop" not in Image.open(io.BytesIO(once.read())).info
+    once.seek(0)
+    out = Image.open(io.BytesIO(reencode_image(once).read()))
+    assert "loop" not in out.info
+    assert _frames(out) == 2
+
+
+def _many_frame_gif() -> Any:
+    frames = [Image.new("RGB", (10, 10), (i * 10, 0, 0)) for i in range(20)]
+    return _upload(frames[0], "GIF", save_all=True, append_images=frames[1:])
+
+
+def test_frame_budget_is_checked_by_the_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upload = _many_frame_gif()
+    assert len(upload.read()) < 2000  # tiny on disk
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)  # 20 frames x 100 px = 2000
+    upload.seek(0)
+    with pytest.raises(ValidationError, match="too many pixels"):
+        validate_logo(upload)
+    with pytest.raises(ValidationError, match="too many pixels"):
+        reencode_image(upload)
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 2000)
+    validate_logo(upload)

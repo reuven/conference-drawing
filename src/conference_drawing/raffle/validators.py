@@ -49,6 +49,29 @@ def validate_redirect_url(value: str) -> None:
         raise ValidationError("Enter a full https:// URL, without a username.")
 
 
+class _FrameBudgetError(Exception):
+    """An image's frames add up to more pixels than we will decode."""
+
+
+def _check_frame_budget(img: Image.Image) -> None:
+    """Refuse an animation whose frames together exceed `Image.MAX_IMAGE_PIXELS`.
+
+    Why: Pillow's bomb check looks at one frame, but re-encoding an animation
+    holds every decoded frame in memory, and a tiny file can declare hundreds
+    of large frames. Checked before any frame is decoded.
+    """
+    limit = Image.MAX_IMAGE_PIXELS
+    frames = getattr(img, "n_frames", 1)
+    if limit is not None and frames * img.width * img.height > limit:
+        raise _FrameBudgetError
+
+
+_TOO_MANY_PIXELS = (
+    "This image has too many pixels in total (all frames of an animation count). "
+    "Upload a smaller or shorter one."
+)
+
+
 def validate_logo(file: File[Any]) -> None:
     """Accept only a small, intact PNG, JPEG, WEBP or GIF.
 
@@ -69,7 +92,10 @@ def validate_logo(file: File[Any]) -> None:
             file.seek(0)
             with Image.open(file) as img:
                 fmt = img.format
+                _check_frame_budget(img)
                 img.verify()
+    except _FrameBudgetError:
+        raise ValidationError(_TOO_MANY_PIXELS) from None
     except (
         OSError,
         SyntaxError,
@@ -151,7 +177,10 @@ def reencode_image(file: File[Any]) -> ContentFile[bytes]:
                 fmt = _REENCODE_FORMATS.get(img.format or "")
                 if fmt is None:
                     raise ValueError("unsupported format")
+                _check_frame_budget(img)
                 data = _encode(img, fmt)
+    except _FrameBudgetError:
+        raise ValidationError(_TOO_MANY_PIXELS) from None
     except (
         OSError,
         SyntaxError,
@@ -170,22 +199,28 @@ def _encode(img: Image.Image, fmt: str) -> bytes:
     out = io.BytesIO()
     icc = img.info.get("icc_profile")
     if getattr(img, "is_animated", False) and fmt in {"GIF", "WEBP"}:
-        frames = [frame.copy() for frame in ImageSequence.Iterator(img)]
+        frames = []
         durations = []
-        for index in range(len(frames)):
-            img.seek(index)
-            durations.append(img.info.get("duration", 100))
+        for frame in ImageSequence.Iterator(img):
+            durations.append(frame.info.get("duration", 100))
+            frame.info.pop("comment", None)
+            frames.append(frame.copy())
+        extra: dict[str, Any] = {}
+        if "loop" in img.info:
+            extra["loop"] = img.info["loop"]
+        if icc and fmt == "WEBP":
+            extra["icc_profile"] = icc
         frames[0].save(
             out,
             format=fmt,
             save_all=True,
             append_images=frames[1:],
             duration=durations,
-            loop=img.info.get("loop", 0),
-            **({"icc_profile": icc} if icc and fmt == "WEBP" else {}),
+            **extra,
         )
         return out.getvalue()
     still = ImageOps.exif_transpose(img)
+    still.info.pop("comment", None)  # Pillow would copy a JPEG/GIF comment through
     if still.mode in {"P", "L", "RGB", "1"} and "transparency" in still.info:
         still = still.convert("RGBA")
     if fmt == "JPEG":
