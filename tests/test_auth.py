@@ -12,7 +12,11 @@ from django.core.management import CommandError, call_command
 from django.test import Client, RequestFactory
 from django.urls import reverse
 
-from conference_drawing.auth import AdminLoginForm, EmailOrUsernameBackend
+from conference_drawing.auth import (
+    AdminLoginForm,
+    BoothLoginForm,
+    EmailOrUsernameBackend,
+)
 
 User = get_user_model()
 
@@ -161,6 +165,13 @@ def test_admin_login_form_keeps_the_positional_request() -> None:
     request = RequestFactory().get("/admin/login/")
     form = AdminLoginForm(request)
     assert form.request is request
+
+
+def test_booth_login_form_keeps_the_positional_request() -> None:
+    request = RequestFactory().get("/booth/login/")
+    form = BoothLoginForm(request, {"username": "boss", "password": "pw"})
+    assert form.request is request
+    assert form.is_bound
 
 
 # --- password rules ------------------------------------------------------------
