@@ -24,7 +24,7 @@ from django.db.models.signals import post_delete
 from django.dispatch import receiver
 from django.utils import timezone
 
-from .text import email_key, normalize_email, validate_single_line_label
+from .text import lenient_email_key, normalize_email, validate_single_line_label
 from .timezones import time_zone_choices
 
 # Re-exported (`as` makes it explicit for mypy): migration 0005 names the
@@ -390,7 +390,7 @@ class Conference(models.Model):
         and either spelling of an international domain.
         """
         parts = re.split(r"[\s,;]+", self.exclusion_emails)
-        return frozenset(email_key(p) for p in parts if p.strip())
+        return frozenset(lenient_email_key(p) for p in parts if p.strip())
 
     def tags(self) -> ConferenceTags:
         """Return this conference's Drip tags, derived from the slug."""
@@ -473,7 +473,7 @@ class Entrant(models.Model):
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         self.email = normalize_email(self.email)
-        self.email_key = email_key(self.email)
+        self.email_key = lenient_email_key(self.email)
         super().save(*args, **kwargs)
 
 
