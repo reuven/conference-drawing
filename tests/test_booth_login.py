@@ -277,6 +277,7 @@ def test_unicode_variants_of_a_name_share_one_bucket(helper_account: User) -> No
 @given(st.text(max_size=30))
 @example("ｈelper")
 @example("Kelvin")  # Kelvin sign
+@example("\u0390")  # U+0390: casefold(NFKC(x)) stays decomposed
 def test_every_spelling_the_login_form_accepts_has_one_key(name: str) -> None:
     key = login_failure_key(name)
     assert key == login_failure_key(unicodedata.normalize("NFKC", name))

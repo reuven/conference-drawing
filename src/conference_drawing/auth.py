@@ -126,7 +126,10 @@ def login_failure_key(name: str) -> str:
     the name (it may be an email address) is never stored in the cache or
     reachable from a dump of it.
     """
-    account = unicodedata.normalize("NFKC", name).strip().casefold()
+    # Re-normalize after casefold: it can leave a decomposed form (U+0390).
+    account = unicodedata.normalize(
+        "NFKC", unicodedata.normalize("NFKC", name).strip().casefold()
+    )
     digest = hmac.new(
         settings.SECRET_KEY.encode(), f"acct:{account}".encode(), hashlib.sha256
     ).hexdigest()
