@@ -425,6 +425,20 @@ class _ReadOnlyAdmin[M: Any](admin.ModelAdmin[M]):
         return False
 
 
+@admin.register(AuditEvent)
+class AuditEventAdmin(_ReadOnlyAdmin[AuditEvent]):
+    """Read-only history of every drawing event, so misuse of Not here / Undo shows.
+
+    Why ids only: list columns carry no entrant names or emails (only the pick's id).
+    """
+
+    list_display = ("at", "drawing", "kind", "pick_id")
+    list_filter = ("drawing", "kind")
+    ordering = ("-at", "-id")
+    list_select_related = ("drawing",)
+    actions = None
+
+
 @admin.register(Entrant)
 class EntrantAdmin(_ReadOnlyAdmin[Entrant]):
     list_display = ("name", "email", "conference", "created_at")
@@ -456,31 +470,3 @@ class OutboxJobAdmin(_ReadOnlyAdmin[OutboxJob]):
 
     def has_retry_permission(self, request: HttpRequest) -> bool:
         return bool(request.user.is_superuser)
-
-
-@admin.register(AuditEvent)
-class AuditEventAdmin(admin.ModelAdmin[AuditEvent]):
-    """Read-only history of every drawing event, so misuse of Not here / Undo shows.
-
-    Why read-only and ids only: the log is evidence, so nobody edits or deletes it,
-    and list columns carry no entrant names or emails (only the pick's id).
-    """
-
-    list_display = ("at", "drawing", "kind", "pick_id")
-    list_filter = ("drawing", "kind")
-    ordering = ("-at", "-id")
-    list_select_related = ("drawing",)
-    actions = None
-
-    def has_add_permission(self, request: HttpRequest) -> bool:
-        return False
-
-    def has_change_permission(
-        self, request: HttpRequest, obj: AuditEvent | None = None
-    ) -> bool:
-        return False
-
-    def has_delete_permission(
-        self, request: HttpRequest, obj: AuditEvent | None = None
-    ) -> bool:
-        return False
