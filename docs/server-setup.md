@@ -381,7 +381,7 @@ with mode 0600.
 | Variable | Default | What it does |
 |---|---|---|
 | `DJANGO_SECRET_KEY` | none | Required unless `DJANGO_DEBUG` is on. `init` generates it. Debug mode never uses a fixed key: it makes a random one for each process. |
-| `CD_TRUSTED_PROXIES` | empty | Comma-separated IP addresses of proxies you trust. The app honors `X-Forwarded-For` only from the unix socket (Caddy) or from these addresses. An invalid value stops startup. |
+| `CD_TRUSTED_PROXIES` | empty | Comma-separated IP addresses of proxies you trust. The app honors `X-Forwarded-For` only from the unix socket (Caddy) or from these addresses. An invalid value stops startup. It only matters if gunicorn listens on TCP rather than the unix socket; the web unit then also needs `RestrictAddressFamilies` widened to include `AF_INET` (and `AF_INET6`), since it allows only `AF_UNIX`. |
 | `DJANGO_ALLOWED_HOSTS` | empty | Comma-separated hostnames the site answers to. `init --domain` writes it. In debug, `localhost`, `127.0.0.1` and `[::1]` are always accepted too. |
 | `DJANGO_DEBUG` | off | `1` for local development only. `up.sh` refuses to install if the server's `.env` turns it on (1, true, yes, or on). |
 | `CD_DB_NAME` | `conference_drawing` | PostgreSQL database name. |
