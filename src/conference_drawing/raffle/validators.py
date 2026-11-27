@@ -189,8 +189,6 @@ def _encode(img: Image.Image, fmt: str) -> bytes:
     if still.mode in {"P", "L", "RGB", "1"} and "transparency" in still.info:
         still = still.convert("RGBA")
     if fmt == "JPEG":
-        if still.mode not in {"RGB", "L", "CMYK"}:
-            still = still.convert("RGB")
         still.save(out, format=fmt, quality=90, optimize=True, icc_profile=icc)
     elif fmt == "WEBP":
         still.save(out, format=fmt, quality=90, icc_profile=icc)

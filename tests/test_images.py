@@ -116,9 +116,11 @@ def test_webp_roundtrip_with_alpha_and_animation() -> None:
     assert _frames(moving) == 2
 
 
-def test_reencode_refuses_non_images() -> None:
+def test_reencode_refuses_non_images_and_other_formats() -> None:
     with pytest.raises(ValidationError):
         reencode_image(SimpleUploadedFile("x.png", b"<html>nope</html>"))
+    with pytest.raises(ValidationError):
+        reencode_image(_upload(Image.new("RGB", (4, 4)), "BMP"))
 
 
 def test_transparent_animated_gif_stays_transparent() -> None:
