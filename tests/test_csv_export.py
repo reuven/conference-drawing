@@ -177,7 +177,9 @@ def test_times_in_conference_zone(
     assert second[col["newsletter_optin"]] == "no"
 
 
-@pytest.mark.parametrize("bad", ["=1+1", "+x", "-x", "@x", "\tx", "\rx"])
+@pytest.mark.parametrize(
+    "bad", ["=1+1", "+x", "-x", "@x", "\tx", "\rx", "＝1+1", "＋x", "－x", "＠x"]
+)
 def test_formula_cells_are_neutralized(
     bad: str,
     conference_factory: Callable[..., Conference],
@@ -189,6 +191,11 @@ def test_formula_cells_are_neutralized(
     row = _read(conf)[1]
     assert row[0] == "'" + bad
     assert row[3] == "'" + bad
+
+
+@given(lead=st.sampled_from("=+-@\t\r＝＋－＠"), rest=st.text())
+def test_neutralize_prefixes_every_formula_start(lead: str, rest: str) -> None:
+    assert neutralize(lead + rest) == "'" + lead + rest
 
 
 def test_neutralize_leaves_safe_text() -> None:

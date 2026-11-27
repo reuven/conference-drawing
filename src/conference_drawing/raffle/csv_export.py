@@ -26,7 +26,8 @@ from .eligibility import WINNING_STATUSES
 from .models import Conference, Entrant, Pick, PrizeLine, Question
 from .timezones import to_local
 
-_FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
+# Fullwidth forms too: some spreadsheet importers fold them to the ASCII ones.
+_FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r", "＝", "＋", "－", "＠")
 _JOIN = "; "
 
 
