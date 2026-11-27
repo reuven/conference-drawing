@@ -1,0 +1,8 @@
+{% extends "raffle/base.html" %}
+{% block title %}{{ conference.name }} book drawing{% endblock %}
+{% block content %}
+<h1>{{ conference.name }}</h1>
+<p>Entries open on {{ opens_on|date:"F j, Y" }}. Come back then to enter the drawing.</p>
+{% include "raffle/_schedule.html" %}
+{% include "raffle/_books.html" %}
+{% endblock %}

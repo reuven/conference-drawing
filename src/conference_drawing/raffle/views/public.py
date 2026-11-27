@@ -3,6 +3,7 @@
 import ipaddress
 import logging
 from collections.abc import Callable
+from zoneinfo import ZoneInfo
 
 from django.http import (
     HttpRequest,
@@ -106,6 +107,17 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
                 "after": after,
                 "install": install,
             },
+        )
+
+    today = timezone.localdate(timezone=ZoneInfo(conference.time_zone))
+    window = conference.entry_window(today)
+    if window == "after":
+        return render(request, "raffle/closed.html", {"conference": conference})
+    if window == "before":
+        return render(
+            request,
+            "raffle/not_open.html",
+            {**schedule_context(conference), "opens_on": conference.starts_on},
         )
 
     if request.method == "POST":

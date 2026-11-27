@@ -5,11 +5,13 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, RequestFactory
 from django.urls import reverse
+from django.utils import timezone
 from hypothesis import given
 from hypothesis import strategies as st
 from PIL import Image
@@ -23,7 +25,7 @@ from conference_drawing.raffle.models import (
     InstallSettings,
 )
 from conference_drawing.raffle.views.public import client_ip
-from tests.factories import make_questions
+from tests.factories import make_drawing, make_prize_line, make_questions
 
 THANKS = "Thanks — you're in the drawing."
 CLOSED = "Entries for this conference are closed."
@@ -227,6 +229,100 @@ def test_wrap_up_landing_mid_submit_shows_closed(
     assert posted.status_code == 200
     assert CLOSED in posted.content.decode()
     assert Entrant.objects.count() == 0
+
+
+def _today_in(tz: str) -> datetime.date:
+    return timezone.localdate(timezone=ZoneInfo(tz))
+
+
+def test_entry_window_classifies_dates(conference: Conference) -> None:
+    start, end = conference.starts_on, conference.ends_on
+    one = datetime.timedelta(days=1)
+    assert conference.entry_window(start - one) == "before"
+    assert conference.entry_window(start) == "open"
+    assert conference.entry_window(end) == "open"
+    assert conference.entry_window(end + one) == "after"
+
+
+def test_before_start_shows_not_open_page(
+    client: Client, conference: Conference
+) -> None:
+    make_prize_line(make_drawing(conference))
+    opens = _today_in(conference.time_zone) + datetime.timedelta(days=3)
+    Conference.objects.filter(pk=conference.pk).update(
+        starts_on=opens, ends_on=opens + datetime.timedelta(days=1)
+    )
+    url = reverse("entry", args=[conference.slug])
+    for got in (client.get(url), _post(client, conference)):
+        body = got.content.decode()
+        assert got.status_code == 200
+        assert conference.name in body
+        assert f"{opens:%B} {opens.day}, {opens.year}" in body
+        assert "<form" not in body
+        assert "Books in the drawings" in body
+    assert Entrant.objects.count() == 0
+
+
+def test_first_and_last_day_accept_entries(
+    client: Client, conference: Conference
+) -> None:
+    today = _today_in(conference.time_zone)
+    for starts, ends in (
+        (today, today + datetime.timedelta(days=2)),
+        (today - datetime.timedelta(days=2), today),
+    ):
+        Conference.objects.filter(pk=conference.pk).update(
+            starts_on=starts, ends_on=ends
+        )
+        assert (
+            "<form"
+            in client.get(reverse("entry", args=[conference.slug])).content.decode()
+        )
+    assert _post(client, conference).status_code == 303
+
+
+def test_after_end_shows_closed_page(client: Client, conference: Conference) -> None:
+    today = _today_in(conference.time_zone)
+    Conference.objects.filter(pk=conference.pk).update(
+        starts_on=today - datetime.timedelta(days=3),
+        ends_on=today - datetime.timedelta(days=1),
+    )
+    got = client.get(reverse("entry", args=[conference.slug]))
+    assert got.status_code == 200
+    assert CLOSED in got.content.decode()
+    assert "<form" not in got.content.decode()
+    assert CLOSED in _post(client, conference).content.decode()
+    assert Entrant.objects.count() == 0
+
+
+def test_window_uses_the_conference_time_zone(
+    client: Client, conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """23:00 UTC on the 10th is already the 11th in Auckland."""
+    Conference.objects.filter(pk=conference.pk).update(
+        time_zone="Pacific/Auckland",
+        starts_on=datetime.date(2027, 5, 10),
+        ends_on=datetime.date(2027, 5, 10),
+    )
+    monkeypatch.setattr(
+        timezone,
+        "now",
+        lambda: datetime.datetime(2027, 5, 10, 23, 0, tzinfo=datetime.UTC),
+    )
+    got = client.get(reverse("entry", args=[conference.slug]))
+    assert CLOSED in got.content.decode()
+    Conference.objects.filter(pk=conference.pk).update(time_zone="America/Los_Angeles")
+    got = client.get(reverse("entry", args=[conference.slug]))
+    assert "<form" in got.content.decode()
+
+
+def test_wrapped_up_wins_over_not_open(client: Client, conference: Conference) -> None:
+    far = _today_in(conference.time_zone) + datetime.timedelta(days=30)
+    Conference.objects.filter(pk=conference.pk).update(
+        starts_on=far, ends_on=far, wrapped_up_at=DRAW_AT
+    )
+    got = client.get(reverse("entry", args=[conference.slug]))
+    assert CLOSED in got.content.decode()
 
 
 def test_unknown_slug_404(client: Client, db: None) -> None:

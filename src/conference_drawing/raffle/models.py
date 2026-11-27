@@ -4,10 +4,11 @@ All instants are stored in UTC; `Conference.time_zone` governs how organizers
 enter and read them (see `timezones.py`).
 """
 
+import datetime
 import re
 import secrets
 import zoneinfo
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -365,6 +366,18 @@ class Conference(models.Model):
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         _save_replacing_logo(self, super().save, *args, **kwargs)
+
+    def entry_window(self, today: datetime.date) -> Literal["before", "open", "after"]:
+        """Say where `today` (a date in the conference's zone) falls.
+
+        Entries are accepted from `starts_on` through `ends_on`, both days
+        included; there is no grace day either side.
+        """
+        if today < self.starts_on:
+            return "before"
+        if today > self.ends_on:
+            return "after"
+        return "open"
 
     def clean(self) -> None:
         errors: dict[str, str] = {}
