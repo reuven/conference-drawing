@@ -77,7 +77,8 @@ is one). For a printed book:
    person. The person who was passed over is not drawn again for that prize.
 
 A helper can tap **Start drawing** from 15 minutes before the scheduled time.
-The button shows when it will work.
+The button shows the scheduled time. A tap more than 15 minutes early is
+refused, with a message saying when the drawing can start.
 
 ## Common questions
 
@@ -96,6 +97,10 @@ the person whose name is called, if they're here.
 **"I entered twice by mistake."**
 No problem: the second entry is ignored. Different spellings of the same
 address, such as `ada+1@example.com` and `Ada@example.com`, count as one.
+
+**"The page says 'Too many tries'."**
+Too many submissions or sign-in attempts came from one address in a minute.
+Wait a minute and try again.
 
 **"The page says 'Too many entries'."**
 Too many people entered from one place (such as the conference Wi-Fi) in the
