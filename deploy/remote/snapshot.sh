@@ -3,7 +3,9 @@
 # the app user, which reaches its own database by peer auth. pg_dump -Fc reads
 # one consistent MVCC snapshot while the app writes; pg_restore -f /dev/null
 # then reads every block of the dump back (pg_restore --list would read only
-# its table of contents). Keeps the newest 48 in data/snapshots/.
+# its table of contents). Keeps the newest 48 in data/snapshots/, and none
+# older than 48 hours: the age rotation runs before the dump, so a dump that
+# keeps failing cannot keep old (possibly deleted) entrants alive.
 #
 # So a deleted entrant can live on in a snapshot for up to 48 hours after the
 # owner deletes entrants; the privacy page says so.
@@ -21,6 +23,10 @@ snapshots="$DATA_DIR/snapshots"
 umask 077
 mkdir -p "$snapshots"
 [ "${CD_LOCK_HELD:-}" = 1 ] || take_lock 600
+
+# Age rotation first. -P never follows a symlink, -maxdepth 1 stays in this
+# directory, -type f touches only regular files.
+find -P "$snapshots" -maxdepth 1 -type f -name 'db-*.dump' -mmin +2880 -delete
 
 name="db-$(date -u +%Y%m%dT%H%M%SZ).dump"
 partial="$snapshots/$name.partial"

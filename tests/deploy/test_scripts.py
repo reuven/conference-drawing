@@ -8,9 +8,11 @@ the snapshot job, in a temp root (``CD_ROOT``) with fake ``caddy``,
 """
 
 import hashlib
+import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -950,6 +952,48 @@ def test_snapshot_fails_when_pg_dump_fails(fakes: Fakes) -> None:
     assert result.returncode != 0
     assert list((data / "snapshots").iterdir()) == []
     assert fakes.calls("pg_restore") == []
+
+
+def _age(path: Path, hours: int) -> None:
+    """Backdate `path` by `hours` (os.utime works the same on macOS and Linux)."""
+    then = time.time() - hours * 3600
+    os.utime(path, (then, then), follow_symlinks=False)
+
+
+def test_snapshot_deletes_dumps_older_than_48_hours_even_when_the_dump_fails(
+    fakes: Fakes,
+) -> None:
+    data = _snapshot_root(fakes)
+    fakes.set("pg_dump", [{"match": "-Fc", "exit": 1}])
+    snaps = data / "snapshots"
+    snaps.mkdir()
+    old = snaps / "db-20000101T000000Z.dump"
+    old.write_text("")
+    _age(old, 72)
+    recent = snaps / "db-20000102T000000Z.dump"
+    recent.write_text("")
+    _age(recent, 47)
+    other = snaps / "notes.txt"
+    other.write_text("x")
+    _age(other, 72)
+    result = fakes.run([SNAPSHOT])
+    assert result.returncode != 0
+    assert not old.exists()
+    assert recent.exists()
+    assert other.exists()
+
+
+def test_snapshot_age_rotation_never_follows_symlinks(fakes: Fakes) -> None:
+    data = _snapshot_root(fakes)
+    snaps = data / "snapshots"
+    snaps.mkdir()
+    target = fakes.root / "elsewhere"
+    target.mkdir()
+    (target / "db-20000101T000000Z.dump").write_text("keep")
+    _age(target / "db-20000101T000000Z.dump", 72)
+    (snaps / "sub").symlink_to(target)
+    assert fakes.run([SNAPSHOT]).returncode == 0
+    assert (target / "db-20000101T000000Z.dump").read_text() == "keep"
 
 
 def test_snapshot_skips_the_lock_its_caller_already_holds(fakes: Fakes) -> None:
