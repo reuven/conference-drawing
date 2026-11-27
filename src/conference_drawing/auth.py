@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import hmac
+import unicodedata
 from collections.abc import Callable
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
@@ -116,33 +117,27 @@ ACCOUNT_FAILURE_LIMIT = 10
 ACCOUNT_WINDOW_SECONDS = 15 * 60
 
 
-def _bucket(name: str) -> str:
-    return "acct:" + name.strip().lower()
-
-
-def account_key(request: HttpRequest) -> str:
-    """Return the account bucket name for a sign-in POST: ``acct:`` + the name.
-
-    The typed username or email is trimmed and lowercased, so ``Helper`` and
-    ``  helper `` are one account. An empty or missing field is ``acct:``.
-    """
-    return _bucket(str(request.POST.get("username", "")))
-
-
 def login_failure_key(name: str) -> str:
-    """Return the cache key for ``name``'s failed-sign-in counter.
+    """Return the cache key for the typed name's failed-sign-in counter.
 
-    Keyed with the secret and hashed, so the typed name (it may be an email
-    address) is never stored in the cache or reachable from a dump of it.
+    The one place a typed name becomes an account: NFKC-normalized (as Django's
+    username field does before authenticating, so ``\uff48elper`` is
+    ``helper``), trimmed and case-folded. Keyed with the secret and hashed, so
+    the name (it may be an email address) is never stored in the cache or
+    reachable from a dump of it.
     """
+    account = unicodedata.normalize("NFKC", name).strip().casefold()
     digest = hmac.new(
-        settings.SECRET_KEY.encode(), _bucket(name).encode(), hashlib.sha256
+        settings.SECRET_KEY.encode(), f"acct:{account}".encode(), hashlib.sha256
     ).hexdigest()
     return f"loginfail:{digest}"
 
 
 def _record_failure(name: str) -> None:
-    """Count one failed sign-in; the window runs 15 minutes from the latest one.
+    """Count one failed sign-in; the window slides 15 minutes from the latest one.
+
+    The check before authenticating and this increment are separate steps, so
+    the limit may overshoot by at most the number of concurrent requests.
 
     ``cache.incr`` rewrites the row with the backend's default timeout
     (300 s), which would cut the window short, so the full window is restored

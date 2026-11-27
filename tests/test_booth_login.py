@@ -1,6 +1,7 @@
 """The booth sign-in page: helpers sign in without the admin, and sign out."""
 
 import datetime
+import unicodedata
 from collections.abc import Callable
 from typing import Any
 from unittest import mock
@@ -13,8 +14,10 @@ from django.test import Client, RequestFactory
 from django.urls import reverse
 from django.utils import timezone
 from django_ratelimit.exceptions import Ratelimited
+from hypothesis import example, given
+from hypothesis import strategies as st
 
-from conference_drawing.auth import _record_failure, account_key, login_failure_key
+from conference_drawing.auth import _record_failure, login_failure_key
 from conference_drawing.raffle.models import Conference, Drawing
 from conference_drawing.raffle.views.public import rate_limited
 
@@ -259,10 +262,36 @@ def test_the_typed_name_never_appears_in_the_cache_key() -> None:
     assert key == login_failure_key("secret.name@example.com")
 
 
-def test_account_key_is_the_trimmed_lowercased_name() -> None:
-    post = RequestFactory().post(LOGIN, {"username": "  Helper@X.com "})
-    assert account_key(post) == "acct:helper@x.com"
-    assert account_key(RequestFactory().post(LOGIN)) == "acct:"
+def test_a_missing_username_has_the_empty_bucket() -> None:
+    assert login_failure_key("") == login_failure_key("   ")
+
+
+def test_unicode_variants_of_a_name_share_one_bucket(helper_account: User) -> None:
+    """Django NFKC-normalizes the typed name, so these all sign in as helper."""
+    client = Client()
+    _fail(client, LOGIN, "ｈelper", 5)  # fullwidth h
+    _fail(client, LOGIN, "helper", 5, start=10)
+    assert _post(client, LOGIN, "\U0001d421elper", GOOD, 60) == 429  # math bold h
+
+
+@given(st.text(max_size=30))
+@example("ｈelper")
+@example("Kelvin")  # Kelvin sign
+def test_every_spelling_the_login_form_accepts_has_one_key(name: str) -> None:
+    key = login_failure_key(name)
+    assert key == login_failure_key(unicodedata.normalize("NFKC", name))
+    assert key == login_failure_key(f"  {name.upper()}\t")
+    assert key == login_failure_key(name.swapcase())
+
+
+def test_right_password_on_a_non_staff_account_counts_on_the_admin_page(
+    helper_account: User,
+) -> None:
+    """The admin form refuses non-staff after a correct password; that is a guess."""
+    client = Client()
+    statuses = {_post(client, ADMIN_LOGIN, "helper", GOOD, n) for n in range(1, 11)}
+    assert statuses == {200}
+    assert _post(client, ADMIN_LOGIN, "helper", GOOD, 60) == 429
 
 
 def test_failure_count_outlives_the_cache_default_timeout(
