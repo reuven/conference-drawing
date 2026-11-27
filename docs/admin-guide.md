@@ -226,7 +226,7 @@ fill in Install settings once and leave conferences blank.
 
 ## Drawing history
 
-Every start, claim, "Not here", undo, and void is recorded. In the admin, open
+Each drawing's events (started, picked, claimed, not here, undo, void, closed) are recorded, with ids and counts but no names. In the admin, open
 **Audit events** to read them; the list is read-only. The conference's booth
 page shows undo and void counts, to you only. A slot never redraws someone who
 was already voided for it, so undoing "Not here" and marking it again draws a
