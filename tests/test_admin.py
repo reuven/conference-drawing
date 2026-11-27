@@ -655,6 +655,38 @@ def test_rotate_display_token_action_breaks_the_old_url(
     assert old not in resp.content.decode()
 
 
+def _staff_client(*codenames: str) -> Client:
+    from django.contrib.auth.models import Permission
+
+    user = get_user_model().objects.create_user(
+        f"staff{len(codenames)}", "s@example.com", "pw", is_staff=True
+    )
+    user.user_permissions.set(Permission.objects.filter(codename__in=codenames))
+    client = Client()
+    client.force_login(user)
+    return client
+
+
+def test_rotate_display_token_needs_change_permission(
+    db: None, conference_factory: Factory
+) -> None:
+    """A view-only staff user must not see or run the action."""
+    conf = conference_factory()
+    old = conf.display_token
+    viewer = _staff_client("view_conference")
+    page = viewer.get(reverse("admin:raffle_conference_changelist"))
+    assert "rotate_display_token" not in page.content.decode()
+    viewer.post(
+        reverse("admin:raffle_conference_changelist"),
+        {"action": "rotate_display_token", "_selected_action": [conf.pk]},
+    )
+    conf.refresh_from_db()
+    assert conf.display_token == old
+    changer = _staff_client("view_conference", "change_conference")
+    page = changer.get(reverse("admin:raffle_conference_changelist"))
+    assert "rotate_display_token" in page.content.decode()
+
+
 # --- login rate limit ----------------------------------------------------------
 
 

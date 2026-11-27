@@ -196,7 +196,7 @@ class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
 
     actions = ["rotate_display_token"]
 
-    @admin.action(description="Rotate display token")
+    @admin.action(permissions=["change"], description="Rotate display token")
     def rotate_display_token(
         self, request: HttpRequest, queryset: QuerySet[Conference]
     ) -> None:
