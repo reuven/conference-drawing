@@ -862,6 +862,49 @@ def test_only_the_drip_worker_may_open_ip_sockets() -> None:
         assert ("AF_INET" in families) == (name == "conference-drawing-drip.service")
 
 
+@pytest.mark.skipif(
+    shutil.which("systemd-analyze") is None,
+    reason="systemd-analyze is not installed here (macOS); it runs on Linux CI",
+)
+def test_systemd_analyze_finds_no_unknown_or_unparsable_directive(
+    tmp_path: Path,
+) -> None:
+    """The text tests can't catch a misspelled directive or a value this systemd
+    rejects; `systemd-analyze verify` can. ExecStart paths point at nothing on
+    a CI runner, so they are rewritten to /bin/true in copies of the units."""
+    for path in SYSTEMD.iterdir():
+        text = re.sub(
+            r"^(ExecStart|ExecReload)=.*$",
+            r"\1=/bin/true",
+            path.read_text(),
+            flags=re.MULTILINE,
+        )
+        (tmp_path / path.name).write_text(text)
+    result = subprocess.run(  # noqa: S603 - fixed arguments, no network
+        [
+            shutil.which("systemd-analyze") or "",
+            "verify",
+            *(str(tmp_path / name) for name in SERVICES),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    # A missing user or postgresql.service on the runner is not our concern.
+    bad = [
+        ln
+        for ln in output.splitlines()
+        if re.search(
+            r"unknown (key|section|lvalue|assignment)|failed to parse",
+            ln,
+            re.IGNORECASE,
+        )
+    ]
+    assert bad == [], output
+
+
 SOCKET_PATH = "/run/conference-drawing/web.sock"
 
 
