@@ -9,7 +9,13 @@ _IGNORED = {"BEGIN;", "COMMIT;"}
 
 
 @pytest.mark.parametrize(
-    "name", ["0010_reserved_slugs", "0011_newsletter_names", "0012_newsletter_defaults"]
+    "name",
+    [
+        "0010_reserved_slugs",
+        "0011_newsletter_names",
+        "0012_newsletter_defaults",
+        "0016_book_cover_validated",
+    ],
 )
 def test_rename_migration_emits_no_sql(db: None, name: str) -> None:
     """A state-only migration touches no column, so rollback to v0.2.1 is safe."""

@@ -62,7 +62,7 @@ def validate_logo(file: File[Any]) -> None:
     if isinstance(file, FieldFile) and file._committed:  # type: ignore[attr-defined]
         return
     if file.size is not None and file.size > MAX_LOGO_BYTES:
-        raise ValidationError("The logo must be 2 MB or smaller.")
+        raise ValidationError("The image must be 2 MB or smaller.")
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -84,14 +84,8 @@ def validate_logo(file: File[Any]) -> None:
         raise ValidationError("Upload a PNG, JPEG, WEBP or GIF image.")
 
 
-def logo_upload_to(instance: models.Model, filename: str) -> str:
-    """Name an uploaded logo `logos/<random hex>.<ext>`, ignoring the user's name.
-
-    Why: the uploaded filename is attacker-controlled. Django passes only that
-    name, but the instance's `after_logo` already holds the upload, so the
-    extension comes from the format Pillow detects in the bytes.
-    """
-    upload = instance.after_logo  # type: ignore[attr-defined]
+def _random_image_name(folder: str, upload: Any) -> str:
+    """Name an upload `<folder>/<random hex>.<ext>`, ext from the detected format."""
     position = upload.file.tell()
     try:
         upload.file.seek(0)
@@ -103,7 +97,26 @@ def logo_upload_to(instance: models.Model, filename: str) -> str:
         upload.file.seek(position)
     if ext is None:
         raise ValidationError("Upload a valid PNG, JPEG, WEBP or GIF image.")
-    return f"logos/{uuid.uuid4().hex}.{ext}"
+    return f"{folder}/{uuid.uuid4().hex}.{ext}"
+
+
+def logo_upload_to(instance: models.Model, filename: str) -> str:
+    """Name an uploaded logo `logos/<random hex>.<ext>`, ignoring the user's name.
+
+    Why: the uploaded filename is attacker-controlled. Django passes only that
+    name, but the instance's `after_logo` already holds the upload, so the
+    extension comes from the format Pillow detects in the bytes.
+    """
+    return _random_image_name("logos", instance.after_logo)  # type: ignore[attr-defined]
+
+
+def cover_upload_to(instance: models.Model, filename: str) -> str:
+    """Name an uploaded book cover `covers/<random hex>.<ext>`, like a logo.
+
+    Why: a cover is served from our origin too, so a `cover.pdf` that is really
+    a PNG must be stored as `.png` under a name the uploader doesn't choose.
+    """
+    return _random_image_name("covers", instance.cover)  # type: ignore[attr-defined]
 
 
 _REENCODE_FORMATS = {

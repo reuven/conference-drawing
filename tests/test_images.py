@@ -10,8 +10,8 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image
 
-from conference_drawing.raffle.models import InstallSettings
-from conference_drawing.raffle.validators import reencode_image
+from conference_drawing.raffle.models import Book, InstallSettings
+from conference_drawing.raffle.validators import cover_upload_to, reencode_image
 from tests.factories import make_conference
 
 _GPS = {1: "N", 2: (37.0, 25.0, 19.0), 3: "W", 4: (122.0, 5.0, 6.0)}
@@ -173,3 +173,21 @@ def test_saving_install_settings_logo_stores_it_without_metadata(media: Path) ->
     )
     site.save()
     assert dict(_stored(media / "logos").getexif()) == {}
+
+
+def test_cover_validation_matches_logos() -> None:
+    field = Book._meta.get_field("cover")
+    html = SimpleUploadedFile("c.png", b"<html></html>")
+    with pytest.raises(ValidationError):
+        field.clean(html, Book())
+    big = SimpleUploadedFile("c.png", b"\x89PNG" + b"0" * (3 * 1024 * 1024))
+    with pytest.raises(ValidationError, match="2 MB"):
+        field.clean(big, Book())
+
+
+def test_cover_upload_name_ignores_user_name_and_uses_detected_extension() -> None:
+    book = Book(cover=_upload(Image.new("RGB", (4, 4)), "GIF", "../x.pdf"))
+    assert re.fullmatch(r"covers/[0-9a-f]{32}\.gif", cover_upload_to(book, "x.pdf"))
+    bad = Book(cover=SimpleUploadedFile("x.png", b"nope"))
+    with pytest.raises(ValidationError):
+        cover_upload_to(bad, "x.png")

@@ -32,6 +32,7 @@ from .timezones import time_zone_choices
 # validators as `conference_drawing.raffle.models.<name>`.
 from .validators import (
     MAX_REDIRECT_URL_LENGTH,
+    cover_upload_to,
     reencode_pending_upload,
 )
 from .validators import (
@@ -291,7 +292,10 @@ class Book(models.Model):
 
     title = models.CharField(max_length=200, validators=[validate_label])
     cover = models.ImageField(
-        upload_to="covers/", blank=True, help_text=CHOOSE_FILE_AGAIN
+        upload_to=cover_upload_to,
+        blank=True,
+        validators=[validate_logo],
+        help_text="PNG, JPEG, WebP or GIF, up to 2 MB. " + CHOOSE_FILE_AGAIN,
     )
     link = models.URLField(blank=True)
 
