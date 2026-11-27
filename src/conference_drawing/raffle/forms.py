@@ -9,6 +9,7 @@ from django.db import IntegrityError, transaction
 
 from .models import Conference, Entrant, InstallSettings, Question
 from .text import (
+    email_key,
     has_forbidden_chars,
     normalize_email,
     validate_deliverable_email,
@@ -108,7 +109,13 @@ class EntryForm(forms.Form):
         return validate_single_line_label(self.cleaned_data["name"])
 
     def clean_email(self) -> str:
-        return normalize_email(validate_deliverable_email(self.cleaned_data["email"]))
+        email = normalize_email(validate_deliverable_email(self.cleaned_data["email"]))
+        try:
+            email_key(email)
+        except ValueError:
+            # No mailbox to key (e.g. nothing before the +tag): refuse it.
+            raise ValidationError("Please enter a valid email address.") from None
+        return email
 
     def clean(self) -> dict[str, Any]:
         cleaned = super().clean() or {}
@@ -125,8 +132,15 @@ class EntryForm(forms.Form):
         """True if something was typed into the hidden field (a bot, not a person)."""
         return bool(self.data.get("leave_blank", "").strip())
 
-    def _already_entered(self, email: str) -> bool:
-        return Entrant.objects.filter(conference=self.conference, email=email).exists()
+    def _already_entered(self, key: str) -> bool:
+        """True if someone in this conference already has this mailbox key.
+
+        Exact-email and key checks differ for aliases (`ada+1@x` vs `ada@x`);
+        rows that predate the key have it backfilled by migration 0014.
+        """
+        return Entrant.objects.filter(
+            conference=self.conference, email_key=key
+        ).exists()
 
     def save(self, now: datetime.datetime) -> Entrant | None:
         """Create the entrant, or return None (changing nothing) for a repeat email.
@@ -151,7 +165,7 @@ class EntryForm(forms.Form):
 
     def _create(self, now: datetime.datetime) -> Entrant | None:
         email: str = self.cleaned_data["email"]
-        if self._already_entered(email):
+        if self._already_entered(email_key(email)):
             return None
         answers = {
             q.key: self.cleaned_data[f"q_{q.key}"]
@@ -176,7 +190,7 @@ class EntryForm(forms.Form):
             with transaction.atomic():
                 entrant.save()
         except IntegrityError:
-            if self._already_entered(email):
+            if self._already_entered(email_key(email)):
                 return None
             raise
         return entrant
