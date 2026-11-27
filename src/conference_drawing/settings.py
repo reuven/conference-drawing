@@ -6,6 +6,7 @@ directory.
 """
 
 import os
+import secrets
 from pathlib import Path
 
 import django_stubs_ext
@@ -32,7 +33,8 @@ SECRET_KEY = _env("DJANGO_SECRET_KEY")
 if not SECRET_KEY:
     if not DEBUG:
         raise ImproperlyConfigured("DJANGO_SECRET_KEY is required when DEBUG is off")
-    SECRET_KEY = "insecure-development-key-never-use-in-production"  # noqa: S105
+    # A fresh key per process: never a fixed, public string (sessions reset on restart).
+    SECRET_KEY = secrets.token_urlsafe(50)
 
 _LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
 

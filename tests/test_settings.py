@@ -172,3 +172,17 @@ def test_production_accepts_only_the_configured_hosts(
     monkeypatch.setenv("CD_ENV_FILE", str(tmp_path / "absent.env"))
     importlib.reload(cd_settings)
     assert cd_settings.ALLOWED_HOSTS == ["localhost"]
+
+
+def test_debug_key_is_random_per_process_and_never_the_old_constant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("DJANGO_SECRET_KEY", raising=False)
+    monkeypatch.setenv("DJANGO_DEBUG", "1")
+    monkeypatch.setenv("CD_ENV_FILE", str(tmp_path / "absent.env"))
+    importlib.reload(cd_settings)
+    first = cd_settings.SECRET_KEY
+    importlib.reload(cd_settings)
+    assert first != cd_settings.SECRET_KEY
+    assert len(first) >= 50
+    assert "insecure-development-key" not in Path(cd_settings.__file__).read_text()
