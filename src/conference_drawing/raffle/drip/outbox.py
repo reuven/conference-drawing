@@ -46,6 +46,7 @@ class ProcessResult(NamedTuple):
     sent: int
     retried: int
     failed: int
+    retry_after: float | None = None  # set when Drip throttled: wait this long
 
 
 def enqueue(
@@ -181,6 +182,24 @@ def _record_failure(
     return give_up
 
 
+def _record_throttled(
+    job: OutboxJob, retry_after: float, *, now: datetime.datetime
+) -> None:
+    """Hand a throttled job back without charging an attempt.
+
+    Drip said "later", not "no", so the claim's attempt is given back and the
+    job waits out `retry_after`. Conditional on still holding the lease.
+    """
+    _still_leased(job).update(
+        attempts=job.attempts - 1,
+        next_attempt_at=now + datetime.timedelta(seconds=retry_after),
+        last_error_class="DripError",
+    )
+    logger.warning(
+        "outbox job %s throttled by Drip; waiting %.0f s", job.pk, retry_after
+    )
+
+
 def _still_leased(job: OutboxJob) -> QuerySet[OutboxJob]:
     """Select the job only if it is exactly as this worker's claim left it.
 
@@ -206,8 +225,10 @@ def process_due(
 
     Jobs are claimed one at a time, so a stop request (`should_stop`) between
     jobs leaves the rest untouched and due, and each lease only has to outlast
-    one request. A 4xx other than 429 is permanent, as is any unexpected error
-    (a payload that no longer validates, a bug): those must not loop forever.
+    one request. A 429 stops the pass and is reported (the worker waits it out)
+    without costing the job an attempt. A 4xx other than 429 is permanent, as
+    is any unexpected error (a payload that no longer validates, a bug): those
+    must not loop forever.
     Throttling, 5xx and network errors back off, and fail after `MAX_ATTEMPTS`.
     Only exception class names are recorded and logged.
 
@@ -226,6 +247,9 @@ def process_due(
         try:
             _send(client, job)
         except DripError as exc:
+            if exc.status_code == 429 and exc.retry_after is not None:
+                _record_throttled(job, exc.retry_after, now=clock())
+                return ProcessResult(sent, retried, failed, retry_after=exc.retry_after)
             permanent, error = not exc.retryable, exc
         except httpx.HTTPError as exc:
             permanent, error = False, exc

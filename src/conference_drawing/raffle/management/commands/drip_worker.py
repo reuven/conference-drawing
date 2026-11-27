@@ -15,6 +15,7 @@ from ...drip.client import DripClient
 from ...drip.config import drip_settings
 
 INTERVAL_SECONDS = 5
+MAX_WAIT_SECONDS = 3600
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +43,7 @@ class Command(BaseCommand):
         try:
             with httpx.Client() as http:
                 while True:
+                    wait: float = INTERVAL_SECONDS
                     if config is not None:
                         try:
                             result = outbox.process_due(
@@ -54,6 +56,9 @@ class Command(BaseCommand):
                                 "drip worker pass failed: %s", type(exc).__name__
                             )
                         else:
+                            if result.retry_after is not None:
+                                # Drip throttled us: wait as long as it asked.
+                                wait = min(result.retry_after, MAX_WAIT_SECONDS)
                             # Quiet when idle: no 5 s heartbeat in the journal.
                             if result.sent or result.retried or result.failed:
                                 self.stdout.write(
@@ -61,7 +66,7 @@ class Command(BaseCommand):
                                     f"failed={result.failed}"
                                 )
                     # An interruptible sleep: a signal sets `stop` and wakes us.
-                    if options["once"] or stop.wait(INTERVAL_SECONDS):
+                    if options["once"] or stop.wait(wait):
                         break
                     close_old_connections()  # drop stale connections
         finally:

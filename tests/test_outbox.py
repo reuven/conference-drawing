@@ -227,14 +227,15 @@ def test_job_fails_after_8_attempts(
     assert route.call_count == 8
 
 
-def test_429_is_retried_but_other_4xx_is_permanent(
+def test_429_is_throttled_but_other_4xx_is_permanent(
     conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
 ) -> None:
     respx_mock.post(EVENTS).mock(side_effect=[httpx.Response(429), httpx.Response(422)])
     throttled = _job(conference)
-    assert outbox.process_due(drip, clock=_at(NOW)).retried == 1
+    assert outbox.process_due(drip, clock=_at(NOW)).retry_after == 60
     throttled.refresh_from_db()
     assert throttled.status == J.Status.PENDING
+    throttled.delete()
     bad = _job(conference)
     assert outbox.process_due(drip, clock=_at(NOW)).failed == 1
     bad.refresh_from_db()
@@ -599,6 +600,60 @@ def test_sent_at_is_the_time_of_the_send(
     assert job.sent_at == NOW + datetime.timedelta(minutes=5)
 
 
+def test_429_does_not_charge_an_attempt_and_stops_the_pass(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(EVENTS).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "120"})
+    )
+    first, second = _job(conference), _job(conference)
+    result = outbox.process_due(drip, clock=_at(NOW))
+    assert result == outbox.ProcessResult(0, 0, 0, retry_after=120)
+    assert route.call_count == 1
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert (first.status, first.attempts) == (J.Status.PENDING, 0)
+    assert first.next_attempt_at == NOW + datetime.timedelta(seconds=120)
+    assert first.last_error_class == "DripError"
+    assert (second.attempts, second.next_attempt_at) == (0, NOW)
+
+
+def test_429_after_earlier_attempts_keeps_the_attempt_count(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post(EVENTS).mock(return_value=httpx.Response(429))
+    job = _job(conference, attempts=7)
+    result = outbox.process_due(drip, clock=_at(NOW))
+    assert result.retry_after == 60
+    job.refresh_from_db()
+    assert (job.status, job.attempts) == (J.Status.PENDING, 7)
+
+
+def test_429_from_a_stale_worker_changes_nothing_but_still_stops(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    def newer_worker_takes_over(request: httpx.Request) -> httpx.Response:
+        OutboxJob.objects.update(
+            attempts=5, next_attempt_at=NOW + datetime.timedelta(hours=1)
+        )
+        return httpx.Response(429, headers={"Retry-After": "10"})
+
+    respx_mock.post(EVENTS).mock(side_effect=newer_worker_takes_over)
+    job = _job(conference)
+    result = outbox.process_due(drip, clock=_at(NOW))
+    assert result.retry_after == 10
+    job.refresh_from_db()
+    assert job.attempts == 5
+
+
+def test_a_clean_pass_reports_no_retry_after(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post(EVENTS).mock(return_value=httpx.Response(204))
+    _job(conference)
+    assert outbox.process_due(drip, clock=_at(NOW)).retry_after is None
+
+
 def test_worker_loop_exits_on_sigterm_without_sleeping_out_the_interval(
     conference: Conference,
     monkeypatch: pytest.MonkeyPatch,
@@ -700,6 +755,33 @@ def test_worker_loop_runs_again_after_the_wait(
     monkeypatch.setattr(drip_worker, "close_old_connections", lambda: closed.append(1))
     call_command("drip_worker", stdout=StringIO())
     assert (len(passes), len(closed)) == (2, 1)
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected_wait"),
+    [(120.0, 120.0), (99999.0, 3600.0), (None, drip_worker.INTERVAL_SECONDS)],
+)
+def test_worker_sleeps_for_retry_after_before_the_next_pass(
+    conference: Conference,
+    monkeypatch: pytest.MonkeyPatch,
+    retry_after: float | None,
+    expected_wait: float,
+) -> None:
+    waits: list[float | None] = []
+
+    class RecordingEvent(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            waits.append(timeout)
+            return True  # as if a signal woke us: the loop ends
+
+    monkeypatch.setattr(threading, "Event", RecordingEvent)
+    monkeypatch.setattr(
+        outbox,
+        "process_due",
+        lambda *a, **k: outbox.ProcessResult(0, 0, 0, retry_after=retry_after),
+    )
+    call_command("drip_worker", stdout=StringIO())
+    assert waits == [expected_wait]
 
 
 def test_malformed_subscriber_job_fails_permanently(
