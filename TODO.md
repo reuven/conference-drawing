@@ -93,7 +93,7 @@ Spec: `docs/superpowers/specs/2026-11-26-security-hardening-design.md`
 - [x] Security review of 0.3.0 (three reviewers; 0 Critical, 0 High, 4 Medium)
 - [x] Design doc approved (Reuven, 2026-11-26)
 - [x] Implementation plan written
-- [ ] 1. Rerolls cost a person (a slot never redraws someone voided for it)
+- [x] 1. Rerolls cost a person (a slot never redraws someone voided for it)
 - [ ] 2. The owner sees the history (Audit events admin, undo/void counts)
 - [ ] 3. One person per mailbox (`+tag` and IDNA email key)
 - [ ] 4. Entry window (conference dates only) and per-network entry cap
