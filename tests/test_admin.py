@@ -19,12 +19,14 @@ from django.utils import timezone
 from PIL import Image
 
 from conference_drawing.raffle.admin import (
+    AuditEventAdmin,
     ConferenceAdmin,
     DrawingAdminForm,
     InstallSettingsAdmin,
     PrizeLineForm,
 )
 from conference_drawing.raffle.models import (
+    AuditEvent,
     Book,
     Conference,
     CouponCode,
@@ -1316,3 +1318,31 @@ def test_other_many_to_many_fields_keep_their_full_choice_list(
     groups = get_user_model()._meta.get_field("groups")
     field = model_admin.formfield_for_manytomany(groups, request)
     assert field.queryset.model is groups.related_model
+
+
+def test_audit_events_admin_is_read_only(
+    admin_client: Client, drawing_factory: Factory, conference_factory: Factory
+) -> None:
+    drawing = drawing_factory(conference_factory())
+    event = AuditEvent.objects.create(drawing=drawing, kind=AuditEvent.Kind.STARTED)
+    changelist = reverse("admin:raffle_auditevent_changelist")
+    assert admin_client.get(changelist).status_code == 200
+    assert admin_client.get(reverse("admin:raffle_auditevent_add")).status_code == 403
+    change_url = reverse("admin:raffle_auditevent_change", args=[event.pk])
+    page = admin_client.get(change_url)
+    assert page.status_code == 200
+    assert 'name="_save"' not in page.content.decode()
+    assert admin_client.post(change_url, {"kind": "void"}).status_code == 403
+    delete_url = reverse("admin:raffle_auditevent_delete", args=[event.pk])
+    assert admin_client.post(delete_url, {"post": "yes"}).status_code == 403
+    admin_client.post(
+        changelist, {"action": "delete_selected", "_selected_action": [event.pk]}
+    )
+    assert AuditEvent.objects.filter(pk=event.pk).exists()
+
+
+def test_audit_events_admin_lists_ids_only_newest_first() -> None:
+    model_admin = AuditEventAdmin(AuditEvent, admin.site)
+    assert model_admin.ordering == ("-at", "-id")
+    assert model_admin.list_display == ("at", "drawing", "kind", "pick_id")
+    assert model_admin.list_filter == ("drawing", "kind")
