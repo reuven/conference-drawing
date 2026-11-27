@@ -10,7 +10,9 @@ key carries a hash of the network, never the address.
 
 import datetime
 import hashlib
+import hmac
 
+from django.conf import settings
 from django.core.cache import cache
 
 from .models import Conference
@@ -21,7 +23,10 @@ _BUCKET_SECONDS = 3700
 
 def cache_key(conference: Conference, key: str, now: datetime.datetime) -> str:
     """Return the cache key for `key`'s counter in the hour containing `now`."""
-    digest = hashlib.sha256(key.encode()).hexdigest()
+    # Keyed, so the stored digest of an IPv4 address can't be brute-forced.
+    digest = hmac.new(
+        settings.SECRET_KEY.encode(), key.encode(), hashlib.sha256
+    ).hexdigest()
     hour = now.astimezone(datetime.UTC).strftime("%Y%m%d%H")
     return f"entrycap:{conference.pk}:{digest}:{hour}"
 
@@ -58,6 +63,9 @@ def record_network_entry(
     cache.add(name, 0, _BUCKET_SECONDS)
     try:
         cache.incr(name)
+        # incr rewrites the row with the backend's default timeout (300 s),
+        # which would let the count lapse mid-hour; restore the full bucket.
+        cache.touch(name, _BUCKET_SECONDS)
     except ValueError:
         # The counter expired between add and incr; start it at this entry.
         cache.add(name, 1, _BUCKET_SECONDS)

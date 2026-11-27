@@ -1,14 +1,18 @@
 """The per-network cap on created entries (fixed one-hour buckets in the cache)."""
 
 import datetime
+import hashlib
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from django.core.cache import cache
+from django.core.cache.backends import db as db_cache
 from django.db import connection
 from django.test import Client
 from django.urls import reverse
+from django.utils import timezone
 
 from conference_drawing.raffle import entry_cap
 from conference_drawing.raffle.entry_cap import (
@@ -49,6 +53,27 @@ def test_next_hour_starts_a_fresh_count(conference: Conference) -> None:
         record_network_entry(conference, NET, now=NOW)
     later = NOW + datetime.timedelta(hours=1)
     assert network_entries_allowed(conference, NET, now=later)
+
+
+def test_counter_outlives_the_cache_default_timeout(
+    conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """incr rewrites the row with the backend's 300 s default unless we touch it."""
+    for _ in range(3):
+        record_network_entry(conference, NET, now=NOW)
+    later = timezone.now() + datetime.timedelta(seconds=600)
+    monkeypatch.setattr(db_cache, "tz_now", lambda: later)
+    assert not network_entries_allowed(conference, NET, now=NOW)
+
+
+def test_cache_key_is_keyed_to_the_secret_key(
+    conference: Conference, settings: Any
+) -> None:
+    plain = hashlib.sha256(NET.encode()).hexdigest()
+    assert plain not in cache_key(conference, NET, NOW)
+    before = cache_key(conference, NET, NOW)
+    settings.SECRET_KEY = "another-secret-key"  # noqa: S105
+    assert cache_key(conference, NET, NOW) != before
 
 
 def test_hour_bucket_is_utc_whatever_the_zone_of_now(conference: Conference) -> None:
