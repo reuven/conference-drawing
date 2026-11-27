@@ -392,6 +392,23 @@ class Conference(models.Model):
         parts = re.split(r"[\s,;]+", self.exclusion_emails)
         return frozenset(lenient_email_key(p) for p in parts if p.strip())
 
+    def excluded_entrants_q(self) -> Q:
+        """Match entrants barred from winning, as one rule for every call site.
+
+        By mailbox key, plus an exact-address match for rows whose key is NULL
+        (v0.3.0 inserted them after the backfill ran): without it an excluded
+        host would turn eligible, as 0.3 matched by exact email. Use with
+        `filter` to count and `exclude` to drop.
+        """
+        addresses = {
+            normalize_email(p)
+            for p in re.split(r"[\s,;]+", self.exclusion_emails)
+            if p.strip()
+        }
+        return Q(email_key__in=self.excluded_keys) | Q(
+            email_key__isnull=True, email__in=addresses
+        )
+
     def tags(self) -> ConferenceTags:
         """Return this conference's Drip tags, derived from the slug."""
         s = self.slug

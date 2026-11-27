@@ -18,6 +18,7 @@ from conference_drawing.raffle.models import (
     Conference,
     CouponCode,
     Drawing,
+    Entrant,
     InstallSettings,
     OutboxJob,
     Pick,
@@ -541,3 +542,23 @@ def test_entrant_email_key_set_on_save(
     e.refresh_from_db()
     assert e.email == "ada+raffle@bücher.example"
     assert e.email_key == "ada@xn--bcher-kva.example"
+
+
+def test_excluded_entrants_q_matches_key_or_null_key_exact_email(
+    conference_factory: Factory, entrant_factory: Factory
+) -> None:
+    c = conference_factory(exclusion_emails="Staff@Example.com")
+    alias = entrant_factory(c, email="staff+1@example.com")
+    exact = entrant_factory(c, email="staff@example.com")
+    legacy_alias = entrant_factory(c, email="staff+2@example.com")
+    guest = entrant_factory(c, email="guest@example.com")
+    Entrant.objects.filter(pk__in=[exact.pk, legacy_alias.pk]).update(email_key=None)
+    hit = set(
+        Entrant.objects.filter(c.excluded_entrants_q()).values_list("pk", flat=True)
+    )
+    # A NULL-keyed alias cannot be matched without a key; exact email still is.
+    assert hit == {alias.pk, exact.pk}
+    miss = set(
+        Entrant.objects.exclude(c.excluded_entrants_q()).values_list("pk", flat=True)
+    )
+    assert miss == {legacy_alias.pk, guest.pk}
