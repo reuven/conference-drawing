@@ -127,6 +127,16 @@ def test_start_message_names_local_time(conf: Conference) -> None:
     assert str(excinfo.value) == "This drawing can start at 1:55 PM."
 
 
+def test_start_message_adds_the_date_when_not_today(conf: Conference) -> None:
+    # 1:40 PM PDT on May 12 is the next day in Los Angeles from NOW (May 11).
+    d = factories.make_drawing(
+        conf, scheduled_at=SCHEDULED + datetime.timedelta(days=1)
+    )
+    with pytest.raises(DrawingError) as excinfo:
+        start_drawing(d, now=NOW, rng=rng())
+    assert str(excinfo.value) == "This drawing can start at 1:40 PM on May 12."
+
+
 def test_start_allowed_exactly_at_window_edge(conf: Conference) -> None:
     d = factories.make_drawing(conf, scheduled_at=NOW + EARLY_START_WINDOW)
     factories.make_prize_line(d)

@@ -197,7 +197,10 @@ def start_drawing(
         raise DrawingError("This drawing has already started.")
     if not early_ok and now < drawing.scheduled_at - EARLY_START_WINDOW:
         local = to_local(drawing.scheduled_at, drawing.conference.time_zone)
-        raise DrawingError(f"This drawing can start at {local.strftime('%-I:%M %p')}.")
+        when = local.strftime("%-I:%M %p")
+        if local.date() != to_local(now, drawing.conference.time_zone).date():
+            when += local.strftime(" on %b %-d")
+        raise DrawingError(f"This drawing can start at {when}.")
     if _another_open(drawing):
         raise DrawingError("Another drawing is open. Close it first.")
     lines = list(
