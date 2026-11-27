@@ -2,6 +2,7 @@
 
 import base64
 import datetime
+import email.utils
 import json
 from collections.abc import Iterator
 
@@ -95,3 +96,64 @@ def test_client_raises_drip_error_on_422(
 )
 def test_drip_error_retryable_rule(status: int, retryable: bool) -> None:
     assert DripError(status).retryable is retryable
+
+
+def _throttled(
+    drip: DripClient, respx_mock: respx.MockRouter, **headers: str
+) -> DripError:
+    respx_mock.post(f"{BASE}/events").mock(
+        return_value=httpx.Response(429, headers=headers)
+    )
+    with pytest.raises(DripError) as caught:
+        drip.record_event(EVENT)
+    return caught.value
+
+
+def test_429_carries_retry_after_seconds(
+    respx_mock: respx.MockRouter, drip: DripClient
+) -> None:
+    assert _throttled(drip, respx_mock, **{"Retry-After": "120"}).retry_after == 120
+
+
+def test_429_parses_an_http_date_retry_after(
+    respx_mock: respx.MockRouter, drip: DripClient
+) -> None:
+    when = datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=300)
+    header = email.utils.format_datetime(when, usegmt=True)
+    error = _throttled(drip, respx_mock, **{"Retry-After": header})
+    assert error.retry_after is not None
+    assert 295 <= error.retry_after <= 300
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("999999", 3600),
+        ("-5", 0),
+        ("Mon, 01 Jan 2001 00:00:00 GMT", 0),
+        ("soon", 60),
+        ("", 60),
+        ("nan", 60),
+        ("inf", 60),
+    ],
+)
+def test_429_retry_after_is_clamped_and_garbage_defaults(
+    respx_mock: respx.MockRouter, drip: DripClient, header: str, expected: float
+) -> None:
+    error = _throttled(drip, respx_mock, **{"Retry-After": header})
+    assert error.retry_after == expected
+
+
+def test_429_without_retry_after_defaults_to_60(
+    respx_mock: respx.MockRouter, drip: DripClient
+) -> None:
+    assert _throttled(drip, respx_mock).retry_after == 60
+
+
+def test_other_errors_have_no_retry_after(
+    respx_mock: respx.MockRouter, drip: DripClient
+) -> None:
+    respx_mock.post(f"{BASE}/events").mock(return_value=httpx.Response(503))
+    with pytest.raises(DripError) as caught:
+        drip.record_event(EVENT)
+    assert caught.value.retry_after is None
