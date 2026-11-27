@@ -5,6 +5,7 @@ and only from ``CD_ENV_FILE`` or the project directory -- never from the home
 directory.
 """
 
+import ipaddress
 import os
 import secrets
 from pathlib import Path
@@ -35,6 +36,28 @@ if not SECRET_KEY:
         raise ImproperlyConfigured("DJANGO_SECRET_KEY is required when DEBUG is off")
     # A fresh key per process: never a fixed, public string (sessions reset on restart).
     SECRET_KEY = secrets.token_urlsafe(50)
+
+
+def _trusted_proxies(raw: str) -> frozenset[str]:
+    """Parse CD_TRUSTED_PROXIES (comma-separated IP addresses) into canonical text.
+
+    Why: X-Forwarded-For is honored only from these peers (or the unix socket),
+    so a typo must stop startup rather than silently trust nobody or everybody.
+    """
+    found: set[str] = set()
+    for item in (part.strip() for part in raw.split(",")):
+        if not item:
+            continue
+        try:
+            found.add(str(ipaddress.ip_address(item)))
+        except ValueError:
+            raise ImproperlyConfigured(
+                f"CD_TRUSTED_PROXIES entry {item!r} is not an IP address"
+            ) from None
+    return frozenset(found)
+
+
+TRUSTED_PROXIES = _trusted_proxies(_env("CD_TRUSTED_PROXIES"))
 
 _LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
 
@@ -138,6 +161,9 @@ CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.db.DatabaseCache",
         "LOCATION": "cd_cache",
+        # The default cull (300 rows) deletes keys in key order, which could evict
+        # entry-cap and rate-limit counters at a large event. TIMEOUT stays default.
+        "OPTIONS": {"MAX_ENTRIES": 100_000},
     }
 }
 RATELIMIT_VIEW = "conference_drawing.raffle.views.public.rate_limited"

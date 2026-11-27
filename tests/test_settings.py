@@ -20,6 +20,7 @@ def _restore_settings_module() -> Iterator[None]:
         mp.delenv("CD_ENV_FILE", raising=False)
         mp.delenv("CD_DATA_DIR", raising=False)
         mp.delenv("DJANGO_DEBUG", raising=False)
+        mp.delenv("CD_TRUSTED_PROXIES", raising=False)
         mp.delenv("DJANGO_ALLOWED_HOSTS", raising=False)
         importlib.reload(cd_settings)
 
@@ -186,3 +187,43 @@ def test_debug_key_is_random_per_process_and_never_the_old_constant(
     assert first != cd_settings.SECRET_KEY
     assert len(first) >= 50
     assert "insecure-development-key" not in Path(cd_settings.__file__).read_text()
+
+
+def _reload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **env: str) -> None:
+    monkeypatch.setenv("DJANGO_SECRET_KEY", "k")
+    monkeypatch.setenv("CD_ENV_FILE", str(tmp_path / "absent.env"))
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    importlib.reload(cd_settings)
+
+
+def test_trusted_proxies_default_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("CD_TRUSTED_PROXIES", raising=False)
+    _reload(monkeypatch, tmp_path)
+    assert cd_settings.TRUSTED_PROXIES == frozenset()
+
+
+def test_trusted_proxies_parsed_and_normalized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _reload(monkeypatch, tmp_path, CD_TRUSTED_PROXIES="10.0.0.1, 2001:DB8:0::1 ,")
+    assert cd_settings.TRUSTED_PROXIES == frozenset({"10.0.0.1", "2001:db8::1"})
+
+
+@pytest.mark.parametrize("bad", ["not-an-ip", "10.0.0.0/8", "10.0.0.1,,x"])
+def test_trusted_proxies_invalid_entry_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: str
+) -> None:
+    with pytest.raises(ImproperlyConfigured, match="CD_TRUSTED_PROXIES"):
+        _reload(monkeypatch, tmp_path, CD_TRUSTED_PROXIES=bad)
+
+
+def test_cache_keeps_counters_at_a_large_event(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _reload(monkeypatch, tmp_path)
+    default = cd_settings.CACHES["default"]
+    assert default["OPTIONS"] == {"MAX_ENTRIES": 100_000}
+    assert "TIMEOUT" not in default
