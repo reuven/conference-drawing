@@ -83,6 +83,29 @@ def test_hour_bucket_is_utc_whatever_the_zone_of_now(conference: Conference) -> 
     )
 
 
+def test_cache_key_ends_with_the_utc_clock_hour(conference: Conference) -> None:
+    plus_ten = datetime.timezone(datetime.timedelta(hours=10))
+    key = cache_key(conference, NET, NOW.astimezone(plus_ten))
+    assert key.endswith(":2027051115")
+
+
+def test_a_cap_of_one_admits_the_first_entry(conference: Conference) -> None:
+    conference.entries_per_network_per_hour = 1
+    assert network_entries_allowed(conference, NET, now=NOW)
+    record_network_entry(conference, NET, now=NOW)
+    assert not network_entries_allowed(conference, NET, now=NOW)
+
+
+def test_counter_expires_after_its_bucket(
+    conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Old buckets must lapse, not pile up in the cache table forever."""
+    record_network_entry(conference, NET, now=NOW)
+    later = timezone.now() + datetime.timedelta(seconds=3800)
+    monkeypatch.setattr(db_cache, "tz_now", lambda: later)
+    assert cache.get(cache_key(conference, NET, NOW)) is None
+
+
 def test_zero_means_no_cap_and_never_touches_the_cache(
     conference: Conference, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -116,6 +139,30 @@ def test_record_survives_the_counter_expiring_between_add_and_incr(
     monkeypatch.setattr(entry_cap, "cache", flaky)
     record_network_entry(conference, NET, now=NOW)
     assert cache.get(cache_key(conference, NET, NOW)) == 1
+
+
+def test_a_restarted_counter_lasts_the_whole_bucket(
+    conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The restart path sets the bucket itself, not the 300 s default or forever."""
+
+    def expired(name: str) -> int:
+        cache.delete(name)
+        raise ValueError(f"Key '{name}' not found")
+
+    flaky = SimpleNamespace(get=cache.get, add=cache.add, incr=expired)
+    monkeypatch.setattr(entry_cap, "cache", flaky)
+    record_network_entry(conference, NET, now=NOW)
+    key = cache_key(conference, NET, NOW)
+    start = timezone.now()
+    monkeypatch.setattr(
+        db_cache, "tz_now", lambda: start + datetime.timedelta(seconds=600)
+    )
+    assert cache.get(key) == 1
+    monkeypatch.setattr(
+        db_cache, "tz_now", lambda: start + datetime.timedelta(seconds=3800)
+    )
+    assert cache.get(key) is None
 
 
 # --- through the entry view ------------------------------------------------
