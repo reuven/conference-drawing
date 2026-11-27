@@ -70,7 +70,7 @@ def counts(conference: Conference) -> WrapUpCounts:
         id__in=winning_picks(conference).values("entrant_id")
     ).count()
     optins = entrants.filter(newsletter_optin_at__isnull=False).count()
-    excluded = entrants.filter(email__in=conference.excluded_emails).count()
+    excluded = entrants.filter(email_key__in=conference.excluded_keys).count()
     return WrapUpCounts(total, winners, total - winners, optins, excluded)
 
 
@@ -142,7 +142,7 @@ def _enqueue_entrants(
     events: list[dict[str, object]] = []
     skipped = 0
     sendable = Entrant.objects.filter(conference=conference).exclude(
-        email__in=conference.excluded_emails
+        email_key__in=conference.excluded_keys
     )
     for entrant in sendable.order_by("id"):
         entrant_tags = [

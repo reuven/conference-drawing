@@ -144,19 +144,21 @@ def test_display_token_is_random_and_long(conference_factory: Factory) -> None:
     assert a.deleted_entrant_count is None
 
 
-def test_excluded_emails_are_normalized(conference_factory: Factory) -> None:
+def test_excluded_keys_are_normalized(conference_factory: Factory) -> None:
     c = conference_factory(
-        exclusion_emails=" Boss@Example.COM \n\nfriend@x.org, other@x.org;third@x.org\n"
+        exclusion_emails=(
+            " Boss+x@Example.COM \n\nfriend@x.org, other@x.org;third@x.org\n"
+        )
     )
-    assert c.excluded_emails == frozenset(
+    assert c.excluded_keys == frozenset(
         {"boss@example.com", "friend@x.org", "other@x.org", "third@x.org"}
     )
-    assert conference_factory().excluded_emails == frozenset()
+    assert conference_factory().excluded_keys == frozenset()
 
 
 @given(st.text())
-def test_excluded_emails_never_contain_blank_or_unnormalized(raw: str) -> None:
-    emails = Conference(exclusion_emails=raw).excluded_emails
+def test_excluded_keys_never_contain_blank_or_unnormalized(raw: str) -> None:
+    emails = Conference(exclusion_emails=raw).excluded_keys
     assert all(e and e == e.strip() and e == e.lower() for e in emails)
 
 

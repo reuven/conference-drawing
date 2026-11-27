@@ -383,10 +383,14 @@ class Conference(models.Model):
             raise ValidationError(errors)
 
     @property
-    def excluded_emails(self) -> frozenset[str]:
-        """Normalized addresses barred from winning (hosts, staff), as a set."""
+    def excluded_keys(self) -> frozenset[str]:
+        """Mailbox keys barred from winning (hosts, staff), as a set.
+
+        Keys, not addresses, so excluding `staff@x` also excludes `staff+1@x`
+        and either spelling of an international domain.
+        """
         parts = re.split(r"[\s,;]+", self.exclusion_emails)
-        return frozenset(normalize_email(p) for p in parts if p.strip())
+        return frozenset(email_key(p) for p in parts if p.strip())
 
     def tags(self) -> ConferenceTags:
         """Return this conference's Drip tags, derived from the slug."""
