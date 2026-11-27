@@ -22,7 +22,11 @@ from django.urls import reverse
 from pydantic import SecretStr
 
 from conference_drawing.raffle.drip import outbox
-from conference_drawing.raffle.drip.client import TIMEOUT_SECONDS, DripClient
+from conference_drawing.raffle.drip.client import (
+    TIMEOUT_SECONDS,
+    DripClient,
+    build_http_client,
+)
 from conference_drawing.raffle.drip.config import DripSettings
 from conference_drawing.raffle.drip.payloads import EventPayload, SubscriberPayload
 from conference_drawing.raffle.management.commands import drip_worker
@@ -58,8 +62,12 @@ def http() -> Iterator[httpx.Client]:
 
 @pytest.fixture
 def drip(http: httpx.Client) -> DripClient:
+    # No deadline thread: several tests change rows from inside the mocked
+    # response, which must run on the test's own database connection.
     return DripClient(
-        DripSettings(account_id="1234567", api_key=SecretStr("fake-key")), http
+        DripSettings(account_id="1234567", api_key=SecretStr("fake-key")),
+        http,
+        deadline=None,
     )
 
 
@@ -782,6 +790,24 @@ def test_worker_sleeps_for_retry_after_before_the_next_pass(
     )
     call_command("drip_worker", stdout=StringIO())
     assert waits == [expected_wait]
+
+
+def test_worker_builds_its_http_client_without_trusting_the_environment(
+    conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built: list[httpx.Client] = []
+    real = build_http_client
+
+    def recording() -> httpx.Client:
+        built.append(real())
+        return built[-1]
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setattr(drip_worker, "build_http_client", recording)
+    call_command("drip_worker", "--once", stdout=StringIO())
+    assert len(built) == 1
+    assert not built[0]._mounts
+    assert built[0].is_closed
 
 
 def test_malformed_subscriber_job_fails_permanently(

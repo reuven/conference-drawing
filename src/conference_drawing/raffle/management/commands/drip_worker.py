@@ -6,12 +6,11 @@ import threading
 from types import FrameType
 from typing import Any
 
-import httpx
 from django.core.management.base import BaseCommand, CommandParser
 from django.db import close_old_connections
 
 from ...drip import outbox
-from ...drip.client import DripClient
+from ...drip.client import DripClient, build_http_client
 from ...drip.config import drip_settings
 
 INTERVAL_SECONDS = 5
@@ -41,7 +40,7 @@ class Command(BaseCommand):
             for sig in (signal.SIGTERM, signal.SIGINT)
         }
         try:
-            with httpx.Client() as http:
+            with build_http_client() as http:
                 while True:
                     wait: float = INTERVAL_SECONDS
                     if config is not None:
