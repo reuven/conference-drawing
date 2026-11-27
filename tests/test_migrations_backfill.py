@@ -81,7 +81,8 @@ def test_alias_of_a_backfilled_row_is_refused(executor: MigrationExecutor) -> No
         conference=conference, name="Old", email="ada@example.com"
     )
     executor = MigrationExecutor(connection)
-    executor.migrate(_AFTER)
+    # The live models match the latest schema, so go all the way forward.
+    executor.migrate(executor.loader.graph.leaf_nodes("raffle"))
 
     live = Conference.objects.get(pk=conference.pk)
     form = EntryForm(
