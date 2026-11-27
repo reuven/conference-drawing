@@ -434,6 +434,16 @@ def test_privacy_page_states_retention(client: Client, db: None) -> None:
     assert sentence in client.get(reverse("privacy")).content.decode()
 
 
+def test_privacy_page_states_snapshot_and_log_retention(
+    client: Client, db: None
+) -> None:
+    html = client.get(reverse("privacy")).content.decode()
+    assert "48 hours" in html
+    assert "14 days" in html
+    assert "snapshot" in html.lower()
+    assert "access log" in html.lower()
+
+
 def test_privacy_page_without_note(client: Client, db: None) -> None:
     response = client.get(reverse("privacy"))
     assert response.status_code == 200
