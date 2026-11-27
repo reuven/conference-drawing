@@ -202,13 +202,29 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {"plain": {"format": "%(levelname)s %(name)s %(message)s"}},
     # Display tokens and exception text never reach journald (logredact.py).
-    "filters": {"redact": {"()": "conference_drawing.logredact.RedactFilter"}},
+    "filters": {
+        "redact": {"()": "conference_drawing.logredact.RedactFilter"},
+        "demote": {"()": "conference_drawing.logredact.DemoteToWarning"},
+    },
     "handlers": {
         "stderr": {
             "class": "logging.StreamHandler",
             "formatter": "plain",
             "filters": ["redact"],
         },
+        "security": {
+            "class": "logging.StreamHandler",
+            "formatter": "plain",
+            "filters": ["demote", "redact"],
+        },
     },
     "root": {"handlers": ["stderr"], "level": "INFO"},
+    # Django logs oversized or many-field POSTs here at ERROR; make them WARNING.
+    "loggers": {
+        "django.security": {
+            "handlers": ["security"],
+            "level": "WARNING",
+            "propagate": False,
+        }
+    },
 }

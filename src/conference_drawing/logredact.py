@@ -94,3 +94,20 @@ class RedactFilter(logging.Filter):
         record.exc_info = None
         record.exc_text = None
         return True
+
+
+class DemoteToWarning(logging.Filter):
+    """Turn ERROR records into WARNING ones.
+
+    Why: Django logs a SuspiciousOperation (too many form fields, a body over
+    the size cap) at ERROR, but a hostile or broken client is routine noise,
+    not a fault in the app. A logger's level only filters, so the record's own
+    level must change. Attach this to a handler, not a logger, so records from
+    the `django.security.*` child loggers pass through it.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno == logging.ERROR:
+            record.levelno = logging.WARNING
+            record.levelname = "WARNING"
+        return True
