@@ -1012,6 +1012,22 @@ def test_snapshot_deletes_dumps_older_than_48_hours_even_when_the_dump_fails(
     assert other.exists()
 
 
+def test_snapshot_age_rotation_removes_stale_partials_but_not_fresh_ones(
+    fakes: Fakes,
+) -> None:
+    data = _snapshot_root(fakes)
+    snaps = data / "snapshots"
+    snaps.mkdir()
+    stale = snaps / "db-20000101T000000Z.dump.partial"
+    stale.write_text("")
+    _age(stale, 72)
+    fresh = snaps / "db-20000102T000000Z.dump.partial"
+    fresh.write_text("")
+    assert fakes.run([SNAPSHOT]).returncode == 0
+    assert not stale.exists()
+    assert fresh.exists()
+
+
 def test_snapshot_age_rotation_never_follows_symlinks(fakes: Fakes) -> None:
     data = _snapshot_root(fakes)
     snaps = data / "snapshots"

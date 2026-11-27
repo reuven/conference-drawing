@@ -26,7 +26,9 @@ mkdir -p "$snapshots"
 
 # Age rotation first. -P never follows a symlink, -maxdepth 1 stays in this
 # directory, -type f touches only regular files.
-find -P "$snapshots" -maxdepth 1 -type f -name 'db-*.dump' -mmin +2880 -delete
+# A .partial that old was left by a killed run (a live one is minutes old).
+find -P "$snapshots" -maxdepth 1 -type f \
+	\( -name 'db-*.dump' -o -name 'db-*.dump.partial' \) -mmin +2880 -delete
 
 name="db-$(date -u +%Y%m%dT%H%M%SZ).dump"
 partial="$snapshots/$name.partial"
