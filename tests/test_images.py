@@ -272,3 +272,19 @@ def test_frame_budget_is_checked_by_the_validator(
         reencode_image(upload)
     monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 2000)
     validate_logo(upload)
+
+
+def test_animated_webp_keeps_its_color_profile() -> None:
+    from PIL import ImageCms
+
+    icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    frames = [Image.new("RGB", (8, 8), c) for c in ("red", "blue")]
+    anim = _upload(
+        frames[0],
+        "WEBP",
+        save_all=True,
+        append_images=frames[1:],
+        icc_profile=icc,
+    )
+    out = Image.open(io.BytesIO(reencode_image(anim).read()))
+    assert out.info["icc_profile"] == icc
