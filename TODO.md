@@ -96,7 +96,7 @@ Spec: `docs/superpowers/specs/2026-11-26-security-hardening-design.md`
 - [x] 1. Rerolls cost a person (a slot never redraws someone voided for it)
 - [x] 2. The owner sees the history (Audit events admin, undo/void counts)
 - [x] 3. One person per mailbox (`+tag` and IDNA email key)
-- [ ] 4. Entry window (conference dates only) and per-network entry cap
+- [x] 4. Entry window (conference dates only) and per-network entry cap
 - [ ] 5. Password rules and per-account login limit
 - [ ] 6. No early starts for helpers (15 minutes; owner confirms)
 - [ ] 7. App-side smaller fixes (debug key, X-Forwarded-For, CSV, images, logging, admin action)
