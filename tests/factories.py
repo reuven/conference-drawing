@@ -3,6 +3,9 @@
 import datetime
 import itertools
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from django.utils import timezone
 
 from conference_drawing.raffle.models import (
     Book,
@@ -24,13 +27,17 @@ def make_book(**kwargs: Any) -> Book:
 
 def make_conference(**kwargs: Any) -> Conference:
     n = next(_counter)
+    zone = kwargs.get("time_zone", "America/Los_Angeles")
+    # The entry form only accepts entries during the conference, so by default
+    # "today" in the conference's zone is the middle day of a three-day event.
+    today = timezone.localdate(timezone=ZoneInfo(zone))
     defaults: dict[str, Any] = {
         "name": f"Conference {n}",
         "slug": f"conf-{n}",
-        "time_zone": "America/Los_Angeles",
+        "time_zone": zone,
         "booth_location": "Booth 12",
-        "starts_on": datetime.date(2027, 5, 10),
-        "ends_on": datetime.date(2027, 5, 12),
+        "starts_on": today - datetime.timedelta(days=1),
+        "ends_on": today + datetime.timedelta(days=1),
     }
     return Conference.objects.create(**{**defaults, **kwargs})
 
