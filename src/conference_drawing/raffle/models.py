@@ -316,6 +316,14 @@ class Conference(models.Model):
     starts_on = models.DateField()
     ends_on = models.DateField()
     exclusion_emails = models.TextField(blank=True)
+    entries_per_network_per_hour = models.PositiveIntegerField(
+        default=60,
+        db_default=60,
+        help_text=(
+            "How many new entries one network (a venue's Wi-Fi counts as one) "
+            "may create per hour. 0 means no limit."
+        ),
+    )
     display_token = models.CharField(max_length=64, default=new_display_token)
     wrapped_up_at = models.DateTimeField(null=True, blank=True)
     deleted_entrant_count = models.PositiveIntegerField(null=True, blank=True)

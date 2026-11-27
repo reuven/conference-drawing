@@ -140,6 +140,7 @@ class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
                     "starts_on",
                     "ends_on",
                     "exclusion_emails",
+                    "entries_per_network_per_hour",
                     "display_token",
                     "wrapped_up_at",
                     "deleted_entrant_count",

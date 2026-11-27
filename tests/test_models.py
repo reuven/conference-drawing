@@ -562,3 +562,15 @@ def test_excluded_entrants_q_matches_key_or_null_key_exact_email(
         Entrant.objects.exclude(c.excluded_entrants_q()).values_list("pk", flat=True)
     )
     assert miss == {legacy_alias.pk, guest.pk}
+
+
+def test_entries_per_network_per_hour_defaults_to_60_and_allows_zero(
+    conference_factory: Factory,
+) -> None:
+    c = conference_factory()
+    assert c.entries_per_network_per_hour == 60
+    c.entries_per_network_per_hour = 0
+    c.full_clean()
+    c.entries_per_network_per_hour = -1
+    with pytest.raises(ValidationError):
+        c.full_clean()

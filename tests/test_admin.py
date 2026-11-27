@@ -72,6 +72,7 @@ def _conference_post(**over: Any) -> dict[str, Any]:
         "starts_on": "2027-05-10",
         "ends_on": "2027-05-12",
         "exclusion_emails": "",
+        "entries_per_network_per_hour": "60",
         "after_mode": "inherit",
         "after_markdown": "",
         "after_redirect_url": "",
