@@ -16,10 +16,11 @@
 # panic). A PostgreSQL that was already there belongs to someone else: no apt,
 # no marker, no drop-in, no restart, only a warning showing its
 # listen_addresses and a one-line suggestion of that logging setting. Either
-# way it must be version 15 or later (Django 6.1), and the run creates the role conference-drawing (LOGIN, no
-# password: the app user's OS name maps to it by peer auth) and the database
-# conference_drawing it owns, idempotently; a conference_drawing database that
-# another role owns is refused, never taken over.
+# way it must be version 15 or later (Django 6.1), and the run creates the
+# role conference-drawing (LOGIN, no password: the app user's OS name maps to
+# it by peer auth) and the database conference_drawing it owns, idempotently;
+# a conference_drawing database that another role owns is refused, never
+# taken over.
 #
 # The units have Requires=postgresql.service, so restarting PostgreSQL also
 # restarts the web app and the Drip worker for a moment. That happens only
