@@ -331,3 +331,26 @@ def test_a_counter_that_expires_mid_update_restarts_at_one(db: None) -> None:
     with mock.patch.object(cache, "incr", side_effect=expired):
         _record_failure("helper")
     assert cache.get(login_failure_key("helper")) == 1
+
+
+def test_a_restarted_counter_keeps_the_fifteen_minute_window(
+    db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The restart path sets the window itself, not the 300 s default or forever."""
+
+    def expired(key: str) -> int:
+        cache.delete(key)
+        raise ValueError(key)
+
+    with mock.patch.object(cache, "incr", side_effect=expired):
+        _record_failure("helper")
+    start = timezone.now()
+    key = login_failure_key("helper")
+    monkeypatch.setattr(
+        db_cache, "tz_now", lambda: start + datetime.timedelta(minutes=10)
+    )
+    assert cache.get(key) == 1
+    monkeypatch.setattr(
+        db_cache, "tz_now", lambda: start + datetime.timedelta(minutes=16)
+    )
+    assert cache.get(key) is None
