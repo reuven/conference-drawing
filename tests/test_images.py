@@ -175,6 +175,31 @@ def test_saving_install_settings_logo_stores_it_without_metadata(media: Path) ->
     assert dict(_stored(media / "logos").getexif()) == {}
 
 
+@pytest.mark.django_db
+def test_saving_a_book_cover_stores_it_without_metadata_under_a_random_name(
+    media: Path,
+) -> None:
+    cover = _upload(
+        Image.new("RGB", (20, 10), "red"), "PNG", "cover.pdf", exif=_gps_exif()
+    )
+    book = Book.objects.create(title="B", cover=cover)
+    assert re.fullmatch(r"covers/[0-9a-f]{32}\.png", str(book.cover.name))
+    assert dict(_stored(media / "covers").getexif()) == {}
+
+
+@pytest.mark.django_db
+def test_resaving_a_book_does_not_rewrite_the_stored_cover(media: Path) -> None:
+    book = Book.objects.create(
+        title="B", cover=_upload(Image.new("RGB", (4, 4), "red"), "PNG", "c.png")
+    )
+    name = str(book.cover.name)
+    before = (media / name).stat().st_mtime_ns
+    book.title = "Renamed"
+    book.save()
+    assert book.cover.name == name
+    assert (media / name).stat().st_mtime_ns == before
+
+
 def test_cover_validation_matches_logos() -> None:
     field = Book._meta.get_field("cover")
     html = SimpleUploadedFile("c.png", b"<html></html>")

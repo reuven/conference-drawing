@@ -302,6 +302,11 @@ class Book(models.Model):
     def __str__(self) -> str:
         return self.title
 
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        """Store a new cover without its EXIF; a stored one is left alone."""
+        reencode_pending_upload(self.cover)
+        super().save(*args, **kwargs)
+
 
 class Conference(models.Model):
     """One event at which drawings are run; owns its entrants and settings."""
