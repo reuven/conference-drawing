@@ -4,6 +4,7 @@
 <h1>Privacy</h1>
 {% if install.owner_name %}<p>Run by {{ install.owner_name }}.</p>{% endif %}
 <p>We keep your entry until the organizer deletes it.</p>
+<p>Deleting entries does not erase every copy at once. Database snapshots, taken hourly, are kept for about 48 hours, so a deleted entry can remain in a snapshot for that long. The web server's access log records the address and time of each request. It is kept for 14 days, also after deletion.</p>
 {% if install.privacy_note %}
 <p>{{ install.privacy_note|linebreaksbr }}</p>
 {% else %}

@@ -350,6 +350,85 @@ def test_install_is_idempotent_for_drip_keys(server: Server) -> None:
     )
 
 
+def test_install_replaces_a_changed_drip_key_in_place(server: Server) -> None:
+    server.data.mkdir(parents=True)
+    env = server.data / ".env"
+    env.write_text(
+        "DJANGO_SECRET_KEY='keep'\nDRIP_API_KEY='old-key'\nDRIP_ACCOUNT_ID='42'\n"
+    )
+    result = server.install(stdin="DRIP_API_KEY=new-key\nDRIP_ACCOUNT_ID=42\n")
+    assert result.returncode == 0, result.stderr
+    assert env.read_text() == (
+        "DJANGO_SECRET_KEY='keep'\nDRIP_API_KEY='new-key'\nDRIP_ACCOUNT_ID='42'\n"
+    )
+    assert os_mode(env) == 0o600
+    assert "wrote DRIP_API_KEY" in result.stderr
+    assert "wrote DRIP_ACCOUNT_ID" not in result.stderr
+    assert "old-key" not in result.stderr + result.stdout
+    assert "new-key" not in result.stderr + result.stdout
+    assert [p.name for p in server.data.glob(".env*")] == [".env"]  # no temp left
+
+
+def test_install_leaves_an_unchanged_env_byte_for_byte(server: Server) -> None:
+    server.data.mkdir(parents=True)
+    env = server.data / ".env"
+    # No trailing newline, an odd line: a rewrite would normalize them.
+    env.write_bytes(b"DRIP_API_KEY='same'\nDJANGO_SECRET_KEY='k'   ")
+    before = env.stat()
+    result = server.install(stdin="DRIP_API_KEY=same\n")
+    assert result.returncode == 0, result.stderr
+    assert env.read_bytes() == b"DRIP_API_KEY='same'\nDJANGO_SECRET_KEY='k'   "
+    assert env.stat().st_ino == before.st_ino
+    assert "wrote" not in result.stderr
+
+
+def test_install_tightens_a_loosened_env_without_changing_it(server: Server) -> None:
+    server.data.mkdir(parents=True)
+    env = server.data / ".env"
+    env.write_text("DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='same'\n")
+    env.chmod(0o644)
+    assert server.install(stdin="DRIP_API_KEY=same\n").returncode == 0
+    assert env.read_text() == "DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='same'\n"
+    assert os_mode(env) == 0o600
+
+
+def test_write_env_keys_itself_refuses_a_symlinked_env(fakes: Fakes) -> None:
+    """install.sh's earlier data-dir check also refuses a planted link; this
+    drives write_env_keys alone, so its own guard (a race backstop) is tested."""
+    fakes.set("runuser", [{"match": "", "passthrough": True}])
+    sentinel = fakes.root / "sentinel"
+    sentinel.write_text("untouched\n")
+    link = fakes.root / "env"
+    link.symlink_to(sentinel)
+    script = (
+        'source "$1"; eval "$(sed -n "/^write_env_keys()/,/^}/p" "$2")"; '
+        "ENV_FILE=$3 drip_api_key=new drip_account_id= write_env_keys"
+    )
+    install = str(DEPLOY / "remote" / "install.sh")
+    result = fakes.run(["-c", script, "_", COMMON, install, str(link)])
+    assert result.returncode != 0
+    assert "symbolic link" in result.stderr
+    assert sentinel.read_text() == "untouched\n"
+
+
+def test_install_replaces_every_stale_copy_of_a_drip_key(server: Server) -> None:
+    server.data.mkdir(parents=True)
+    env = server.data / ".env"
+    env.write_text("DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='a'\nDRIP_API_KEY='b'\n")
+    assert server.install(stdin="DRIP_API_KEY=b\n").returncode == 0
+    assert env.read_text() == (
+        "DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='b'\nDRIP_API_KEY='b'\n"
+    )
+
+
+def test_install_replaces_a_value_that_needs_escaping(server: Server) -> None:
+    server.data.mkdir(parents=True)
+    env = server.data / ".env"
+    env.write_text("DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='old'\n")
+    assert server.install(stdin="DRIP_API_KEY=a\\b'c&d\n").returncode == 0
+    assert env.read_text() == "DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='a\\\\b\\'c&d'\n"
+
+
 # --- PostgreSQL ------------------------------------------------------------------
 
 
@@ -382,6 +461,7 @@ def test_fresh_install_installs_postgresql_and_records_that_it_did(
         "listen_addresses = ''",
         "shared_buffers = 64MB",
         "max_connections = 20",
+        "log_min_error_statement = panic",
     ):
         assert f"\n{setting}\n" in dropin, setting
     assert os_mode(server.root / PG_DROPIN) == 0o644
@@ -449,6 +529,11 @@ def test_install_never_claims_an_existing_postgresql(
     assert 'CREATE DATABASE :"db"' in _admin_sql(server)
     assert "warning" in result.stderr
     assert "listens on 'localhost, 10.0.0.5'" in result.stderr
+    # One line suggests the setting; we do not apply it.
+    (hint,) = [
+        ln for ln in result.stderr.splitlines() if "log_min_error_statement" in ln
+    ]
+    assert "panic" in hint
 
 
 def test_install_refuses_a_postgresql_older_than_15(server: Server) -> None:

@@ -73,6 +73,12 @@ is one). For a printed book:
    the drawing taps **Claimed**.
 3. If nobody comes forward after a reasonable wait, whoever runs
    the drawing taps **Not here**, and a new name is drawn right away.
+4. If **Not here** was a mis-tap, undo it and mark it again. That draws a new
+   person. The person who was passed over is not drawn again for that prize.
+
+A helper can tap **Start drawing** from 15 minutes before the scheduled time.
+The button shows the scheduled time. A tap more than 15 minutes early is
+refused, with a message saying when the drawing can start.
 
 ## Common questions
 
@@ -89,14 +95,22 @@ follow-up email, and that should be their choice. A printed book goes only to
 the person whose name is called, if they're here.
 
 **"I entered twice by mistake."**
-No problem: the second entry is ignored.
+No problem: the second entry is ignored. Different spellings of the same
+address, such as `ada+1@example.com` and `Ada@example.com`, count as one.
 
 **"The page says 'Too many tries'."**
-Too many entries came from one place (such as the conference Wi-Fi) in a
-minute. Wait a minute and try again.
+Too many submissions or sign-in attempts came from one address in a minute.
+Wait a minute and try again.
+
+**"The page says 'Too many entries'."**
+Too many people entered from one place (such as the conference Wi-Fi) in the
+last hour. Tell the organizer, who can raise the limit.
 
 **"The page says entries are closed."**
 That conference's drawings are over.
+
+**"The page says entries open on a date."**
+Entries are accepted only from the conference's first day through its last.
 
 **"Can I (a booth helper) enter?"**
 The organizer puts staff email addresses on a list that is left out of the

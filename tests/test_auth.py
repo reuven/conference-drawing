@@ -1,15 +1,22 @@
 """Admin login by username or email, with one hasher run on every miss."""
 
+from io import StringIO
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
 import pytest
 from django.contrib.auth import authenticate, get_user_model
 from django.contrib.auth.models import AbstractBaseUser
+from django.core.management import CommandError, call_command
 from django.test import Client, RequestFactory
 from django.urls import reverse
 
-from conference_drawing.auth import AdminLoginForm, EmailOrUsernameBackend
+from conference_drawing.auth import (
+    AdminLoginForm,
+    BoothLoginForm,
+    EmailOrUsernameBackend,
+)
 
 User = get_user_model()
 
@@ -158,3 +165,60 @@ def test_admin_login_form_keeps_the_positional_request() -> None:
     request = RequestFactory().get("/admin/login/")
     form = AdminLoginForm(request)
     assert form.request is request
+
+
+def test_booth_login_form_keeps_the_positional_request() -> None:
+    request = RequestFactory().get("/booth/login/")
+    form = BoothLoginForm(request, {"username": "boss", "password": "pw"})
+    assert form.request is request
+    assert form.is_bound
+
+
+# --- password rules ------------------------------------------------------------
+
+
+def _add_user(client: Client, password: str) -> Any:
+    client.force_login(
+        User.objects.create_superuser("root", "root@example.com", "x-not-validated")
+    )
+    return client.post(
+        reverse("admin:auth_user_add"),
+        {"username": "newbie", "password1": password, "password2": password},
+    )
+
+
+def test_admin_add_user_refuses_a_short_password(db: None, client: Client) -> None:
+    response = _add_user(client, "short-pass")
+    assert response.status_code == 200
+    assert "at least 12 characters" in response.content.decode()
+    assert not User.objects.filter(username="newbie").exists()
+
+
+def test_admin_add_user_refuses_a_common_numeric_password(
+    db: None, client: Client
+) -> None:
+    html = _add_user(client, "123456789012").content.decode()
+    assert "entirely numeric" in html
+    assert not User.objects.filter(username="newbie").exists()
+
+
+def test_admin_add_user_accepts_a_long_uncommon_password(
+    db: None, client: Client
+) -> None:
+    assert _add_user(client, "violet-lantern-ripple").status_code == 302
+    assert User.objects.filter(username="newbie").exists()
+
+
+def test_changepassword_refuses_a_short_password(
+    boss: AbstractBaseUser, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """owner_password.sh runs changepassword, which applies the validators."""
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "short-pass")
+    with pytest.raises(CommandError, match="Aborting password change"):
+        call_command("changepassword", "boss", stderr=StringIO(), stdout=StringIO())
+
+
+def test_owner_password_script_runs_changepassword_which_validates() -> None:
+    """The owner-password path must stay a validated one (see changepassword)."""
+    script = Path(__file__).parent.parent / "deploy" / "remote" / "owner_password.sh"
+    assert "run_app changepassword" in script.read_text()

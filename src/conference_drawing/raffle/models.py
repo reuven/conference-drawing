@@ -4,10 +4,11 @@ All instants are stored in UTC; `Conference.time_zone` governs how organizers
 enter and read them (see `timezones.py`).
 """
 
+import datetime
 import re
 import secrets
 import zoneinfo
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -24,13 +25,15 @@ from django.db.models.signals import post_delete
 from django.dispatch import receiver
 from django.utils import timezone
 
-from .text import normalize_email, validate_single_line_label
+from .text import lenient_email_key, normalize_email, validate_single_line_label
 from .timezones import time_zone_choices
 
 # Re-exported (`as` makes it explicit for mypy): migration 0005 names the
 # validators as `conference_drawing.raffle.models.<name>`.
 from .validators import (
     MAX_REDIRECT_URL_LENGTH,
+    cover_upload_to,
+    reencode_pending_upload,
 )
 from .validators import (
     logo_upload_to as logo_upload_to,
@@ -195,6 +198,7 @@ def _save_replacing_logo(
     if fields is not None and "after_logo" not in fields:
         save(*args, **kwargs)
         return
+    reencode_pending_upload(instance.after_logo)  # type: ignore[attr-defined]
     with transaction.atomic():
         old = _stored_logo_name(instance)
         save(*args, **kwargs)
@@ -288,12 +292,20 @@ class Book(models.Model):
 
     title = models.CharField(max_length=200, validators=[validate_label])
     cover = models.ImageField(
-        upload_to="covers/", blank=True, help_text=CHOOSE_FILE_AGAIN
+        upload_to=cover_upload_to,
+        blank=True,
+        validators=[validate_logo],
+        help_text="PNG, JPEG, WebP or GIF, up to 2 MB. " + CHOOSE_FILE_AGAIN,
     )
     link = models.URLField(blank=True)
 
     def __str__(self) -> str:
         return self.title
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        """Store a new cover without its EXIF; a stored one is left alone."""
+        reencode_pending_upload(self.cover)
+        super().save(*args, **kwargs)
 
 
 class Conference(models.Model):
@@ -315,6 +327,14 @@ class Conference(models.Model):
     starts_on = models.DateField()
     ends_on = models.DateField()
     exclusion_emails = models.TextField(blank=True)
+    entries_per_network_per_hour = models.PositiveIntegerField(
+        default=60,
+        db_default=60,
+        help_text=(
+            "How many new entries one network (a venue's Wi-Fi counts as one) "
+            "may create per hour. 0 means no limit."
+        ),
+    )
     display_token = models.CharField(max_length=64, default=new_display_token)
     wrapped_up_at = models.DateTimeField(null=True, blank=True)
     deleted_entrant_count = models.PositiveIntegerField(null=True, blank=True)
@@ -366,6 +386,18 @@ class Conference(models.Model):
     def save(self, *args: Any, **kwargs: Any) -> None:
         _save_replacing_logo(self, super().save, *args, **kwargs)
 
+    def entry_window(self, today: datetime.date) -> Literal["before", "open", "after"]:
+        """Say where `today` (a date in the conference's zone) falls.
+
+        Entries are accepted from `starts_on` through `ends_on`, both days
+        included; there is no grace day either side.
+        """
+        if today < self.starts_on:
+            return "before"
+        if today > self.ends_on:
+            return "after"
+        return "open"
+
     def clean(self) -> None:
         errors: dict[str, str] = {}
         if self.starts_on and self.ends_on and self.ends_on < self.starts_on:
@@ -383,10 +415,31 @@ class Conference(models.Model):
             raise ValidationError(errors)
 
     @property
-    def excluded_emails(self) -> frozenset[str]:
-        """Normalized addresses barred from winning (hosts, staff), as a set."""
+    def excluded_keys(self) -> frozenset[str]:
+        """Mailbox keys barred from winning (hosts, staff), as a set.
+
+        Keys, not addresses, so excluding `staff@x` also excludes `staff+1@x`
+        and either spelling of an international domain.
+        """
         parts = re.split(r"[\s,;]+", self.exclusion_emails)
-        return frozenset(normalize_email(p) for p in parts if p.strip())
+        return frozenset(lenient_email_key(p) for p in parts if p.strip())
+
+    def excluded_entrants_q(self) -> Q:
+        """Match entrants barred from winning, as one rule for every call site.
+
+        By mailbox key, plus an exact-address match for rows whose key is NULL
+        (v0.3.0 inserted them after the backfill ran): without it an excluded
+        host would turn eligible, as 0.3 matched by exact email. Use with
+        `filter` to count and `exclude` to drop.
+        """
+        addresses = {
+            normalize_email(p)
+            for p in re.split(r"[\s,;]+", self.exclusion_emails)
+            if p.strip()
+        }
+        return Q(email_key__in=self.excluded_keys) | Q(
+            email_key__isnull=True, email__in=addresses
+        )
 
     def tags(self) -> ConferenceTags:
         """Return this conference's Drip tags, derived from the slug."""
@@ -440,6 +493,13 @@ class Entrant(models.Model):
     conference = models.ForeignKey(Conference, on_delete=models.CASCADE)
     name = models.CharField(max_length=200, validators=[validate_label])
     email = models.EmailField()
+    # "Same mailbox" key (see text.email_key); set on save. Nullable and not
+    # unique so rows from before it existed, which may already hold aliases of
+    # one person, load and migrate; the entry form enforces one per key.
+    # NULL (not "") marks a row v0.3.0 inserted that the backfill has not keyed.
+    email_key = models.CharField(  # noqa: DJ001
+        max_length=320, null=True, blank=True, db_index=True, editable=False
+    )
     answers = models.JSONField(default=dict, blank=True)
     followup_ack_text = models.TextField(blank=True)
     followup_ack_at = models.DateTimeField(default=timezone.now)
@@ -462,6 +522,7 @@ class Entrant(models.Model):
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         self.email = normalize_email(self.email)
+        self.email_key = lenient_email_key(self.email)
         super().save(*args, **kwargs)
 
 

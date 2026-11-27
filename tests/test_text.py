@@ -1,9 +1,14 @@
 import pytest
 from django.core.exceptions import ValidationError
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from conference_drawing.raffle.text import normalize_email, validate_single_line_label
+from conference_drawing.raffle.text import (
+    email_key,
+    lenient_email_key,
+    normalize_email,
+    validate_single_line_label,
+)
 
 
 def test_normalize_email_examples() -> None:
@@ -108,3 +113,63 @@ def test_label_error_code_and_message(bad: str, code: str, message: str) -> None
         validate_single_line_label(bad)
     [error] = caught.value.error_list
     assert (error.code, error.message) == (code, message)
+
+
+@pytest.mark.parametrize(
+    ("raw", "key"),
+    [
+        ("Ada+x@Example.com", "ada@example.com"),
+        ("ada+a+b@example.com", "ada@example.com"),
+        ("ada+@example.com", "ada@example.com"),
+        ("ada-x@example.com", "ada-x@example.com"),
+        ("a.da@example.com", "a.da@example.com"),
+        ("ada@Bücher.example", "ada@xn--bcher-kva.example"),
+        ("ada@xn--bcher-kva.example", "ada@xn--bcher-kva.example"),
+        ("ada@Straße.example", "ada@xn--strae-oqa.example"),
+        ("ada@xn--strae-oqa.example", "ada@xn--strae-oqa.example"),
+    ],
+)
+def test_email_key_known_answers(raw: str, key: str) -> None:
+    assert email_key(raw) == key
+
+
+@pytest.mark.parametrize(
+    "bad", ["+x@example.com", "+@example.com", "no-at-sign", "ada@" + "a" * 70 + ".x"]
+)
+def test_email_key_refuses_what_has_no_mailbox(bad: str) -> None:
+    with pytest.raises(ValueError):
+        email_key(bad)
+
+
+def test_lenient_key_falls_back_to_the_normalized_address() -> None:
+    assert lenient_email_key(" Ada+X@Example.com ") == "ada@example.com"
+    assert lenient_email_key(" +X@Example.com ") == "+x@example.com"
+
+
+def test_email_key_idna_spellings_agree() -> None:
+    assert email_key("ada@bücher.example") == email_key("ADA@xn--bcher-kva.example")
+
+
+@given(st.emails())
+def test_email_key_idempotent(e: str) -> None:
+    try:
+        key = email_key(e)
+    except ValueError:
+        assume(False)
+    assert email_key(key) == key
+
+
+@given(st.text())
+def test_lenient_key_idempotent_on_any_text(raw: str) -> None:
+    once = lenient_email_key(raw)
+    assert lenient_email_key(once) == once
+
+
+_PART = st.text("abcdefghijklmnopqrstuvwxyz0123456789", min_size=1, max_size=10)
+
+
+@given(_PART, _PART, _PART)
+def test_email_key_ignores_plus_tag(user: str, tag: str, domain: str) -> None:
+    assert email_key(f"{user}+{tag}@{domain}.example") == email_key(
+        f"{user}@{domain}.example"
+    )

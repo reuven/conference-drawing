@@ -6,7 +6,12 @@ from django.urls import path
 from django_ratelimit.decorators import ratelimit
 
 from conference_drawing import ops
-from conference_drawing.auth import AdminLoginForm, BoothLoginForm, BoothLoginView
+from conference_drawing.auth import (
+    AdminLoginForm,
+    BoothLoginForm,
+    BoothLoginView,
+    limit_failed_logins,
+)
 from conference_drawing.raffle.views import booth, display, export, flyer, public
 
 # Password guessing on the admin login would tie up the sync workers the booth
@@ -14,14 +19,14 @@ from conference_drawing.raffle.views import booth, display, export, flyer, publi
 # tighter. Listed before admin.site.urls, so this path wins and "admin:login"
 # still reverses to the same URL.
 admin.site.login_form = AdminLoginForm
-admin_login = ratelimit(key=public.client_ip, rate="10/m", method="POST", block=True)(
+admin_login = ratelimit(key=public.network_key, rate="10/m", method="POST", block=True)(
     admin.site.login
 )
 
 # The booth's own sign-in, for helpers who are not staff. Its own limiter
 # counter (group), so guessing here never uses up the admin login's budget.
 booth_login = ratelimit(
-    key=public.client_ip, rate="10/m", method="POST", block=True, group="booth-login"
+    key=public.network_key, rate="10/m", method="POST", block=True, group="booth-login"
 )(
     BoothLoginView.as_view(
         template_name="raffle/booth/login.html",
@@ -30,6 +35,8 @@ booth_login = ratelimit(
     )
 )
 
+# Both sign-in pages also share a per-account limit on failed attempts (15
+# minutes), which stops guessing spread across many addresses.
 urlpatterns = [
     path("", public.home, name="home"),
     path("robots.txt", ops.robots_txt, name="robots-txt"),
@@ -41,7 +48,7 @@ urlpatterns = [
     path("display/<str:token>/", display.display, name="display"),
     path("display/<str:token>/panel/", display.panel, name="display-panel"),
     path("booth/", booth.home, name="booth-home"),
-    path("booth/login/", booth_login, name="booth-login"),
+    path("booth/login/", limit_failed_logins(booth_login), name="booth-login"),
     path(
         "booth/logout/",
         auth_views.LogoutView.as_view(next_page="booth-login"),
@@ -49,6 +56,11 @@ urlpatterns = [
     ),
     path("booth/drawing/<int:pk>/", booth.drawing_page, name="booth-drawing"),
     path("booth/drawing/<int:pk>/start/", booth.start, name="booth-start"),
+    path(
+        "booth/drawing/<int:pk>/start/confirm/",
+        booth.confirm_start,
+        name="booth-confirm-start",
+    ),
     path("booth/drawing/<int:pk>/close/", booth.close, name="booth-close"),
     path("booth/pick/<int:pk>/claim/", booth.claim, name="booth-claim"),
     path("booth/pick/<int:pk>/not-here/", booth.not_here, name="booth-not-here"),
@@ -67,7 +79,7 @@ urlpatterns = [
         name="booth-retry-failed",
     ),
     path("booth/<slug:slug>/", booth.conference_page, name="booth-conference"),
-    path("admin/login/", admin_login, name="admin-login"),
+    path("admin/login/", limit_failed_logins(admin_login), name="admin-login"),
     path("admin/", admin.site.urls),
 ]
 

@@ -1,6 +1,6 @@
 [project]
 name = "conference-drawing"
-version = "0.3.0"
+version = "0.4.0"
 description = "Self-hosted Django app for running book raffles at a conference booth"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -110,5 +110,7 @@ only_mutate = [
 ]
 # mutants/ gets a copy of pyproject.toml, so pytest's env (the Postgres test
 # database settings) applies there too. e2e needs a browser, and tests/deploy
-# needs deploy/, which is not copied; neither exercises the mutated modules.
+# runs the deploy scripts; neither exercises the mutated modules. deploy/ is
+# still copied: test_auth checks that owner_password.sh validates passwords.
 pytest_add_cli_args = ["-m", "not e2e", "--ignore=tests/deploy"]
+also_copy = ["deploy"]

@@ -2,7 +2,7 @@ import datetime
 import zoneinfo
 from zoneinfo import ZoneInfo
 
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from conference_drawing.raffle.timezones import (
@@ -42,12 +42,20 @@ def test_to_local_known_answer() -> None:
     ),
     st.sampled_from([LA, "Europe/Berlin", "Asia/Kolkata", "UTC"]),
 )
+# Los Angeles falls back at 09:00 UTC on 2000-10-29: both sides of the repeated
+# 1 am hour. Python's inter-zone `==` is False for a time inside a fold (PEP 495).
+@example(datetime.datetime(2000, 10, 29, 8, 0), LA)
+@example(datetime.datetime(2000, 10, 29, 9, 0), LA)
 def test_utc_instant_survives_local_round_trip(
     naive: datetime.datetime, tz: str
 ) -> None:
     utc = naive.replace(tzinfo=UTC)
-    # to_local never changes the instant, and to_utc always returns UTC.
-    assert to_local(utc, tz) == utc
+    # to_local never changes the instant, and to_utc always returns UTC. Compare
+    # instants by converting back to UTC: `==` across zones is deliberately False
+    # for a time inside a DST fold, so it cannot state this invariant.
+    local = to_local(utc, tz)
+    assert local.astimezone(UTC) == utc
+    assert local.timestamp() == utc.timestamp()
     assert to_utc(naive, tz).utcoffset() == datetime.timedelta(0)
 
 

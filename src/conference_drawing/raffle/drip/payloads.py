@@ -7,12 +7,36 @@ would let an upsert re-subscribe someone who unsubscribed.
 """
 
 import datetime
+import unicodedata
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, EmailStr, model_validator
+from pydantic import BaseModel, EmailStr, field_validator, model_validator
 
 from ..codes import render_prize_url
 from ..models import CouponCode, Entrant, Pick, PrizeLine
+
+FIRST_NAME_MAX = 40
+_FIRST_NAME_PUNCTUATION = " '-."
+
+
+def safe_first_name(name: str) -> str | None:
+    """Return `name` stripped if it is safe to hand to Drip, else None.
+
+    Drip merges the first name into emails, so only letters (Unicode L*),
+    combining marks (M*), space, apostrophe, hyphen and period are allowed, 1 to
+    40 characters after stripping. Everything else, including bidi and
+    zero-width controls (Cf), makes the name unusable and the field is left
+    out rather than sent empty or cleaned up.
+    """
+    cleaned = name.strip()
+    if not 1 <= len(cleaned) <= FIRST_NAME_MAX:
+        return None
+    if all(
+        c in _FIRST_NAME_PUNCTUATION or unicodedata.category(c)[0] in "LM"
+        for c in cleaned
+    ):
+        return cleaned
+    return None
 
 
 class EventPayload(BaseModel):
@@ -37,6 +61,12 @@ class SubscriberPayload(BaseModel):
     eu_consent: Literal["granted"] | None = None
     eu_consent_message: str | None = None
 
+    @field_validator("first_name")
+    @classmethod
+    def _first_name_is_safe(cls, value: str | None) -> str | None:
+        """Drop an unsafe name, including from jobs queued before this check."""
+        return None if value is None else safe_first_name(value)
+
     @model_validator(mode="after")
     def _consent_is_both_or_neither(self) -> Self:
         """Drip needs the consent wording alongside a grant, so never send one alone."""
@@ -60,14 +90,15 @@ class SubscriberPayload(BaseModel):
 
         A blank or whitespace-only name (the form requires one, but admin edits
         and old rows may not) leaves `first_name` unset (the key is omitted, so an
-        existing first name in Drip is not wiped) rather than raising.
+        existing first name in Drip is not wiped) rather than raising. A first
+        word that `safe_first_name` refuses is treated the same way.
         Pass `consent_message` only for an entrant who opted in: it records the
         EU consent grant with that wording. Without it no consent fields are set.
         """
         words = entrant.name.split()
         return cls(
             email=entrant.email,
-            first_name=words[0] if words else None,
+            first_name=safe_first_name(words[0]) if words else None,
             tags=tags,
             eu_consent="granted" if consent_message is not None else None,
             eu_consent_message=consent_message,

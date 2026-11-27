@@ -3,6 +3,9 @@
 import datetime
 import itertools
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from django.utils import timezone
 
 from conference_drawing.raffle.models import (
     Book,
@@ -24,20 +27,26 @@ def make_book(**kwargs: Any) -> Book:
 
 def make_conference(**kwargs: Any) -> Conference:
     n = next(_counter)
+    zone = kwargs.get("time_zone", "America/Los_Angeles")
+    # The entry form only accepts entries during the conference, so by default
+    # "today" in the conference's zone is the middle day of a three-day event.
+    today = timezone.localdate(timezone=ZoneInfo(zone))
     defaults: dict[str, Any] = {
         "name": f"Conference {n}",
         "slug": f"conf-{n}",
-        "time_zone": "America/Los_Angeles",
+        "time_zone": zone,
         "booth_location": "Booth 12",
-        "starts_on": datetime.date(2027, 5, 10),
-        "ends_on": datetime.date(2027, 5, 12),
+        "starts_on": today - datetime.timedelta(days=1),
+        "ends_on": today + datetime.timedelta(days=1),
     }
     return Conference.objects.create(**{**defaults, **kwargs})
 
 
 def make_drawing(conference: Conference, **kwargs: Any) -> Drawing:
     defaults: dict[str, Any] = {
-        "scheduled_at": datetime.datetime(2027, 5, 11, 21, 0, tzinfo=datetime.UTC)
+        # Now or earlier, so helpers may start it; tests that need a future
+        # drawing (early-start rules) set scheduled_at explicitly.
+        "scheduled_at": timezone.now() - datetime.timedelta(hours=1)
     }
     return Drawing.objects.create(conference=conference, **{**defaults, **kwargs})
 
@@ -53,7 +62,13 @@ def make_prize_line(drawing: Drawing, **kwargs: Any) -> PrizeLine:
 
 def make_entrant(conference: Conference, **kwargs: Any) -> Entrant:
     n = next(_counter)
-    defaults: dict[str, Any] = {"name": f"Entrant {n}", "email": f"e{n}@example.com"}
+    defaults: dict[str, Any] = {
+        "name": f"Entrant {n}",
+        "email": f"e{n}@example.com",
+        # Before the default drawing's scheduled time (an hour ago), so a
+        # drawing started with defaults still finds them eligible.
+        "created_at": timezone.now() - datetime.timedelta(hours=2),
+    }
     return Entrant.objects.create(conference=conference, **{**defaults, **kwargs})
 
 

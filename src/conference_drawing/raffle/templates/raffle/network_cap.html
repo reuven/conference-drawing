@@ -1,0 +1,6 @@
+{% extends "raffle/base.html" %}
+{% block title %}Too many entries{% endblock %}
+{% block content %}
+<h1>{{ conference.name }}</h1>
+<p>Too many people have entered from your network in the last hour. Please ask at the booth{% if conference.booth_location %} ({{ conference.booth_location }}){% endif %} and we'll sort it out.</p>
+{% endblock %}

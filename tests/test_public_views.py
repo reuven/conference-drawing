@@ -5,14 +5,17 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, RequestFactory
 from django.urls import reverse
+from django.utils import timezone
 from hypothesis import given
 from hypothesis import strategies as st
 from PIL import Image
+from pytest_django import Settings
 
 from conference_drawing.raffle.forms import EntryForm
 from conference_drawing.raffle.models import (
@@ -22,8 +25,8 @@ from conference_drawing.raffle.models import (
     Entrant,
     InstallSettings,
 )
-from conference_drawing.raffle.views.public import client_ip
-from tests.factories import make_questions
+from conference_drawing.raffle.views.public import client_ip, network_key
+from tests.factories import make_drawing, make_prize_line, make_questions
 
 THANKS = "Thanks — you're in the drawing."
 CLOSED = "Entries for this conference are closed."
@@ -229,6 +232,124 @@ def test_wrap_up_landing_mid_submit_shows_closed(
     assert Entrant.objects.count() == 0
 
 
+def _today_in(tz: str) -> datetime.date:
+    return timezone.localdate(timezone=ZoneInfo(tz))
+
+
+def test_entry_window_classifies_dates(conference: Conference) -> None:
+    start, end = conference.starts_on, conference.ends_on
+    one = datetime.timedelta(days=1)
+    assert conference.entry_window(start - one) == "before"
+    assert conference.entry_window(start) == "open"
+    assert conference.entry_window(end) == "open"
+    assert conference.entry_window(end + one) == "after"
+
+
+def test_before_start_shows_not_open_page(
+    client: Client, conference: Conference
+) -> None:
+    make_prize_line(make_drawing(conference))
+    opens = _today_in(conference.time_zone) + datetime.timedelta(days=3)
+    Conference.objects.filter(pk=conference.pk).update(
+        starts_on=opens, ends_on=opens + datetime.timedelta(days=1)
+    )
+    url = reverse("entry", args=[conference.slug])
+    for got in (client.get(url), _post(client, conference)):
+        body = got.content.decode()
+        assert got.status_code == 200
+        assert conference.name in body
+        assert f"{opens:%B} {opens.day}, {opens.year}" in body
+        assert "<form" not in body
+        assert "Books in the drawings" in body
+    assert Entrant.objects.count() == 0
+
+
+def test_first_and_last_day_accept_entries(
+    client: Client, conference: Conference
+) -> None:
+    today = _today_in(conference.time_zone)
+    for starts, ends in (
+        (today, today + datetime.timedelta(days=2)),
+        (today - datetime.timedelta(days=2), today),
+    ):
+        Conference.objects.filter(pk=conference.pk).update(
+            starts_on=starts, ends_on=ends
+        )
+        assert (
+            "<form"
+            in client.get(reverse("entry", args=[conference.slug])).content.decode()
+        )
+    assert _post(client, conference).status_code == 303
+
+
+def test_after_end_shows_closed_page(client: Client, conference: Conference) -> None:
+    today = _today_in(conference.time_zone)
+    Conference.objects.filter(pk=conference.pk).update(
+        starts_on=today - datetime.timedelta(days=3),
+        ends_on=today - datetime.timedelta(days=1),
+    )
+    got = client.get(reverse("entry", args=[conference.slug]))
+    assert got.status_code == 200
+    assert CLOSED in got.content.decode()
+    assert "<form" not in got.content.decode()
+    assert CLOSED in _post(client, conference).content.decode()
+    assert Entrant.objects.count() == 0
+
+
+def test_window_uses_the_conference_time_zone(
+    client: Client, conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """23:00 UTC on the 10th is already the 11th in Auckland."""
+    Conference.objects.filter(pk=conference.pk).update(
+        time_zone="Pacific/Auckland",
+        starts_on=datetime.date(2027, 5, 10),
+        ends_on=datetime.date(2027, 5, 10),
+    )
+    monkeypatch.setattr(
+        timezone,
+        "now",
+        lambda: datetime.datetime(2027, 5, 10, 23, 0, tzinfo=datetime.UTC),
+    )
+    got = client.get(reverse("entry", args=[conference.slug]))
+    assert CLOSED in got.content.decode()
+    Conference.objects.filter(pk=conference.pk).update(time_zone="America/Los_Angeles")
+    got = client.get(reverse("entry", args=[conference.slug]))
+    assert "<form" in got.content.decode()
+
+
+def test_opening_edge_in_auckland(
+    client: Client, conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """13:00 UTC on May 9 is already 01:00 on May 10 in Auckland: open."""
+    Conference.objects.filter(pk=conference.pk).update(
+        time_zone="Pacific/Auckland",
+        starts_on=datetime.date(2027, 5, 10),
+        ends_on=datetime.date(2027, 5, 12),
+    )
+    monkeypatch.setattr(
+        timezone,
+        "now",
+        lambda: datetime.datetime(2027, 5, 9, 13, 0, tzinfo=datetime.UTC),
+    )
+    url = reverse("entry", args=[conference.slug])
+    assert "<form" in client.get(url).content.decode()
+    monkeypatch.setattr(
+        timezone,
+        "now",
+        lambda: datetime.datetime(2027, 5, 9, 11, 0, tzinfo=datetime.UTC),
+    )
+    assert "<form" not in client.get(url).content.decode()
+
+
+def test_wrapped_up_wins_over_not_open(client: Client, conference: Conference) -> None:
+    far = _today_in(conference.time_zone) + datetime.timedelta(days=30)
+    Conference.objects.filter(pk=conference.pk).update(
+        starts_on=far, ends_on=far, wrapped_up_at=DRAW_AT
+    )
+    got = client.get(reverse("entry", args=[conference.slug]))
+    assert CLOSED in got.content.decode()
+
+
 def test_unknown_slug_404(client: Client, db: None) -> None:
     assert client.get(reverse("entry", args=["nope"])).status_code == 404
     assert client.get(reverse("thanks", args=["nope"])).status_code == 404
@@ -250,7 +371,7 @@ def test_post_without_csrf_token_is_refused(conference: Conference) -> None:
 def test_post_rate_limited_per_ip(client: Client, conference: Conference) -> None:
     kwargs: dict[str, Any] = {"REMOTE_ADDR": "203.0.113.5"}
     url = reverse("entry", args=[conference.slug])
-    statuses = [client.post(url, {}, **kwargs).status_code for _ in range(60)]
+    statuses = [client.post(url, {}, **kwargs).status_code for _ in range(300)]
     assert set(statuses) == {200}
     blocked = client.post(url, {}, **kwargs)
     assert blocked.status_code == 429
@@ -266,10 +387,13 @@ def test_rate_limit_uses_rightmost_forwarded_for(
     client: Client, conference: Conference
 ) -> None:
     url = reverse("entry", args=[conference.slug])
-    for i in range(60):
-        spoof: dict[str, Any] = {"HTTP_X_FORWARDED_FOR": f"10.0.0.{i}, 198.51.100.7"}
+    for i in range(300):
+        spoof: dict[str, Any] = {
+            "HTTP_X_FORWARDED_FOR": f"10.0.0.{i}, 198.51.100.7",
+            "REMOTE_ADDR": "",
+        }
         assert client.post(url, {}, **spoof).status_code == 200
-    spoof = {"HTTP_X_FORWARDED_FOR": "10.9.9.9, 198.51.100.7"}
+    spoof = {"HTTP_X_FORWARDED_FOR": "10.9.9.9, 198.51.100.7", "REMOTE_ADDR": ""}
     assert client.post(url, {}, **spoof).status_code == 429
 
 
@@ -310,6 +434,16 @@ def test_privacy_page_states_retention(client: Client, db: None) -> None:
     assert sentence in client.get(reverse("privacy")).content.decode()
 
 
+def test_privacy_page_states_snapshot_and_log_retention(
+    client: Client, db: None
+) -> None:
+    html = client.get(reverse("privacy")).content.decode()
+    assert "48 hours" in html
+    assert "14 days" in html
+    assert "snapshot" in html.lower()
+    assert "access log" in html.lower()
+
+
 def test_privacy_page_without_note(client: Client, db: None) -> None:
     response = client.get(reverse("privacy"))
     assert response.status_code == 200
@@ -320,6 +454,7 @@ def test_privacy_page_without_note(client: Client, db: None) -> None:
 
 
 def _ip(**meta: Any) -> str:
+    meta.setdefault("REMOTE_ADDR", "")  # the unix socket: no peer address
     return client_ip("group", RequestFactory().get("/", **meta))
 
 
@@ -330,6 +465,23 @@ def test_client_ip_takes_rightmost_forwarded_entry() -> None:
 def test_client_ip_falls_back_to_remote_addr() -> None:
     assert _ip(REMOTE_ADDR="192.0.2.9") == "192.0.2.9"
     assert _ip(HTTP_X_FORWARDED_FOR="", REMOTE_ADDR="192.0.2.9") == "192.0.2.9"
+
+
+def test_client_ip_ignores_forwarded_for_from_an_untrusted_peer() -> None:
+    assert (
+        _ip(HTTP_X_FORWARDED_FOR="198.51.100.7", REMOTE_ADDR="203.0.113.9")
+        == "203.0.113.9"
+    )
+
+
+def test_client_ip_honors_forwarded_for_from_a_trusted_peer(
+    settings: Settings,
+) -> None:
+    settings.TRUSTED_PROXIES = frozenset({"203.0.113.9", "2001:db8::1"})
+    xff = {"HTTP_X_FORWARDED_FOR": "10.1.1.1, 198.51.100.7"}
+    assert _ip(REMOTE_ADDR="203.0.113.9", **xff) == "198.51.100.7"
+    assert _ip(REMOTE_ADDR="2001:0db8:0:0:0:0:0:1", **xff) == "198.51.100.7"
+    assert _ip(REMOTE_ADDR="203.0.113.10", **xff) == "203.0.113.10"
 
 
 def test_client_ip_masks_ipv6_to_64() -> None:
@@ -368,6 +520,31 @@ def test_client_ip_never_raises(xff: str, remote: str) -> None:
     result = _ip(HTTP_X_FORWARDED_FOR=xff, REMOTE_ADDR=remote)
     assert isinstance(result, str)
     assert result
+
+
+def _net(**meta: Any) -> str:
+    meta.setdefault("REMOTE_ADDR", "")
+    return network_key("group", RequestFactory().get("/", **meta))
+
+
+def test_network_key_never_contains_the_address() -> None:
+    key = _net(HTTP_X_FORWARDED_FOR="192.0.2.77")
+    assert "192.0.2.77" not in key
+    assert len(key) == 64
+
+
+def test_network_key_is_the_same_within_a_64_and_differs_across_networks() -> None:
+    a = _net(HTTP_X_FORWARDED_FOR="2001:db8:1:2:aaaa::1")
+    b = _net(HTTP_X_FORWARDED_FOR="2001:db8:1:2:bbbb::2")
+    c = _net(HTTP_X_FORWARDED_FOR="2001:db8:1:3::1")
+    assert a == b
+    assert c != a
+
+
+def test_network_key_depends_on_the_secret_key(settings: Settings) -> None:
+    before = _net(HTTP_X_FORWARDED_FOR="192.0.2.77")
+    settings.SECRET_KEY = "another-secret-key"  # noqa: S105
+    assert _net(HTTP_X_FORWARDED_FOR="192.0.2.77") != before
 
 
 # --- wrapped-up entry page and the site home page -----------------------------

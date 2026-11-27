@@ -16,6 +16,7 @@ from django.utils.html import format_html, format_html_join
 from .codes import parse_codes
 from .drip.outbox import requeue_failed
 from .models import (
+    AuditEvent,
     Book,
     Conference,
     CouponCode,
@@ -139,6 +140,7 @@ class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
                     "starts_on",
                     "ends_on",
                     "exclusion_emails",
+                    "entries_per_network_per_hour",
                     "display_token",
                     "wrapped_up_at",
                     "deleted_entrant_count",
@@ -194,7 +196,7 @@ class ConferenceAdmin(admin.ModelAdmin[Conference], _AfterLogoMedia):
 
     actions = ["rotate_display_token"]
 
-    @admin.action(description="Rotate display token")
+    @admin.action(permissions=["change"], description="Rotate display token")
     def rotate_display_token(
         self, request: HttpRequest, queryset: QuerySet[Conference]
     ) -> None:
@@ -422,6 +424,20 @@ class _ReadOnlyAdmin[M: Any](admin.ModelAdmin[M]):
 
     def has_delete_permission(self, request: HttpRequest, obj: Any = None) -> bool:
         return False
+
+
+@admin.register(AuditEvent)
+class AuditEventAdmin(_ReadOnlyAdmin[AuditEvent]):
+    """Read-only history of every drawing event, so misuse of Not here / Undo shows.
+
+    Why ids only: list columns carry no entrant names or emails (only the pick's id).
+    """
+
+    list_display = ("at", "drawing", "kind", "pick_id")
+    list_filter = ("drawing", "kind")
+    ordering = ("-at", "-id")
+    list_select_related = ("drawing",)
+    actions = None
 
 
 @admin.register(Entrant)

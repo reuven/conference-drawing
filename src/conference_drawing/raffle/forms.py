@@ -6,9 +6,11 @@ from typing import Any
 from django import forms
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 
 from .models import Conference, Entrant, InstallSettings, Question
 from .text import (
+    email_key,
     has_forbidden_chars,
     normalize_email,
     validate_deliverable_email,
@@ -108,7 +110,13 @@ class EntryForm(forms.Form):
         return validate_single_line_label(self.cleaned_data["name"])
 
     def clean_email(self) -> str:
-        return normalize_email(validate_deliverable_email(self.cleaned_data["email"]))
+        email = normalize_email(validate_deliverable_email(self.cleaned_data["email"]))
+        try:
+            email_key(email)
+        except ValueError:
+            # No mailbox to key (e.g. nothing before the +tag): refuse it.
+            raise ValidationError("Please enter a valid email address.") from None
+        return email
 
     def clean(self) -> dict[str, Any]:
         cleaned = super().clean() or {}
@@ -126,7 +134,17 @@ class EntryForm(forms.Form):
         return bool(self.data.get("leave_blank", "").strip())
 
     def _already_entered(self, email: str) -> bool:
-        return Entrant.objects.filter(conference=self.conference, email=email).exists()
+        """True if someone in this conference already has this mailbox.
+
+        Matches by mailbox key (so `ada+1@x` is a repeat of `ada@x`), and by
+        exact address for rows whose key is NULL (v0.3.0 inserts them after
+        the backfill ran); without that a NULL-key exact repeat would reach
+        the unique constraint instead of being treated as the repeat it is.
+        """
+        return Entrant.objects.filter(
+            Q(email_key=email_key(email)) | Q(email_key__isnull=True, email=email),
+            conference=self.conference,
+        ).exists()
 
     def save(self, now: datetime.datetime) -> Entrant | None:
         """Create the entrant, or return None (changing nothing) for a repeat email.

@@ -30,6 +30,7 @@ ROUTES: dict[str, str] = {
     "booth-flyer": HELPER,
     "booth-drawing": HELPER,
     "booth-start": HELPER,
+    "booth-confirm-start": OWNER,
     "booth-close": HELPER,
     "booth-claim": HELPER,
     "booth-not-here": HELPER,

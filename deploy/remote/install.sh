@@ -12,13 +12,15 @@
 # PostgreSQL at all (no cluster under /etc/postgresql, no postgresql-<major>
 # package), a first run installs Ubuntu's, records that it did in
 # /srv/conference-drawing/.installed-postgresql, and gives it a
-# small-footprint conf.d drop-in. A PostgreSQL that was already there belongs
-# to someone else: no apt, no marker, no drop-in, no restart, only a warning
-# showing its listen_addresses. Either way it must be version 15 or later
-# (Django 6.1), and the run creates the role conference-drawing (LOGIN, no
-# password: the app user's OS name maps to it by peer auth) and the database
-# conference_drawing it owns, idempotently; a conference_drawing database that
-# another role owns is refused, never taken over.
+# small-footprint conf.d drop-in (which also sets log_min_error_statement =
+# panic). A PostgreSQL that was already there belongs to someone else: no apt,
+# no marker, no drop-in, no restart, only a warning showing its
+# listen_addresses and a one-line suggestion of that logging setting. Either
+# way it must be version 15 or later (Django 6.1), and the run creates the
+# role conference-drawing (LOGIN, no password: the app user's OS name maps to
+# it by peer auth) and the database conference_drawing it owns, idempotently;
+# a conference_drawing database that another role owns is refused, never
+# taken over.
 #
 # The units have Requires=postgresql.service, so restarting PostgreSQL also
 # restarts the web app and the Drip worker for a moment. That happens only
@@ -204,8 +206,12 @@ prepare_data_dir() {
 	' _ "$DATA_DIR"
 }
 
-# Append the Drip keys the operator sent that .env does not have yet. Root
-# renders the lines; the app user writes the file.
+# Bring the Drip keys the operator sent into .env: append a missing key,
+# replace every line of a key whose value differs (so a rotated key reaches the
+# server), leave the file untouched when it already matches. Root only renders
+# the lines; the app user does all the file work (a temp file beside .env,
+# mode 0600, then rename), so root never writes through a path the app user
+# controls. A symlinked .env is refused. Values are never printed.
 write_env_keys() {
 	local lines=""
 	[ -z "$drip_api_key" ] || lines+="$(env_line DRIP_API_KEY "$drip_api_key")"$'\n'
@@ -217,14 +223,34 @@ write_env_keys() {
 		env=$1
 		[ ! -L "$env" ] || { echo "error: $env is a symbolic link" >&2; exit 1; }
 		umask 077
+		tmp=
+		trap '"'"'[ -z "$tmp" ] || rm -f -- "$tmp"'"'"' EXIT
+		[ -e "$env" ] || : >"$env"
+		chmod 0600 "$env"
 		while IFS= read -r line; do
 			key=${line%%=*}
-			if ! grep -q "^$key=" "$env" 2>/dev/null; then
-				printf "%s\n" "$line" >>"$env"
-				echo "==> wrote $key" >&2
+			total=$(grep -c "^$key=" "$env" || true)
+			same=$(grep -cxF -- "$line" "$env" || true)
+			if [ "$total" -gt 0 ] && [ "$total" = "$same" ]; then
+				continue
 			fi
+			tmp=$(mktemp "$env.XXXXXX")
+			if [ "$total" -eq 0 ]; then
+				cp -- "$env" "$tmp"
+				# A last line without its newline must not swallow the new key.
+				[ ! -s "$tmp" ] || [ -z "$(tail -c1 "$tmp")" ] || echo >>"$tmp"
+				printf "%s\n" "$line" >>"$tmp"
+			else
+				NEWLINE=$line KEY=$key awk '"'"'
+					index($0, ENVIRON["KEY"] "=") == 1 { print ENVIRON["NEWLINE"]; next }
+					{ print }
+				'"'"' "$env" >"$tmp"
+			fi
+			chmod 0600 "$tmp"
+			mv -f -- "$tmp" "$env"
+			tmp=
+			echo "==> wrote $key" >&2
 		done
-		chmod 0600 "$env"
 	' _ "$ENV_FILE"
 }
 
@@ -257,6 +283,7 @@ ensure_postgresql() {
 	fi
 	if [ "$pg_ours" -eq 0 ]; then
 		say "using the PostgreSQL already on this server (version ${majors//$'\n'/, }); its configuration is left alone"
+		say "suggestion: set log_min_error_statement = panic in your own PostgreSQL configuration, so a failed statement's values (entrant data) are not written to its log"
 		return 0
 	fi
 	dropin="$ROOT/etc/postgresql/$major/main/conf.d/$PG_DROPIN_NAME"
@@ -267,7 +294,9 @@ ensure_postgresql() {
 		"# Unix socket only, and small: this server's memory is shared." \
 		"listen_addresses = ''" \
 		"shared_buffers = 64MB" \
-		"max_connections = 20" >"$new"
+		"max_connections = 20" \
+		"# A failed statement's text can carry entrant data: never log it." \
+		"log_min_error_statement = panic" >"$new"
 	if ! cmp -s "$new" "$dropin"; then
 		install -m 0644 "$new" "$dropin"
 		systemctl restart postgresql

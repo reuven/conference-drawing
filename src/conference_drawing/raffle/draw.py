@@ -24,8 +24,13 @@ from django.db.models import Sum
 
 from .eligibility import WINNING_STATUSES, eligible_entrant_ids
 from .models import AuditEvent, Conference, CouponCode, Drawing, Pick, PrizeLine
+from .timezones import to_local
 
 _SYSTEM_RNG = secrets.SystemRandom()
+
+# How long before its scheduled time a drawing may be started without the
+# owner's say-so, so a helper can't run the drawing at the wrong moment.
+EARLY_START_WINDOW = datetime.timedelta(minutes=15)
 
 
 class DrawingError(Exception):
@@ -105,8 +110,18 @@ def _draw_slot(
     rng: random.Random,
     replaces: Pick | None = None,
 ) -> Pick | None:
-    """Pick one eligible entrant for `slot`, or audit `exhausted` if nobody is left."""
-    pool = eligible_entrant_ids(drawing)
+    """Pick one eligible entrant for `slot`, or audit `exhausted` if nobody is left.
+
+    Anyone already voided for this same prize line and slot is left out, so
+    Not here, Undo, Not here can't reroll a slot until a chosen person wins:
+    each reroll costs a person. A voided person stays eligible for other slots.
+    """
+    voided_here = set(
+        Pick.objects.filter(
+            prize_line=line, slot=slot, status=Pick.Status.VOID
+        ).values_list("entrant_id", flat=True)
+    )
+    pool = [e for e in eligible_entrant_ids(drawing) if e not in voided_here]
     if not pool:
         _audit(drawing, AuditEvent.Kind.EXHAUSTED, now, prize_line=line.pk, slot=slot)
         return None
@@ -165,6 +180,7 @@ def start_drawing(
     now: datetime.datetime,
     rng: random.Random = _SYSTEM_RNG,
     on_digital_pick: Callable[[Pick], None] = _ignore_digital_pick,
+    early_ok: bool = False,
 ) -> list[Pick]:
     """Open a scheduled drawing and pick a winner for every copy, line by line.
 
@@ -172,10 +188,19 @@ def start_drawing(
     never admits entries made after the announced time. `on_digital_pick` runs
     inside this transaction, so whatever it writes commits or rolls back with
     the pick.
+
+    Starting more than `EARLY_START_WINDOW` before the scheduled time is
+    refused unless `early_ok`, which only the owner's confirmed start sets.
     """
     drawing = _lock_conference_then(drawing.pk)
     if drawing.status != Drawing.Status.SCHEDULED:
         raise DrawingError("This drawing has already started.")
+    if not early_ok and now < drawing.scheduled_at - EARLY_START_WINDOW:
+        local = to_local(drawing.scheduled_at, drawing.conference.time_zone)
+        when = local.strftime("%-I:%M %p")
+        if local.date() != to_local(now, drawing.conference.time_zone).date():
+            when += local.strftime(" on %b %-d")
+        raise DrawingError(f"This drawing can start at {when}.")
     if _another_open(drawing):
         raise DrawingError("Another drawing is open. Close it first.")
     lines = list(

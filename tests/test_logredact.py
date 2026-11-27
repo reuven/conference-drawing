@@ -10,7 +10,7 @@ from django.test import Client
 from hypothesis import given
 from hypothesis import strategies as st
 
-from conference_drawing.logredact import RedactFilter, redact_paths
+from conference_drawing.logredact import DemoteToWarning, RedactFilter, redact_paths
 from conference_drawing.raffle.draw import DrawingError
 from conference_drawing.raffle.models import Conference
 from conference_drawing.raffle.views import display
@@ -180,3 +180,37 @@ def test_a_logged_404_on_a_guessed_display_token_is_redacted(
     logged = app_log.getvalue()
     assert TOKEN not in logged
     assert "/display/REDACTED/" in logged
+
+
+def _level_record(level: int) -> logging.LogRecord:
+    return logging.LogRecord("django.security.X", level, __file__, 1, "m", (), None)
+
+
+def test_demote_to_warning_lowers_only_errors() -> None:
+    err, info, crit = (
+        _level_record(logging.ERROR),
+        _level_record(logging.INFO),
+        _level_record(50),
+    )
+    for rec in (err, info, crit):
+        assert DemoteToWarning().filter(rec) is True
+    assert (err.levelno, err.levelname) == (logging.WARNING, "WARNING")
+    assert info.levelno == logging.INFO
+    assert crit.levelno == 50
+
+
+def test_too_many_fields_post_logs_at_warning(db: None, client: Client) -> None:
+    """A hostile oversized form is routine noise, not an ERROR page for the owner."""
+    [handler] = [
+        h for h in logging.getLogger("django.security").handlers if h.name == "security"
+    ]
+    assert isinstance(handler, logging.StreamHandler)
+    buffer = io.StringIO()
+    previous = handler.setStream(buffer)
+    try:
+        resp = client.post("/admin/login/", {f"f{i}": "x" for i in range(1500)})
+    finally:
+        handler.setStream(previous)
+    assert resp.status_code == 400
+    assert buffer.getvalue().startswith("WARNING django.security.TooManyFieldsSent")
+    assert logging.getLogger("django.security").propagate is False

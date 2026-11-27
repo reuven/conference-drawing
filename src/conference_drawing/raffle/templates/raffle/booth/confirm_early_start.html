@@ -1,0 +1,12 @@
+{% extends "raffle/booth/base.html" %}
+{% block title %}Start early?{% endblock %}
+{% block content %}
+<p><a href="{% url 'booth-drawing' drawing.pk %}">Back to the drawing</a></p>
+<h1>Start early?</h1>
+<p>This drawing is scheduled for {{ when }}, more than 15 minutes from now. Entries made after you start won't count.</p>
+<form method="post" action="{% url 'booth-start' drawing.pk %}">
+  {% csrf_token %}
+  <input type="hidden" name="confirm_early" value="1">
+  <button class="tap" type="submit">Start now</button>
+</form>
+{% endblock %}

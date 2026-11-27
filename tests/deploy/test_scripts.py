@@ -8,9 +8,11 @@ the snapshot job, in a temp root (``CD_ROOT``) with fake ``caddy``,
 """
 
 import hashlib
+import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -831,6 +833,84 @@ def test_services_set_paths_user_and_hardening(name: str) -> None:
         assert unit[f"Service.{key}"] == [value], key
 
 
+# Web and snapshot reach PostgreSQL only through CD_DB_HOST=/var/run/postgresql
+# (a unix socket), and only the Drip worker calls out to the internet.
+ADDRESS_FAMILIES = {
+    "conference-drawing-web.service": "AF_UNIX",
+    "conference-drawing-drip.service": "AF_UNIX AF_INET AF_INET6",
+    "conference-drawing-snapshot.service": "AF_UNIX",
+}
+
+
+@pytest.mark.parametrize("name", SERVICES)
+def test_services_are_sandboxed_beyond_the_basics(name: str) -> None:
+    unit = _unit(name)
+    expected = {
+        "CapabilityBoundingSet": "",
+        "SystemCallFilter": "@system-service",
+        "RestrictSUIDSGID": "yes",
+        "RestrictAddressFamilies": ADDRESS_FAMILIES[name],
+    }
+    for key, value in expected.items():
+        assert unit[f"Service.{key}"] == [value], key
+    # The snapshot unit runs Debian's pg_dump wrapper (postgresql-common), which
+    # may read the postmaster's /proc entry. If that failed under "invisible",
+    # every hourly dump would fail while age rotation kept deleting old ones.
+    if name.endswith("snapshot.service"):
+        assert "Service.ProtectProc" not in unit
+    else:
+        assert unit["Service.ProtectProc"] == ["invisible"]
+
+
+def test_only_the_drip_worker_may_open_ip_sockets() -> None:
+    for name in SERVICES:
+        families = _unit(name)["Service.RestrictAddressFamilies"][0].split()
+        assert ("AF_INET" in families) == (name == "conference-drawing-drip.service")
+
+
+@pytest.mark.skipif(
+    shutil.which("systemd-analyze") is None,
+    reason="systemd-analyze is not installed here (macOS); it runs on Linux CI",
+)
+def test_systemd_analyze_finds_no_unknown_or_unparsable_directive(
+    tmp_path: Path,
+) -> None:
+    """The text tests can't catch a misspelled directive or a value this systemd
+    rejects; `systemd-analyze verify` can. ExecStart paths point at nothing on
+    a CI runner, so they are rewritten to /bin/true in copies of the units."""
+    for path in SYSTEMD.iterdir():
+        text = re.sub(
+            r"^(ExecStart|ExecReload)=.*$",
+            r"\1=/bin/true",
+            path.read_text(),
+            flags=re.MULTILINE,
+        )
+        (tmp_path / path.name).write_text(text)
+    result = subprocess.run(  # noqa: S603 - fixed arguments, no network
+        [
+            shutil.which("systemd-analyze") or "",
+            "verify",
+            *(str(tmp_path / name) for name in SERVICES),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    # A missing user or postgresql.service on the runner is not our concern.
+    bad = [
+        ln
+        for ln in output.splitlines()
+        if re.search(
+            r"unknown (key|section|lvalue|assignment)|failed to parse",
+            ln,
+            re.IGNORECASE,
+        )
+    ]
+    assert bad == [], output
+
+
 SOCKET_PATH = "/run/conference-drawing/web.sock"
 
 
@@ -950,6 +1030,64 @@ def test_snapshot_fails_when_pg_dump_fails(fakes: Fakes) -> None:
     assert result.returncode != 0
     assert list((data / "snapshots").iterdir()) == []
     assert fakes.calls("pg_restore") == []
+
+
+def _age(path: Path, hours: int) -> None:
+    """Backdate `path` by `hours` (os.utime works the same on macOS and Linux)."""
+    then = time.time() - hours * 3600
+    os.utime(path, (then, then), follow_symlinks=False)
+
+
+def test_snapshot_deletes_dumps_older_than_48_hours_even_when_the_dump_fails(
+    fakes: Fakes,
+) -> None:
+    data = _snapshot_root(fakes)
+    fakes.set("pg_dump", [{"match": "-Fc", "exit": 1}])
+    snaps = data / "snapshots"
+    snaps.mkdir()
+    old = snaps / "db-20000101T000000Z.dump"
+    old.write_text("")
+    _age(old, 72)
+    recent = snaps / "db-20000102T000000Z.dump"
+    recent.write_text("")
+    _age(recent, 47)
+    other = snaps / "notes.txt"
+    other.write_text("x")
+    _age(other, 72)
+    result = fakes.run([SNAPSHOT])
+    assert result.returncode != 0
+    assert not old.exists()
+    assert recent.exists()
+    assert other.exists()
+
+
+def test_snapshot_age_rotation_removes_stale_partials_but_not_fresh_ones(
+    fakes: Fakes,
+) -> None:
+    data = _snapshot_root(fakes)
+    snaps = data / "snapshots"
+    snaps.mkdir()
+    stale = snaps / "db-20000101T000000Z.dump.partial"
+    stale.write_text("")
+    _age(stale, 72)
+    fresh = snaps / "db-20000102T000000Z.dump.partial"
+    fresh.write_text("")
+    assert fakes.run([SNAPSHOT]).returncode == 0
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_snapshot_age_rotation_never_follows_symlinks(fakes: Fakes) -> None:
+    data = _snapshot_root(fakes)
+    snaps = data / "snapshots"
+    snaps.mkdir()
+    target = fakes.root / "elsewhere"
+    target.mkdir()
+    (target / "db-20000101T000000Z.dump").write_text("keep")
+    _age(target / "db-20000101T000000Z.dump", 72)
+    (snaps / "sub").symlink_to(target)
+    assert fakes.run([SNAPSHOT]).returncode == 0
+    assert (target / "db-20000101T000000Z.dump").read_text() == "keep"
 
 
 def test_snapshot_skips_the_lock_its_caller_already_holds(fakes: Fakes) -> None:

@@ -3,7 +3,9 @@
 import ipaddress
 import logging
 from collections.abc import Callable
+from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.http import (
     HttpRequest,
     HttpResponse,
@@ -17,7 +19,9 @@ from django.views.decorators.http import require_GET, require_http_methods
 from django_ratelimit.decorators import ratelimit
 from django_ratelimit.exceptions import Ratelimited
 
+from ...keyed_hash import keyed_digest
 from ..after import resolve_after
+from ..entry_cap import network_entries_allowed, record_network_entry
 from ..forms import EntriesClosed, EntryForm
 from ..models import Conference, InstallSettings
 from ..schedule import schedule_context
@@ -45,25 +49,49 @@ def _canonical_ip(raw: str) -> str | None:
 def client_ip(group: str, request: HttpRequest) -> str:
     """Rate-limit key: the real client address as seen by our reverse proxy.
 
-    The app listens only on a unix socket behind Caddy, which appends the
-    connecting peer to X-Forwarded-For. So the rightmost entry is the one we
-    can trust; anything to its left was supplied by the client and could be
-    forged to get a fresh bucket per request. Unparseable values fall back to
-    REMOTE_ADDR, and a request with nothing usable shares the "unknown" bucket.
+    The app listens on a unix socket behind Caddy, which appends the connecting
+    peer to X-Forwarded-For, so the rightmost entry is the one we can trust;
+    anything to its left was supplied by the client. The header is honored only
+    when the request has no peer address (the unix socket) or its peer is in
+    ``settings.TRUSTED_PROXIES``; from anyone else the header is forged input
+    and REMOTE_ADDR is the key. Unparseable values fall back to REMOTE_ADDR,
+    and a request with nothing usable shares the "unknown" bucket.
 
-    Trust assumption: exactly one trusted proxy (Caddy) sits in front, with no
-    ``trusted_proxies`` setting, so it drops any client-sent X-Forwarded-For
-    and sends the peer address alone (deploy/caddy/conference-drawing.caddy.tmpl).
+    Trust assumption: exactly one trusted proxy (Caddy) sits in front, and it
+    drops any client-sent X-Forwarded-For (deploy/caddy/conference-drawing.caddy.tmpl).
     If a CDN or second proxy is ever added in front of Caddy, the rightmost
     entry becomes that proxy's address and this must take the entry before it.
     """
-    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    candidates = [forwarded.rsplit(",", 1)[-1], request.META.get("REMOTE_ADDR", "")]
+    remote = request.META.get("REMOTE_ADDR", "")
+    candidates = [remote]
+    if _peer_is_proxy(remote):
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+        candidates.insert(0, forwarded.rsplit(",", 1)[-1])
     for candidate in candidates:
         key = _canonical_ip(candidate)
         if key is not None:
             return key
     return "unknown"
+
+
+def network_key(group: str, request: HttpRequest) -> str:
+    """Rate-limit key: a keyed hash of the client's network, never the address.
+
+    django-ratelimit stores its key in the cache (and so in snapshots); an
+    unkeyed hash of an IPv4 address is reversible by brute force, so use the
+    HMAC of `client_ip` instead. Same network, same key.
+    """
+    return keyed_digest(f"net:{client_ip(group, request)}")
+
+
+def _peer_is_proxy(remote: str) -> bool:
+    """True for the unix socket (no peer address) or a listed trusted proxy."""
+    if not remote:
+        return True
+    try:
+        return str(ipaddress.ip_address(remote.strip())) in settings.TRUSTED_PROXIES
+    except ValueError:
+        return False
 
 
 def rate_limited(request: HttpRequest, exception: Ratelimited) -> HttpResponse:
@@ -76,7 +104,7 @@ def rate_limited(request: HttpRequest, exception: Ratelimited) -> HttpResponse:
 _limit_posts: Callable[
     [Callable[..., HttpResponseBase]], Callable[..., HttpResponseBase]
 ]
-_limit_posts = ratelimit(key=client_ip, rate="60/m", method="POST", block=True)
+_limit_posts = ratelimit(key=network_key, rate="300/m", method="POST", block=True)
 
 
 @require_http_methods(["GET", "HEAD", "POST"])
@@ -84,9 +112,13 @@ _limit_posts = ratelimit(key=client_ip, rate="60/m", method="POST", block=True)
 def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
     """Show the entry form, or process a submission.
 
-    Every accepted-looking submission -- new entry, repeat email or honeypot --
-    redirects to the same thanks page, so nothing here reveals whether an
-    address has already entered.
+    Entries are accepted only on the conference's dates (today in its time
+    zone); before them a "not open yet" page shows, after them the closed page.
+    Within the dates, every accepted-looking submission -- new entry, repeat
+    email or honeypot -- redirects to the same thanks page, so nothing here
+    reveals whether an address has already entered. The exception is a valid
+    post from a network that has used up its hourly cap: it gets a 429 page,
+    the same for everyone on that network, whether or not the address is new.
 
     The limiter's DatabaseCache increments are not atomic across gunicorn
     workers, so the limit is approximate. That looseness is accepted: it still
@@ -108,6 +140,17 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
             },
         )
 
+    today = timezone.localdate(timezone=ZoneInfo(conference.time_zone))
+    window = conference.entry_window(today)
+    if window == "after":
+        return render(request, "raffle/closed.html", {"conference": conference})
+    if window == "before":
+        return render(
+            request,
+            "raffle/not_open.html",
+            {**schedule_context(conference), "opens_on": conference.starts_on},
+        )
+
     if request.method == "POST":
         form = EntryForm(conference, request.POST)
         thanks_redirect = HttpResponseRedirect(reverse("thanks", args=[slug]))
@@ -115,11 +158,21 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
         if form.honeypot_filled():
             return thanks_redirect
         if form.is_valid():
+            now = timezone.now()
+            network = network_key("entry", request)
+            if not network_entries_allowed(conference, network, now=now):
+                return render(
+                    request,
+                    "raffle/network_cap.html",
+                    {"conference": conference},
+                    status=429,
+                )
             try:
-                entrant = form.save(timezone.now())
+                entrant = form.save(now)
             except EntriesClosed:
                 return render(request, "raffle/closed.html", {"conference": conference})
             if entrant is not None:
+                record_network_entry(conference, network, now=now)
                 logger.info(
                     "entry created conference=%s entrant=%s", conference.pk, entrant.pk
                 )

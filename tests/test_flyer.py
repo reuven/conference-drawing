@@ -122,7 +122,10 @@ def test_flyer_schedule_in_local_time(
     drawing_factory: Callable[..., Drawing],
 ) -> None:
     # 21:00 UTC is 2:00 PM PDT on Tue May 11; 03:30 UTC May 13 is 8:30 PM PDT May 12.
-    drawing_factory(conference)
+    drawing_factory(
+        conference,
+        scheduled_at=datetime.datetime(2027, 5, 11, 21, 0, tzinfo=datetime.UTC),
+    )
     drawing_factory(
         conference,
         scheduled_at=datetime.datetime(2027, 5, 13, 3, 30, tzinfo=datetime.UTC),

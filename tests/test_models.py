@@ -18,6 +18,7 @@ from conference_drawing.raffle.models import (
     Conference,
     CouponCode,
     Drawing,
+    Entrant,
     InstallSettings,
     OutboxJob,
     Pick,
@@ -144,19 +145,21 @@ def test_display_token_is_random_and_long(conference_factory: Factory) -> None:
     assert a.deleted_entrant_count is None
 
 
-def test_excluded_emails_are_normalized(conference_factory: Factory) -> None:
+def test_excluded_keys_are_normalized(conference_factory: Factory) -> None:
     c = conference_factory(
-        exclusion_emails=" Boss@Example.COM \n\nfriend@x.org, other@x.org;third@x.org\n"
+        exclusion_emails=(
+            " Boss+x@Example.COM \n\nfriend@x.org, other@x.org;third@x.org\n"
+        )
     )
-    assert c.excluded_emails == frozenset(
+    assert c.excluded_keys == frozenset(
         {"boss@example.com", "friend@x.org", "other@x.org", "third@x.org"}
     )
-    assert conference_factory().excluded_emails == frozenset()
+    assert conference_factory().excluded_keys == frozenset()
 
 
 @given(st.text())
-def test_excluded_emails_never_contain_blank_or_unnormalized(raw: str) -> None:
-    emails = Conference(exclusion_emails=raw).excluded_emails
+def test_excluded_keys_never_contain_blank_or_unnormalized(raw: str) -> None:
+    emails = Conference(exclusion_emails=raw).excluded_keys
     assert all(e and e == e.strip() and e == e.lower() for e in emails)
 
 
@@ -530,3 +533,44 @@ def test_slug_containing_a_reserved_word_is_fine(
     conf = conference_factory(slug="fine-slug")
     conf.slug = slug
     conf.full_clean()
+
+
+def test_entrant_email_key_set_on_save(
+    conference_factory: Factory, entrant_factory: Factory
+) -> None:
+    e = entrant_factory(conference_factory(), email="Ada+Raffle@Bücher.example")
+    e.refresh_from_db()
+    assert e.email == "ada+raffle@bücher.example"
+    assert e.email_key == "ada@xn--bcher-kva.example"
+
+
+def test_excluded_entrants_q_matches_key_or_null_key_exact_email(
+    conference_factory: Factory, entrant_factory: Factory
+) -> None:
+    c = conference_factory(exclusion_emails="Staff@Example.com")
+    alias = entrant_factory(c, email="staff+1@example.com")
+    exact = entrant_factory(c, email="staff@example.com")
+    legacy_alias = entrant_factory(c, email="staff+2@example.com")
+    guest = entrant_factory(c, email="guest@example.com")
+    Entrant.objects.filter(pk__in=[exact.pk, legacy_alias.pk]).update(email_key=None)
+    hit = set(
+        Entrant.objects.filter(c.excluded_entrants_q()).values_list("pk", flat=True)
+    )
+    # A NULL-keyed alias cannot be matched without a key; exact email still is.
+    assert hit == {alias.pk, exact.pk}
+    miss = set(
+        Entrant.objects.exclude(c.excluded_entrants_q()).values_list("pk", flat=True)
+    )
+    assert miss == {legacy_alias.pk, guest.pk}
+
+
+def test_entries_per_network_per_hour_defaults_to_60_and_allows_zero(
+    conference_factory: Factory,
+) -> None:
+    c = conference_factory()
+    assert c.entries_per_network_per_hour == 60
+    c.entries_per_network_per_hour = 0
+    c.full_clean()
+    c.entries_per_network_per_hour = -1
+    with pytest.raises(ValidationError):
+        c.full_clean()

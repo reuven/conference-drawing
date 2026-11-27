@@ -474,3 +474,29 @@ def test_connection_failure_message_redacts_the_password(
     if password:
         assert password not in err
         assert '"***"' in err
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("bad", ["short-pass", "password1234", "123456789012"])
+def test_non_interactive_refuses_a_weak_password_without_echoing_it(
+    env_file: Path,
+    superuser_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    bad: str,
+) -> None:
+    monkeypatch.setenv("DJANGO_SUPERUSER_PASSWORD", bad)
+    assert _init(env_file, "--domain", "raffle.example.com") == 2
+    captured = capsys.readouterr()
+    assert bad not in captured.out + captured.err
+    assert "DJANGO_SUPERUSER_PASSWORD" in captured.err
+    assert not get_user_model().objects.exists()
+
+
+@pytest.mark.django_db
+def test_weak_password_is_not_checked_when_the_superuser_exists(
+    env_file: Path, superuser_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _init(env_file, "--domain", "raffle.example.com") == 0
+    monkeypatch.setenv("DJANGO_SUPERUSER_PASSWORD", "short")
+    assert _init(env_file, "--domain", "raffle.example.com") == 0

@@ -19,12 +19,14 @@ from django.utils import timezone
 from PIL import Image
 
 from conference_drawing.raffle.admin import (
+    AuditEventAdmin,
     ConferenceAdmin,
     DrawingAdminForm,
     InstallSettingsAdmin,
     PrizeLineForm,
 )
 from conference_drawing.raffle.models import (
+    AuditEvent,
     Book,
     Conference,
     CouponCode,
@@ -70,6 +72,7 @@ def _conference_post(**over: Any) -> dict[str, Any]:
         "starts_on": "2027-05-10",
         "ends_on": "2027-05-12",
         "exclusion_emails": "",
+        "entries_per_network_per_hour": "60",
         "after_mode": "inherit",
         "after_markdown": "",
         "after_redirect_url": "",
@@ -652,6 +655,38 @@ def test_rotate_display_token_action_breaks_the_old_url(
     assert old not in resp.content.decode()
 
 
+def _staff_client(*codenames: str) -> Client:
+    from django.contrib.auth.models import Permission
+
+    user = get_user_model().objects.create_user(
+        f"staff{len(codenames)}", "s@example.com", "pw", is_staff=True
+    )
+    user.user_permissions.set(Permission.objects.filter(codename__in=codenames))
+    client = Client()
+    client.force_login(user)
+    return client
+
+
+def test_rotate_display_token_needs_change_permission(
+    db: None, conference_factory: Factory
+) -> None:
+    """A view-only staff user must not see or run the action."""
+    conf = conference_factory()
+    old = conf.display_token
+    viewer = _staff_client("view_conference")
+    page = viewer.get(reverse("admin:raffle_conference_changelist"))
+    assert "rotate_display_token" not in page.content.decode()
+    viewer.post(
+        reverse("admin:raffle_conference_changelist"),
+        {"action": "rotate_display_token", "_selected_action": [conf.pk]},
+    )
+    conf.refresh_from_db()
+    assert conf.display_token == old
+    changer = _staff_client("view_conference", "change_conference")
+    page = changer.get(reverse("admin:raffle_conference_changelist"))
+    assert "rotate_display_token" in page.content.decode()
+
+
 # --- login rate limit ----------------------------------------------------------
 
 
@@ -663,7 +698,11 @@ def test_admin_login_posts_are_rate_limited_per_ip(db: None) -> None:
     assert url == "/admin/login/"
     guess = {"username": "boss", "password": "wrong"}
     who: dict[str, Any] = {"REMOTE_ADDR": "203.0.113.9"}
-    statuses = [client.post(url, guess, **who).status_code for _ in range(10)]
+    # A different account each time, so only the per-IP limit can answer 429.
+    statuses = [
+        client.post(url, {**guess, "username": f"u{i}"}, **who).status_code
+        for i in range(10)
+    ]
     assert set(statuses) == {200}  # the form again, with an error
     blocked = client.post(url, guess, **who)
     assert blocked.status_code == 429
@@ -1316,3 +1355,31 @@ def test_other_many_to_many_fields_keep_their_full_choice_list(
     groups = get_user_model()._meta.get_field("groups")
     field = model_admin.formfield_for_manytomany(groups, request)
     assert field.queryset.model is groups.related_model
+
+
+def test_audit_events_admin_is_read_only(
+    admin_client: Client, drawing_factory: Factory, conference_factory: Factory
+) -> None:
+    drawing = drawing_factory(conference_factory())
+    event = AuditEvent.objects.create(drawing=drawing, kind=AuditEvent.Kind.STARTED)
+    changelist = reverse("admin:raffle_auditevent_changelist")
+    assert admin_client.get(changelist).status_code == 200
+    assert admin_client.get(reverse("admin:raffle_auditevent_add")).status_code == 403
+    change_url = reverse("admin:raffle_auditevent_change", args=[event.pk])
+    page = admin_client.get(change_url)
+    assert page.status_code == 200
+    assert 'name="_save"' not in page.content.decode()
+    assert admin_client.post(change_url, {"kind": "void"}).status_code == 403
+    delete_url = reverse("admin:raffle_auditevent_delete", args=[event.pk])
+    assert admin_client.post(delete_url, {"post": "yes"}).status_code == 403
+    admin_client.post(
+        changelist, {"action": "delete_selected", "_selected_action": [event.pk]}
+    )
+    assert AuditEvent.objects.filter(pk=event.pk).exists()
+
+
+def test_audit_events_admin_lists_ids_only_newest_first() -> None:
+    model_admin = AuditEventAdmin(AuditEvent, admin.site)
+    assert model_admin.ordering == ("-at", "-id")
+    assert model_admin.list_display == ("at", "drawing", "kind", "pick_id")
+    assert model_admin.list_filter == ("drawing", "kind")

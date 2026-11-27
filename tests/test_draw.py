@@ -16,6 +16,7 @@ from hypothesis import strategies as st
 from hypothesis.extra.django import TestCase
 
 from conference_drawing.raffle.draw import (
+    EARLY_START_WINDOW,
     DrawingError,
     close_drawing,
     mark_claimed,
@@ -39,7 +40,7 @@ from tests import factories
 
 NOW = datetime.datetime(2027, 5, 11, 20, 30, tzinfo=datetime.UTC)
 LATER = NOW + datetime.timedelta(minutes=1)
-SCHEDULED = datetime.datetime(2027, 5, 11, 21, 0, tzinfo=datetime.UTC)
+SCHEDULED = NOW + datetime.timedelta(minutes=10)
 BEFORE = NOW - datetime.timedelta(hours=1)
 S = Pick.Status
 K = AuditEvent.Kind
@@ -104,6 +105,53 @@ def dismiss_pending(drawing: Drawing) -> None:
 
 
 # --- start -------------------------------------------------------------------
+
+
+def test_start_refused_more_than_window_early(conf: Conference) -> None:
+    d = factories.make_drawing(
+        conf, scheduled_at=NOW + EARLY_START_WINDOW + datetime.timedelta(minutes=1)
+    )
+    factories.make_prize_line(d)
+    with pytest.raises(DrawingError, match=r"can start at .*\d:\d\d [AP]M"):
+        start_drawing(d, now=NOW, rng=rng())
+    d.refresh_from_db()
+    assert d.status == Drawing.Status.SCHEDULED
+    assert not AuditEvent.objects.filter(drawing=d).exists()
+
+
+def test_start_message_names_local_time(conf: Conference) -> None:
+    # SCHEDULED is 20:40 UTC, 1:40 PM in America/Los_Angeles (PDT); plus 15 min.
+    d = factories.make_drawing(conf, scheduled_at=SCHEDULED + EARLY_START_WINDOW)
+    with pytest.raises(DrawingError) as excinfo:
+        start_drawing(d, now=NOW - EARLY_START_WINDOW, rng=rng())
+    assert str(excinfo.value) == "This drawing can start at 1:55 PM."
+
+
+def test_start_message_adds_the_date_when_not_today(conf: Conference) -> None:
+    # 1:40 PM PDT on May 12 is the next day in Los Angeles from NOW (May 11).
+    d = factories.make_drawing(
+        conf, scheduled_at=SCHEDULED + datetime.timedelta(days=1)
+    )
+    with pytest.raises(DrawingError) as excinfo:
+        start_drawing(d, now=NOW, rng=rng())
+    assert str(excinfo.value) == "This drawing can start at 1:40 PM on May 12."
+
+
+def test_start_allowed_exactly_at_window_edge(conf: Conference) -> None:
+    d = factories.make_drawing(conf, scheduled_at=NOW + EARLY_START_WINDOW)
+    factories.make_prize_line(d)
+    start_drawing(d, now=NOW, rng=rng())
+    d.refresh_from_db()
+    assert d.status == Drawing.Status.OPEN
+
+
+def test_early_ok_overrides_the_window(conf: Conference) -> None:
+    d = factories.make_drawing(conf, scheduled_at=NOW + datetime.timedelta(hours=2))
+    factories.make_prize_line(d)
+    start_drawing(d, now=NOW, rng=rng(), early_ok=True)
+    d.refresh_from_db()
+    assert d.status == Drawing.Status.OPEN
+    assert d.cutoff_at == NOW
 
 
 @pytest.mark.parametrize(
@@ -448,6 +496,36 @@ def test_undo_not_here_voids_replacement_and_restores_pick(
     again = mark_not_here(restored, now=LATER, rng=rng())
     assert again is not None
     assert Pick.objects.filter(replaces=pick).count() == 2
+
+
+def test_reroll_never_redraws_someone_voided_for_that_slot(
+    conf: Conference, drawing: Drawing, entrant_factory: Callable[..., Entrant]
+) -> None:
+    for _ in range(20):
+        entrant_factory(conf, created_at=BEFORE)
+    [pick] = started_single(drawing)
+    seen: list[int] = []
+    while (replacement := mark_not_here(pick, now=LATER, rng=rng())) is not None:
+        seen.append(replacement.entrant_id)
+        undo_last(pick, now=LATER)
+    assert len(seen) == len(set(seen)) == 19
+    assert pick.entrant_id not in seen
+    assert kinds(drawing)[-1] == K.EXHAUSTED
+
+
+def test_voided_person_can_still_win_another_slot(
+    conf: Conference, drawing: Drawing, entrant_factory: Callable[..., Entrant]
+) -> None:
+    for _ in range(3):
+        entrant_factory(conf, created_at=BEFORE)
+    first, second = started_single(drawing, quantity=2)
+    voided = mark_not_here(first, now=LATER, rng=rng())
+    assert voided is not None
+    undo_last(first, now=LATER)
+    other = mark_not_here(second, now=LATER, rng=rng())
+    assert other is not None
+    assert other.slot == 2
+    assert other.entrant_id == voided.entrant_id
 
 
 def test_undo_refused_after_replacement_marked(
@@ -954,3 +1032,37 @@ class DrawProperty(TestCase):
                     prize_line__drawing=d, status__in=[S.CLAIMED, S.DIGITAL]
                 ).count()
             )
+
+
+class RerollProperty(TestCase):
+    @settings(deadline=None, max_examples=15)
+    @given(
+        n_entrants=st.integers(2, 8),
+        ops=st.lists(st.booleans(), max_size=30),
+        seed=st.integers(0, 2**16),
+    )
+    @example(n_entrants=3, ops=[True, False] * 6, seed=0)
+    def test_reroll_sequences_never_repeat_a_voided_entrant_for_the_slot(
+        self, n_entrants: int, ops: list[bool], seed: int
+    ) -> None:
+        """True is Not here, False is Undo; a voided entrant never returns."""
+        r = random.Random(seed)
+        conf = factories.make_conference()
+        for _ in range(n_entrants):
+            factories.make_entrant(conf, created_at=BEFORE)
+        drawing = factories.make_drawing(conf, scheduled_at=SCHEDULED)
+        factories.make_prize_line(drawing, quantity=1)
+        [original] = start_drawing(drawing, now=NOW, rng=r)
+        voided: set[int] = set()
+        live: Pick | None = None
+        for not_here in ops:
+            original.refresh_from_db()
+            if not_here and original.status == S.PENDING:
+                live = mark_not_here(original, now=LATER, rng=r)
+                if live is not None:
+                    assert live.entrant_id not in voided
+            elif not not_here and original.status == S.NOT_HERE:
+                undo_last(original, now=LATER)
+                if live is not None:
+                    voided.add(live.entrant_id)
+                live = None

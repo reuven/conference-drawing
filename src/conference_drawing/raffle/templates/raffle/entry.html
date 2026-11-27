@@ -4,12 +4,7 @@
 <h1>{{ conference.name }}</h1>
 <p>Enter to win a book.</p>
 {% include "raffle/_schedule.html" %}
-{% if books %}
-<h2>Books in the drawings</h2>
-<ul>
-  {% for book in books %}<li>{{ book.title }}</li>{% endfor %}
-</ul>
-{% endif %}
+{% include "raffle/_books.html" %}
 <form method="post">
   {% csrf_token %}
   {{ form.non_field_errors }}

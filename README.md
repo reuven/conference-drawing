@@ -37,4 +37,16 @@ Connecting Drip, and exactly what the app sends there, is in
 [Setting up Drip](docs/drip-setup.md). The designs are in
 [`docs/superpowers/specs/`](docs/superpowers/specs/).
 
+## Security
+
+Hardening for the entry window, per-network limits, passwords, sign-in
+lockout, and the server units is described in the
+[admin guide](docs/admin-guide.md) and
+[Setting up a server](docs/server-setup.md). What the app sends to Drip, and
+what to avoid doing there, is in [Setting up Drip](docs/drip-setup.md).
+
+To report a vulnerability, please do not open a public issue. Use GitHub's
+private vulnerability reporting: on the repository's **Security** tab, choose
+**Report a vulnerability** (a security advisory).
+
 Licensed under the MIT License.

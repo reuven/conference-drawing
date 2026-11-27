@@ -13,10 +13,12 @@ import random
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import redirect_to_login
+from django.db.models import Count, Q
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.template.loader import render_to_string
@@ -34,6 +36,7 @@ from ..access import (
 from ..codes import render_prize_url
 from ..deletion import delete_entrants
 from ..draw import (
+    EARLY_START_WINDOW,
     DrawingError,
     close_drawing,
     mark_claimed,
@@ -45,6 +48,8 @@ from ..draw import (
 from ..drip.config import drip_settings
 from ..drip.outbox import enqueue_won_prize, failed_count, pending_count, requeue_failed
 from ..models import (
+    AuditEvent,
+    Conference,
     CouponCode,
     Drawing,
     Entrant,
@@ -173,6 +178,19 @@ def _local_label(drawing: Drawing) -> str:
     return local.strftime("%a %b %-d, %-I:%M %p")
 
 
+def _local_time(drawing: Drawing) -> str:
+    local = to_local(drawing.scheduled_at, drawing.conference.time_zone)
+    return local.strftime("%-I:%M %p")
+
+
+def _needs_confirmation(drawing: Drawing, now: datetime.datetime) -> bool:
+    """Say whether starting now is early enough to need the owner's second tap."""
+    return (
+        drawing.status == Drawing.Status.SCHEDULED
+        and now < drawing.scheduled_at - EARLY_START_WINDOW
+    )
+
+
 def _row(
     pick: Pick,
     line: PrizeLine,
@@ -268,22 +286,53 @@ def home(request: HttpRequest) -> HttpResponse:
     )
 
 
+def _history_label(undos: int, voids: int) -> str:
+    """Words for one drawing's counts, e.g. "1 undo, 1 voided"."""
+    return f"{undos} undo{'' if undos == 1 else 's'}, {voids} voided"
+
+
+def _history_counts(
+    conf: Conference, drawing_ids: list[int]
+) -> dict[int, tuple[int, int]]:
+    """Count undos and voided picks per drawing, in one query, for the owner.
+
+    Why: a helper misusing Not here / Undo shows up as a high count here; every
+    drawing is present (0, 0 when untouched) so the page can show it plainly.
+    """
+    rows = (
+        AuditEvent.objects.filter(drawing__conference=conf)
+        .values("drawing_id")
+        .annotate(
+            undos=Count("pk", filter=Q(kind=AuditEvent.Kind.UNDO)),
+            voids=Count("pk", filter=Q(kind=AuditEvent.Kind.VOID)),
+        )
+    )
+    found = {r["drawing_id"]: (r["undos"], r["voids"]) for r in rows}
+    return {pk: found.get(pk, (0, 0)) for pk in drawing_ids}
+
+
 @login_required
 @require_GET
 def conference_page(request: HttpRequest, slug: str) -> HttpResponse:
     """List a conference's drawings with their local times and states."""
     conf = conference_or_404(request.user, slug)
-    drawings = [
-        (d, _local_label(d))
-        for d in Drawing.objects.filter(conference=conf).select_related("conference")
-    ]
+    rows = list(Drawing.objects.filter(conference=conf).select_related("conference"))
     drip_on = drip_settings() is not None
+    owner = is_owner(request.user)
+    extra: dict[str, Any] = {}
+    if owner:
+        extra["history"] = _history_counts(conf, [d.pk for d in rows])
+    drawings = [
+        (d, _local_label(d), _history_label(*extra["history"][d.pk]) if owner else "")
+        for d in rows
+    ]
     return render(
         request,
         "raffle/booth/conference.html",
         {
+            **extra,
             "conference": conf,
-            "is_owner": is_owner(request.user),
+            "is_owner": owner,
             "drawings": drawings,
             "drip_on": drip_on,
             "drip_pending": pending_count(conf) if drip_on else 0,
@@ -381,7 +430,12 @@ def delete_entrants_page(request: HttpRequest, slug: str) -> HttpResponse:
 def drawing_page(request: HttpRequest, pk: int) -> HttpResponse:
     """Show one drawing: Start when scheduled, copies and buttons while open."""
     obj = drawing_or_404(request.user, pk)
-    context = {**_status_context(obj), "when": _local_label(obj), "lines": _build(obj)}
+    context = {
+        **_status_context(obj),
+        "when": _local_label(obj),
+        "start_time": _local_time(obj),
+        "lines": _build(obj),
+    }
     return render(request, "raffle/booth/drawing.html", context)
 
 
@@ -398,19 +452,52 @@ def _redirect(request: HttpRequest, drawing_id: int) -> HttpResponse:
 @require_POST
 @_refresh_on_404
 def start(request: HttpRequest, pk: int) -> HttpResponse:
-    """Run the drawing; refusals come back as a message on the drawing page."""
+    """Run the drawing; refusals come back as a message on the drawing page.
+
+    More than 15 minutes early, a helper is refused by `start_drawing`, and
+    the owner is sent to a confirmation screen; only the owner's post with
+    `confirm_early=1` starts it that early.
+    """
     obj = drawing_or_404(request.user, pk)
     now = timezone.now()
+    owner = is_owner(request.user)
+    confirmed = owner and request.POST.get("confirm_early") == "1"
+    if owner and not confirmed and _needs_confirmation(obj, now):
+        target = reverse("booth-confirm-start", args=[obj.pk])
+        if _is_htmx(request):
+            response = HttpResponse()
+            response["HX-Redirect"] = target
+            return response
+        return HttpResponseRedirect(target)
     try:
         start_drawing(
             obj,
             now=now,
             rng=_rng(),
             on_digital_pick=lambda pick: _enqueue(pick, now),
+            early_ok=confirmed,
         )
     except DrawingError as exc:
         messages.error(request, str(exc))
     return _redirect(request, obj.pk)
+
+
+@login_required
+@require_GET
+def confirm_start(request: HttpRequest, pk: int) -> HttpResponse:
+    """Ask the owner to confirm a start more than 15 minutes early.
+
+    Owner-only (a helper gets a 404). When the drawing has since started, or
+    the scheduled time is now close, there is nothing to confirm, so go back to
+    the drawing page, which shows the real state.
+    """
+    obj = drawing_or_404(request.user, pk)
+    if not is_owner(request.user):
+        raise Http404
+    if not _needs_confirmation(obj, timezone.now()):
+        return _back(obj.pk)
+    context = {"drawing": obj, "when": _local_label(obj)}
+    return render(request, "raffle/booth/confirm_early_start.html", context)
 
 
 @_htmx_login_required(drawing_route=True)

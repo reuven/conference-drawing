@@ -1,0 +1,6 @@
+{% if books %}
+<h2>Books in the drawings</h2>
+<ul>
+  {% for book in books %}<li>{{ book.title }}</li>{% endfor %}
+</ul>
+{% endif %}

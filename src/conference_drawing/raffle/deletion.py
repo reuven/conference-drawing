@@ -92,9 +92,11 @@ def delete_entrants(conference: Conference, *, now: datetime.datetime) -> int:
         jobs.update(payload={"redacted": True})
         locked.deleted_entrant_count = count
         locked.save(update_fields=["deleted_entrant_count"])
-        # The cache holds only django-ratelimit counters, keyed by a hash of
-        # the client IP, which brute force reverses over IPv4. Clearing it
-        # resets every limit for a minute, a fair price on a deletion day.
+        # The cache holds django-ratelimit counters, the entry-cap counters
+        # (hourly) and the login-lockout counters (15 minutes), all keyed by
+        # hashes of IPs or account names. Clearing it removes those rows but
+        # also resets every conference's network entry caps for the hour and
+        # lifts every lockout: a fair price on a deletion day, but know it.
         cache.clear()
         # After the outermost commit, outside any transaction, even when a
         # caller wraps this in its own atomic block.

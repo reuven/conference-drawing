@@ -172,6 +172,46 @@ def test_repeat_entry_with_case_variant_does_not_duplicate(
     assert entrant.answers == {"want_to_learn": "original"}
 
 
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "ada+2@example.com",
+        "Ada+Raffle@Example.com",
+        "ada+@example.com",
+    ],
+)
+def test_plus_alias_is_a_repeat_and_creates_no_row(
+    conference: Conference, alias: str
+) -> None:
+    assert _enter(conference) is not None
+    assert _enter(conference, email=alias) is None
+    assert Entrant.objects.count() == 1
+
+
+def test_original_after_alias_is_a_repeat(conference: Conference) -> None:
+    assert _enter(conference, email="ada+1@example.com") is not None
+    assert _enter(conference, email="ada@example.com") is None
+    assert Entrant.objects.get().email == "ada+1@example.com"
+
+
+def test_both_idna_spellings_are_one_entrant(conference: Conference) -> None:
+    assert _enter(conference, email="ada@bücher.example") is not None
+    assert _enter(conference, email="ada@xn--bcher-kva.example") is None
+    assert Entrant.objects.count() == 1
+
+
+def test_dashes_and_dots_do_not_alias(conference: Conference) -> None:
+    for email in ["ada@example.com", "ada-2@example.com", "a.da@example.com"]:
+        assert _enter(conference, email=email) is not None
+    assert Entrant.objects.count() == 3
+
+
+def test_email_with_only_a_tag_is_refused(conference: Conference) -> None:
+    form = EntryForm(conference, _data(email="+x@example.com"))
+    assert not form.is_valid()
+    assert "email" in form.errors
+
+
 def test_same_email_in_another_conference_is_not_a_repeat(
     conference: Conference, conference_factory: Callable[..., Conference]
 ) -> None:
@@ -179,6 +219,17 @@ def test_same_email_in_another_conference_is_not_a_repeat(
     assert _enter(conference) is not None
     assert _enter(other) is not None
     assert Entrant.objects.count() == 2
+
+
+def test_exact_repeat_of_a_null_key_row_is_a_quiet_repeat(
+    conference: Conference,
+) -> None:
+    """A row inserted by 0.3 during a rollback has no key; no 500, no second row."""
+    entrant = _enter(conference)
+    assert entrant is not None
+    Entrant.objects.filter(pk=entrant.pk).update(email_key=None)
+    assert _enter(conference, name="Someone Else") is None
+    assert Entrant.objects.count() == 1
 
 
 def test_race_on_unique_constraint_is_treated_as_repeat(
@@ -193,9 +244,9 @@ def test_race_on_unique_constraint_is_treated_as_repeat(
     real = EntryForm._already_entered
     calls: list[str] = []
 
-    def stale_then_real(self: EntryForm, email: str) -> bool:
-        calls.append(email)
-        return False if len(calls) == 1 else real(self, email)
+    def stale_then_real(self: EntryForm, key: str) -> bool:
+        calls.append(key)
+        return False if len(calls) == 1 else real(self, key)
 
     monkeypatch.setattr(EntryForm, "_already_entered", stale_then_real)
     assert form.save(NOW) is None

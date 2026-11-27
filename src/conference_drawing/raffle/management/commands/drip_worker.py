@@ -6,16 +6,15 @@ import threading
 from types import FrameType
 from typing import Any
 
-import httpx
 from django.core.management.base import BaseCommand, CommandParser
 from django.db import close_old_connections
-from django.utils import timezone
 
 from ...drip import outbox
-from ...drip.client import DripClient
+from ...drip.client import DripClient, build_http_client
 from ...drip.config import drip_settings
 
 INTERVAL_SECONDS = 5
+MAX_WAIT_SECONDS = 3600
 logger = logging.getLogger(__name__)
 
 
@@ -41,13 +40,13 @@ class Command(BaseCommand):
             for sig in (signal.SIGTERM, signal.SIGINT)
         }
         try:
-            with httpx.Client() as http:
+            with build_http_client() as http:
                 while True:
+                    wait: float = INTERVAL_SECONDS
                     if config is not None:
                         try:
                             result = outbox.process_due(
                                 DripClient(config, http),
-                                now=timezone.now(),
                                 should_stop=stop.is_set,
                             )
                         except Exception as exc:  # noqa: BLE001 - keep the worker up
@@ -56,6 +55,12 @@ class Command(BaseCommand):
                                 "drip worker pass failed: %s", type(exc).__name__
                             )
                         else:
+                            if result.retry_after is not None:
+                                # Drip throttled us: wait as long as it asked.
+                                wait = max(
+                                    INTERVAL_SECONDS,
+                                    min(result.retry_after, MAX_WAIT_SECONDS),
+                                )
                             # Quiet when idle: no 5 s heartbeat in the journal.
                             if result.sent or result.retried or result.failed:
                                 self.stdout.write(
@@ -63,7 +68,7 @@ class Command(BaseCommand):
                                     f"failed={result.failed}"
                                 )
                     # An interruptible sleep: a signal sets `stop` and wakes us.
-                    if options["once"] or stop.wait(INTERVAL_SECONDS):
+                    if options["once"] or stop.wait(wait):
                         break
                     close_old_connections()  # drop stale connections
         finally:

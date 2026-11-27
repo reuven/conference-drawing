@@ -1,15 +1,19 @@
 """Drip payload models: what we send, and what we never send."""
 
 import datetime
+import unicodedata
 from collections.abc import Callable
 from typing import Any
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from conference_drawing.raffle.drip.payloads import (
     EventPayload,
     SubscriberPayload,
+    safe_first_name,
     won_prize_event,
 )
 from conference_drawing.raffle.models import (
@@ -199,3 +203,61 @@ def test_subscriber_from_entrant_with_consent_message(
     sub = SubscriberPayload.from_entrant(entrant, tags=["t"], consent_message="OK")
     assert sub.to_json()["eu_consent"] == "granted"
     assert sub.to_json()["eu_consent_message"] == "OK"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Ada", "Ada"),
+        ("José", "José"),
+        ("O'Neil", "O'Neil"),
+        ("Mary-Jane", "Mary-Jane"),
+        ("Jr.", "Jr."),
+        ("Anne Marie", "Anne Marie"),
+        ("  Ada  ", "Ada"),
+        ("李", "李"),
+        ("e\u0301", "e\u0301"),  # a combining mark is allowed
+        ("a" * 40, "a" * 40),
+        ("a" * 41, None),
+        ("", None),
+        ("   ", None),
+        ("<a href=x>", None),
+        ("Ada1", None),
+        ("a\u202eb", None),  # right-to-left override (Cf)
+        ("a\u200bb", None),  # zero-width space (Cf)
+        ("a\nb", None),
+        ("a\tb", None),
+        ('"quoted"', None),
+        ("a@b", None),
+        ("😀", None),
+    ],
+)
+def test_safe_first_name(name: str, expected: str | None) -> None:
+    assert safe_first_name(name) == expected
+
+
+@given(st.text(max_size=60))
+def test_safe_first_name_only_returns_clean_short_text(name: str) -> None:
+    result = safe_first_name(name)
+    if result is not None:
+        assert 1 <= len(result) <= 40
+        assert result == result.strip()
+        assert all(c in " '-." or unicodedata.category(c)[0] in "LM" for c in result)
+
+
+def test_subscriber_from_entrant_omits_an_unsafe_first_name(
+    conference_factory: Callable[..., Conference],
+    entrant_factory: Callable[..., Entrant],
+) -> None:
+    entrant = entrant_factory(conference_factory(), name="<script> Smith")
+    sub = SubscriberPayload.from_entrant(entrant, tags=["t"])
+    assert sub.first_name is None
+    assert "first_name" not in sub.to_json()
+
+
+def test_subscriber_payload_drops_an_unsafe_first_name_from_a_stored_job() -> None:
+    """Jobs queued before the check still get cleaned when they are sent."""
+    sub = SubscriberPayload.model_validate(
+        {"email": "a@example.com", "first_name": "a\u202eb", "tags": ["t"]}
+    )
+    assert "first_name" not in sub.to_json()

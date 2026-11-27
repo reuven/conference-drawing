@@ -23,6 +23,7 @@ from typing import NamedTuple
 import httpx
 from django.db import transaction
 from django.db.models import F, QuerySet
+from django.utils import timezone
 from pydantic import ValidationError
 
 from ..models import Conference, OutboxJob, Pick
@@ -34,8 +35,10 @@ logger = logging.getLogger(__name__)
 
 BACKOFF_SECONDS = (60, 300, 1800, 7200)
 MAX_ATTEMPTS = 8
-# httpx timeouts apply per phase (connect/write/read/pool), so one request can
-# block for about 4 x 10 s; jobs are claimed one at a time, so this covers it.
+# Floor for a throttled job's wait, so `Retry-After: 0` cannot hot-loop.
+MIN_THROTTLE_WAIT = 5.0
+# Each request is cut off after DEADLINE_SECONDS (30 s) and a job makes one
+# request (wrap-up queues at most 1000 subscribers per job), so this covers it.
 LEASE = datetime.timedelta(minutes=2)
 
 
@@ -45,6 +48,7 @@ class ProcessResult(NamedTuple):
     sent: int
     retried: int
     failed: int
+    retry_after: float | None = None  # set when Drip throttled: wait this long
 
 
 def enqueue(
@@ -168,7 +172,7 @@ def _record_failure(
     else:
         wait = BACKOFF_SECONDS[min(job.attempts, len(BACKOFF_SECONDS)) - 1]
         fields["next_attempt_at"] = now + datetime.timedelta(seconds=wait)
-    if not _still_leased(job, now).update(**fields):
+    if not _still_leased(job).update(**fields):
         return None
     logger.warning(
         "outbox job %s attempt %s failed: %s (%s)",
@@ -180,20 +184,41 @@ def _record_failure(
     return give_up
 
 
-def _still_leased(job: OutboxJob, now: datetime.datetime) -> QuerySet[OutboxJob]:
-    """Select the job only if it is exactly as this worker's claim left it."""
+def _record_throttled(
+    job: OutboxJob, retry_after: float, *, now: datetime.datetime
+) -> None:
+    """Hand a throttled job back without charging an attempt.
+
+    Drip said "later", not "no", so the claim's attempt is given back and the
+    job waits out `retry_after`. Conditional on still holding the lease.
+    """
+    wait = max(retry_after, MIN_THROTTLE_WAIT)
+    if _still_leased(job).update(
+        attempts=job.attempts - 1,
+        next_attempt_at=now + datetime.timedelta(seconds=wait),
+        last_error_class="DripError",
+    ):
+        logger.warning("outbox job %s throttled by Drip; waiting %.0f s", job.pk, wait)
+
+
+def _still_leased(job: OutboxJob) -> QuerySet[OutboxJob]:
+    """Select the job only if it is exactly as this worker's claim left it.
+
+    `job` was read right after the claim, so its `next_attempt_at` is the lease
+    this worker was given; a re-claim by another worker changes it.
+    """
     return OutboxJob.objects.filter(
         pk=job.pk,
         status=OutboxJob.Status.PENDING,
         attempts=job.attempts,
-        next_attempt_at=now + LEASE,
+        next_attempt_at=job.next_attempt_at,
     )
 
 
 def process_due(
     client: DripClient,
     *,
-    now: datetime.datetime,
+    clock: Callable[[], datetime.datetime] = timezone.now,
     limit: int = 20,
     should_stop: Callable[[], bool] = lambda: False,
 ) -> ProcessResult:
@@ -201,35 +226,41 @@ def process_due(
 
     Jobs are claimed one at a time, so a stop request (`should_stop`) between
     jobs leaves the rest untouched and due, and each lease only has to outlast
-    one request. A 4xx other than 429 is permanent, as is any unexpected error
-    (a payload that no longer validates, a bug): those must not loop forever.
+    one request. A 429 stops the pass and is reported (the worker waits it out)
+    without costing the job an attempt. A 4xx other than 429 is permanent, as
+    is any unexpected error (a payload that no longer validates, a bug): those
+    must not loop forever.
     Throttling, 5xx and network errors back off, and fail after `MAX_ATTEMPTS`.
     Only exception class names are recorded and logged.
+
+    A pass can outlast the lease when Drip is slow, so the time is read fresh
+    from `clock` at every claim and every outcome, never once per pass.
     """
     sent = retried = failed = 0
     error: Exception
     for _ in range(limit):
         if should_stop():
             break
-        ids = claim_due(now=now, limit=1)
+        ids = claim_due(now=clock(), limit=1)
         if not ids:
             break
         job = OutboxJob.objects.get(pk=ids[0])
         try:
             _send(client, job)
         except DripError as exc:
+            if exc.status_code == 429 and exc.retry_after is not None:
+                _record_throttled(job, exc.retry_after, now=clock())
+                return ProcessResult(sent, retried, failed, retry_after=exc.retry_after)
             permanent, error = not exc.retryable, exc
         except httpx.HTTPError as exc:
             permanent, error = False, exc
         except Exception as exc:  # noqa: BLE001 - retire poison jobs, never loop
             permanent, error = True, exc
         else:
-            if _still_leased(job, now).update(
-                status=OutboxJob.Status.SENT, sent_at=now
-            ):
+            if _still_leased(job).update(status=OutboxJob.Status.SENT, sent_at=clock()):
                 sent += 1
             continue
-        outcome = _record_failure(job, error, permanent=permanent, now=now)
+        outcome = _record_failure(job, error, permanent=permanent, now=clock())
         if outcome is True:
             failed += 1
         elif outcome is False:

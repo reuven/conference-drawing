@@ -5,7 +5,9 @@ and only from ``CD_ENV_FILE`` or the project directory -- never from the home
 directory.
 """
 
+import ipaddress
 import os
+import secrets
 from pathlib import Path
 
 import django_stubs_ext
@@ -32,7 +34,30 @@ SECRET_KEY = _env("DJANGO_SECRET_KEY")
 if not SECRET_KEY:
     if not DEBUG:
         raise ImproperlyConfigured("DJANGO_SECRET_KEY is required when DEBUG is off")
-    SECRET_KEY = "insecure-development-key-never-use-in-production"  # noqa: S105
+    # A fresh key per process: never a fixed, public string (sessions reset on restart).
+    SECRET_KEY = secrets.token_urlsafe(50)
+
+
+def _trusted_proxies(raw: str) -> frozenset[str]:
+    """Parse CD_TRUSTED_PROXIES (comma-separated IP addresses) into canonical text.
+
+    Why: X-Forwarded-For is honored only from these peers (or the unix socket),
+    so a typo must stop startup rather than silently trust nobody or everybody.
+    """
+    found: set[str] = set()
+    for item in (part.strip() for part in raw.split(",")):
+        if not item:
+            continue
+        try:
+            found.add(str(ipaddress.ip_address(item)))
+        except ValueError:
+            raise ImproperlyConfigured(
+                f"CD_TRUSTED_PROXIES entry {item!r} is not an IP address"
+            ) from None
+    return frozenset(found)
+
+
+TRUSTED_PROXIES = _trusted_proxies(_env("CD_TRUSTED_PROXIES"))
 
 _LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
 
@@ -55,6 +80,17 @@ LOGIN_REDIRECT_URL = "booth-home"
 
 # Extends ModelBackend; listing both would hash twice on every failed login.
 AUTHENTICATION_BACKENDS = ["conference_drawing.auth.EmailOrUsernameBackend"]
+
+# Django's four standard checks, with a 12-character minimum. They run where a
+# password is set through a validated path (admin forms, changepassword, init);
+# existing passwords keep working.
+_VALIDATORS = "django.contrib.auth.password_validation"
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": f"{_VALIDATORS}.UserAttributeSimilarityValidator"},
+    {"NAME": f"{_VALIDATORS}.MinimumLengthValidator", "OPTIONS": {"min_length": 12}},
+    {"NAME": f"{_VALIDATORS}.CommonPasswordValidator"},
+    {"NAME": f"{_VALIDATORS}.NumericPasswordValidator"},
+]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -125,6 +161,9 @@ CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.db.DatabaseCache",
         "LOCATION": "cd_cache",
+        # The default cull (300 rows) deletes keys in key order, which could evict
+        # entry-cap and rate-limit counters at a large event. TIMEOUT stays default.
+        "OPTIONS": {"MAX_ENTRIES": 100_000},
     }
 }
 RATELIMIT_VIEW = "conference_drawing.raffle.views.public.rate_limited"
@@ -163,13 +202,29 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {"plain": {"format": "%(levelname)s %(name)s %(message)s"}},
     # Display tokens and exception text never reach journald (logredact.py).
-    "filters": {"redact": {"()": "conference_drawing.logredact.RedactFilter"}},
+    "filters": {
+        "redact": {"()": "conference_drawing.logredact.RedactFilter"},
+        "demote": {"()": "conference_drawing.logredact.DemoteToWarning"},
+    },
     "handlers": {
         "stderr": {
             "class": "logging.StreamHandler",
             "formatter": "plain",
             "filters": ["redact"],
         },
+        "security": {
+            "class": "logging.StreamHandler",
+            "formatter": "plain",
+            "filters": ["demote", "redact"],
+        },
     },
     "root": {"handlers": ["stderr"], "level": "INFO"},
+    # Django logs oversized or many-field POSTs here at ERROR; make them WARNING.
+    "loggers": {
+        "django.security": {
+            "handlers": ["security"],
+            "level": "WARNING",
+            "propagate": False,
+        }
+    },
 }

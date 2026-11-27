@@ -52,6 +52,23 @@ def test_exclusion_matches_case_insensitively(
     assert eligible_entrant_ids(drawing) == []
 
 
+def test_exclusion_also_matches_plus_aliases_and_idna(
+    conf: Conference, drawing: Drawing, entrant_factory: Callable[..., Entrant]
+) -> None:
+    entrant_factory(conf, email="staff+raffle@X.com", created_at=BEFORE)
+    assert eligible_entrant_ids(drawing) == []
+
+
+def test_null_keyed_staff_row_is_still_excluded(
+    conf: Conference, drawing: Drawing, entrant_factory: Callable[..., Entrant]
+) -> None:
+    staff = entrant_factory(conf, email="staff@x.com", created_at=BEFORE)
+    ok = entrant_factory(conf, created_at=BEFORE)
+    Entrant.objects.update(email_key=None)
+    assert staff.pk not in eligible_entrant_ids(drawing)
+    assert eligible_entrant_ids(drawing) == [ok.pk]
+
+
 def test_entry_at_cutoff_is_excluded(
     conf: Conference, drawing: Drawing, entrant_factory: Callable[..., Entrant]
 ) -> None:

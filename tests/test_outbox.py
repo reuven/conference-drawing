@@ -21,8 +21,14 @@ from django.test import Client
 from django.urls import reverse
 from pydantic import SecretStr
 
+from conference_drawing.raffle import wrapup
 from conference_drawing.raffle.drip import outbox
-from conference_drawing.raffle.drip.client import TIMEOUT_SECONDS, DripClient
+from conference_drawing.raffle.drip.client import (
+    BATCH_LIMIT,
+    DEADLINE_SECONDS,
+    DripClient,
+    build_http_client,
+)
 from conference_drawing.raffle.drip.config import DripSettings
 from conference_drawing.raffle.drip.payloads import EventPayload, SubscriberPayload
 from conference_drawing.raffle.management.commands import drip_worker
@@ -58,14 +64,23 @@ def http() -> Iterator[httpx.Client]:
 
 @pytest.fixture
 def drip(http: httpx.Client) -> DripClient:
+    # No deadline thread: several tests change rows from inside the mocked
+    # response, which must run on the test's own database connection.
     return DripClient(
-        DripSettings(account_id="1234567", api_key=SecretStr("fake-key")), http
+        DripSettings(account_id="1234567", api_key=SecretStr("fake-key")),
+        http,
+        deadline=None,
     )
 
 
 @pytest.fixture
 def conference(conference_factory: Callable[..., Conference]) -> Conference:
     return conference_factory(slug="pycon")
+
+
+def _at(moment: datetime.datetime) -> Callable[[], datetime.datetime]:
+    """A clock frozen at `moment`."""
+    return lambda: moment
 
 
 def _event(email: str = "winner@example.com") -> dict[str, Any]:
@@ -151,7 +166,7 @@ def test_process_due_marks_sent(
 ) -> None:
     route = respx_mock.post(EVENTS).mock(return_value=httpx.Response(204))
     job = _job(conference)
-    result = outbox.process_due(drip, now=NOW)
+    result = outbox.process_due(drip, clock=_at(NOW))
     assert result == outbox.ProcessResult(sent=1, retried=0, failed=0)
     job.refresh_from_db()
     assert (job.status, job.attempts, job.sent_at) == (J.Status.SENT, 1, NOW)
@@ -166,7 +181,7 @@ def test_process_due_sends_subscriber_jobs(
     outbox.enqueue(
         conference, J.Kind.SUBSCRIBERS, {"subscribers": [sub.to_json()]}, now=NOW
     )
-    assert outbox.process_due(drip, now=NOW).sent == 1
+    assert outbox.process_due(drip, clock=_at(NOW)).sent == 1
     assert route.call_count == 1
 
 
@@ -184,9 +199,9 @@ def test_only_due_pending_jobs_are_sent_up_to_the_limit(
         payload=_event(),
         next_attempt_at=NOW + datetime.timedelta(seconds=1),
     )
-    assert outbox.process_due(drip, now=NOW, limit=2).sent == 2
+    assert outbox.process_due(drip, clock=_at(NOW), limit=2).sent == 2
     assert route.call_count == 2
-    assert outbox.process_due(drip, now=NOW).sent == 1
+    assert outbox.process_due(drip, clock=_at(NOW)).sent == 1
     later.refresh_from_db()
     assert later.status == J.Status.PENDING
 
@@ -199,7 +214,7 @@ def test_process_due_backoff_schedule(
     offsets = []
     for attempt in range(1, 8):
         now = NOW + datetime.timedelta(days=attempt)
-        result = outbox.process_due(drip, now=now)
+        result = outbox.process_due(drip, clock=_at(now))
         assert result == outbox.ProcessResult(sent=0, retried=1, failed=0)
         job.refresh_from_db()
         assert job.attempts == attempt
@@ -213,7 +228,7 @@ def test_job_fails_after_8_attempts(
     route = respx_mock.post(EVENTS).mock(return_value=httpx.Response(500))
     job = _job(conference)
     results = [
-        outbox.process_due(drip, now=NOW + datetime.timedelta(days=n))
+        outbox.process_due(drip, clock=_at(NOW + datetime.timedelta(days=n)))
         for n in range(1, 10)
     ]
     assert [r.failed for r in results] == [0] * 7 + [1, 0]
@@ -222,16 +237,17 @@ def test_job_fails_after_8_attempts(
     assert route.call_count == 8
 
 
-def test_429_is_retried_but_other_4xx_is_permanent(
+def test_429_is_throttled_but_other_4xx_is_permanent(
     conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
 ) -> None:
     respx_mock.post(EVENTS).mock(side_effect=[httpx.Response(429), httpx.Response(422)])
     throttled = _job(conference)
-    assert outbox.process_due(drip, now=NOW).retried == 1
+    assert outbox.process_due(drip, clock=_at(NOW)).retry_after == 60
     throttled.refresh_from_db()
     assert throttled.status == J.Status.PENDING
+    throttled.delete()
     bad = _job(conference)
-    assert outbox.process_due(drip, now=NOW).failed == 1
+    assert outbox.process_due(drip, clock=_at(NOW)).failed == 1
     bad.refresh_from_db()
     assert (bad.status, bad.attempts, bad.last_error_class) == (
         J.Status.FAILED,
@@ -247,7 +263,7 @@ def test_network_error_is_retried_with_class_name_only(
         side_effect=httpx.ConnectTimeout("timed out talking to winner@example.com")
     )
     job = _job(conference)
-    assert outbox.process_due(drip, now=NOW).retried == 1
+    assert outbox.process_due(drip, clock=_at(NOW)).retried == 1
     job.refresh_from_db()
     assert job.status == J.Status.PENDING
     assert job.last_error_class == "ConnectTimeout"
@@ -264,7 +280,7 @@ def test_error_record_and_logs_hold_no_personal_data(
     )
     job = _job(conference)
     with caplog.at_level(logging.DEBUG):
-        outbox.process_due(drip, now=NOW)
+        outbox.process_due(drip, clock=_at(NOW))
     job.refresh_from_db()
     fields = [
         str(getattr(job, f.name)) for f in OutboxJob._meta.fields if f.name != "payload"
@@ -284,7 +300,7 @@ def test_malformed_payload_fails_permanently(
         payload={"nope": 1},
         next_attempt_at=NOW,
     )
-    assert outbox.process_due(drip, now=NOW).failed == 1
+    assert outbox.process_due(drip, clock=_at(NOW)).failed == 1
     job.refresh_from_db()
     assert (job.status, job.last_error_class) == (J.Status.FAILED, "ValidationError")
 
@@ -303,10 +319,10 @@ def test_claimed_job_is_leased_and_due_again_if_the_worker_dies(
     assert job.attempts == 1
     assert job.next_attempt_at == NOW + outbox.LEASE
     assert outbox.claim_due(now=NOW, limit=20) == []
-    assert outbox.process_due(drip, now=NOW).sent == 0
+    assert outbox.process_due(drip, clock=_at(NOW)).sent == 0
     assert route.call_count == 0
     later = NOW + outbox.LEASE + datetime.timedelta(seconds=1)
-    assert outbox.process_due(drip, now=later).sent == 1
+    assert outbox.process_due(drip, clock=_at(later)).sent == 1
     job.refresh_from_db()
     assert (job.status, job.attempts) == (J.Status.SENT, 2)
 
@@ -364,7 +380,7 @@ def test_http_runs_outside_any_transaction(
         with respx.mock() as router:
             router.post(EVENTS).mock(side_effect=respond)
             _job(conference)
-            outbox.process_due(drip, now=NOW)
+            outbox.process_due(drip, clock=_at(NOW))
         assert seen == [False]
     finally:
         OutboxJob.objects.all().delete()
@@ -539,6 +555,115 @@ def test_worker_idles_when_drip_is_unconfigured(
     assert "not configured" in out.getvalue()
 
 
+def _stepping_clock(step: datetime.timedelta) -> Callable[[], datetime.datetime]:
+    """A clock that advances `step` every time it is read, starting at NOW."""
+    ticks = iter(range(10_000))
+    return lambda: NOW + step * next(ticks)
+
+
+def test_lease_runs_from_each_claim_so_a_second_worker_cannot_double_send(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    """A slow pass must not lease later jobs from the pass's start time."""
+    other_worker: list[list[int]] = []
+    seen: list[int] = []
+
+    def slow_drip(request: httpx.Request) -> httpx.Response:
+        seen.append(1)
+        if len(seen) == 2:
+            # Clock reads: claim 1 (0 min), outcome 1 (5), claim 2 (10). One
+            # minute later is inside job 2's lease but past one from the start.
+            late = NOW + datetime.timedelta(minutes=11)
+            other_worker.append(outbox.claim_due(now=late, limit=20))
+        return httpx.Response(204)
+
+    respx_mock.post(EVENTS).mock(side_effect=slow_drip)
+    _job(conference)
+    _job(conference)
+    result = outbox.process_due(
+        drip, clock=_stepping_clock(datetime.timedelta(minutes=5))
+    )
+    assert result.sent == 2
+    assert other_worker == [[]]
+
+
+def test_backoff_runs_from_the_failure_time_not_the_pass_start(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post(EVENTS).mock(return_value=httpx.Response(503))
+    job = _job(conference)
+    outbox.process_due(
+        drip, clock=_stepping_clock(datetime.timedelta(minutes=5)), limit=1
+    )
+    job.refresh_from_db()
+    # clock reads: claim (NOW), failure (NOW + 5 min); backoff starts at the latter.
+    assert job.next_attempt_at == NOW + datetime.timedelta(minutes=5, seconds=60)
+
+
+def test_sent_at_is_the_time_of_the_send(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post(EVENTS).mock(return_value=httpx.Response(204))
+    job = _job(conference)
+    outbox.process_due(drip, clock=_stepping_clock(datetime.timedelta(minutes=5)))
+    job.refresh_from_db()
+    assert job.sent_at == NOW + datetime.timedelta(minutes=5)
+
+
+def test_429_does_not_charge_an_attempt_and_stops_the_pass(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    route = respx_mock.post(EVENTS).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "120"})
+    )
+    first, second = _job(conference), _job(conference)
+    result = outbox.process_due(drip, clock=_at(NOW))
+    assert result == outbox.ProcessResult(0, 0, 0, retry_after=120)
+    assert route.call_count == 1
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert (first.status, first.attempts) == (J.Status.PENDING, 0)
+    assert first.next_attempt_at == NOW + datetime.timedelta(seconds=120)
+    assert first.last_error_class == "DripError"
+    assert (second.attempts, second.next_attempt_at) == (0, NOW)
+
+
+def test_429_after_earlier_attempts_keeps_the_attempt_count(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post(EVENTS).mock(return_value=httpx.Response(429))
+    job = _job(conference, attempts=7)
+    result = outbox.process_due(drip, clock=_at(NOW))
+    assert result.retry_after == 60
+    job.refresh_from_db()
+    assert (job.status, job.attempts) == (J.Status.PENDING, 7)
+
+
+def test_429_from_a_stale_worker_changes_nothing_but_still_stops(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    def newer_worker_takes_over(request: httpx.Request) -> httpx.Response:
+        OutboxJob.objects.update(
+            attempts=5, next_attempt_at=NOW + datetime.timedelta(hours=1)
+        )
+        return httpx.Response(429, headers={"Retry-After": "10"})
+
+    respx_mock.post(EVENTS).mock(side_effect=newer_worker_takes_over)
+    job = _job(conference)
+    result = outbox.process_due(drip, clock=_at(NOW))
+    assert result.retry_after == 10
+    job.refresh_from_db()
+    assert job.attempts == 5
+
+
+def test_a_clean_pass_reports_no_retry_after(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post(EVENTS).mock(return_value=httpx.Response(204))
+    _job(conference)
+    assert outbox.process_due(drip, clock=_at(NOW)).retry_after is None
+
+
 def test_worker_loop_exits_on_sigterm_without_sleeping_out_the_interval(
     conference: Conference,
     monkeypatch: pytest.MonkeyPatch,
@@ -642,6 +767,56 @@ def test_worker_loop_runs_again_after_the_wait(
     assert (len(passes), len(closed)) == (2, 1)
 
 
+@pytest.mark.parametrize(
+    ("retry_after", "expected_wait"),
+    [
+        (120.0, 120.0),
+        (99999.0, 3600.0),
+        (0.0, drip_worker.INTERVAL_SECONDS),
+        (None, drip_worker.INTERVAL_SECONDS),
+    ],
+)
+def test_worker_sleeps_for_retry_after_before_the_next_pass(
+    conference: Conference,
+    monkeypatch: pytest.MonkeyPatch,
+    retry_after: float | None,
+    expected_wait: float,
+) -> None:
+    waits: list[float | None] = []
+
+    class RecordingEvent(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            waits.append(timeout)
+            return True  # as if a signal woke us: the loop ends
+
+    monkeypatch.setattr(threading, "Event", RecordingEvent)
+    monkeypatch.setattr(
+        outbox,
+        "process_due",
+        lambda *a, **k: outbox.ProcessResult(0, 0, 0, retry_after=retry_after),
+    )
+    call_command("drip_worker", stdout=StringIO())
+    assert waits == [expected_wait]
+
+
+def test_worker_builds_its_http_client_without_trusting_the_environment(
+    conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built: list[httpx.Client] = []
+    real = build_http_client
+
+    def recording() -> httpx.Client:
+        built.append(real())
+        return built[-1]
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setattr(drip_worker, "build_http_client", recording)
+    call_command("drip_worker", "--once", stdout=StringIO())
+    assert len(built) == 1
+    assert not built[0]._mounts
+    assert built[0].is_closed
+
+
 def test_malformed_subscriber_job_fails_permanently(
     conference: Conference, drip: DripClient
 ) -> None:
@@ -651,7 +826,7 @@ def test_malformed_subscriber_job_fails_permanently(
         payload={},
         next_attempt_at=NOW,
     )
-    assert outbox.process_due(drip, now=NOW).failed == 1
+    assert outbox.process_due(drip, clock=_at(NOW)).failed == 1
     job.refresh_from_db()
     assert job.last_error_class == "KeyError"
 
@@ -715,7 +890,7 @@ def test_stale_worker_cannot_overwrite_a_newer_failure_result(
         return httpx.Response(500)
 
     respx_mock.post(EVENTS).mock(side_effect=other_worker_wins)
-    assert outbox.process_due(drip, now=NOW) == outbox.ProcessResult(0, 0, 0)
+    assert outbox.process_due(drip, clock=_at(NOW)) == outbox.ProcessResult(0, 0, 0)
     job.refresh_from_db()
     assert (job.status, job.attempts) == (J.Status.SENT, 2)
     assert job.last_error_class == ""
@@ -733,14 +908,50 @@ def test_stale_worker_cannot_overwrite_a_newer_success_result(
         return httpx.Response(204)
 
     respx_mock.post(EVENTS).mock(side_effect=other_worker_reclaims)
-    assert outbox.process_due(drip, now=NOW).sent == 0
+    assert outbox.process_due(drip, clock=_at(NOW)).sent == 0
     job.refresh_from_db()
     assert (job.status, job.attempts) == (J.Status.PENDING, 2)
 
 
 def test_lease_outlasts_one_requests_worst_case() -> None:
-    # httpx's timeout applies per phase (connect, write, read, pool).
-    assert outbox.LEASE.total_seconds() > 4 * TIMEOUT_SECONDS
+    # Every request is cut off at DEADLINE_SECONDS, and a job makes one request.
+    assert outbox.LEASE.total_seconds() > DEADLINE_SECONDS
+    assert wrapup.BATCH_SIZE <= BATCH_LIMIT  # so one subscriber job = one request
+
+
+def test_default_client_has_the_overall_deadline() -> None:
+    settings = DripSettings(account_id="1", api_key=SecretStr("k"))
+    with build_http_client() as http:
+        assert DripClient(settings, http)._deadline == DEADLINE_SECONDS
+
+
+def test_worker_gives_its_client_the_default_deadline(
+    conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[float | None] = []
+    real = DripClient.__init__
+
+    def spy(self: DripClient, *args: Any, **kwargs: Any) -> None:
+        real(self, *args, **kwargs)
+        seen.append(self._deadline)
+
+    monkeypatch.setattr(DripClient, "__init__", spy)
+    call_command("drip_worker", "--once", stdout=StringIO())
+    assert seen == [DEADLINE_SECONDS]
+
+
+def test_throttle_floor_keeps_a_zero_retry_after_from_hot_looping(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post(EVENTS).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "0"})
+    )
+    job = _job(conference)
+    outbox.process_due(drip, clock=_at(NOW))
+    job.refresh_from_db()
+    assert job.next_attempt_at == NOW + datetime.timedelta(
+        seconds=outbox.MIN_THROTTLE_WAIT
+    )
 
 
 def test_stop_request_mid_pass_leaves_unreached_jobs_untouched(
@@ -754,7 +965,7 @@ def test_stop_request_mid_pass_leaves_unreached_jobs_untouched(
 
     route = respx_mock.post(EVENTS).mock(side_effect=send_then_stop)
     jobs = [_job(conference) for _ in range(3)]
-    result = outbox.process_due(drip, now=NOW, should_stop=lambda: stop["now"])
+    result = outbox.process_due(drip, clock=_at(NOW), should_stop=lambda: stop["now"])
     assert result.sent == 1
     assert route.call_count == 1
     rest = OutboxJob.objects.filter(pk__in=[j.pk for j in jobs[1:]])
@@ -768,7 +979,7 @@ def test_unexpected_error_retires_the_job_with_its_class_name(
 ) -> None:
     respx_mock.post(EVENTS).mock(side_effect=RuntimeError("boom winner@example.com"))
     job = _job(conference)
-    assert outbox.process_due(drip, now=NOW).failed == 1
+    assert outbox.process_due(drip, clock=_at(NOW)).failed == 1
     job.refresh_from_db()
     assert (job.status, job.last_error_class) == (J.Status.FAILED, "RuntimeError")
 
@@ -782,7 +993,7 @@ def test_non_list_subscribers_payload_is_a_permanent_failure(
         payload={"subscribers": 5},
         next_attempt_at=NOW,
     )
-    assert outbox.process_due(drip, now=NOW).failed == 1
+    assert outbox.process_due(drip, clock=_at(NOW)).failed == 1
     job.refresh_from_db()
     assert (job.status, job.last_error_class) == (J.Status.FAILED, "TypeError")
 

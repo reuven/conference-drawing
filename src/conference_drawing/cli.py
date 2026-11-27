@@ -25,6 +25,8 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from django.core.management import call_command, execute_from_command_line
 from dotenv import dotenv_values
 
@@ -159,6 +161,20 @@ def _ensure_superuser(non_interactive: bool) -> int:
     if user_model.objects.filter(username=username).exists():
         print("superuser already exists; left alone")
         return 0
+    # createsuperuser skips the password validators when it is not interactive,
+    # so apply them here. Their messages never contain the password itself.
+    try:
+        validate_password(
+            os.environ["DJANGO_SUPERUSER_PASSWORD"],
+            user_model(username=username, email=os.environ["DJANGO_SUPERUSER_EMAIL"]),
+        )
+    except ValidationError as exc:
+        print(
+            "error: DJANGO_SUPERUSER_PASSWORD is not acceptable: "
+            + " ".join(exc.messages),
+            file=sys.stderr,
+        )
+        return 2
     # createsuperuser reads DJANGO_SUPERUSER_PASSWORD itself; it is never echoed.
     call_command(
         "createsuperuser",
