@@ -19,6 +19,7 @@ from django_ratelimit.decorators import ratelimit
 from django_ratelimit.exceptions import Ratelimited
 
 from ..after import resolve_after
+from ..entry_cap import network_entries_allowed, record_network_entry
 from ..forms import EntriesClosed, EntryForm
 from ..models import Conference, InstallSettings
 from ..schedule import schedule_context
@@ -127,11 +128,21 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
         if form.honeypot_filled():
             return thanks_redirect
         if form.is_valid():
+            now = timezone.now()
+            network = client_ip("entry", request)
+            if not network_entries_allowed(conference, network, now=now):
+                return render(
+                    request,
+                    "raffle/network_cap.html",
+                    {"conference": conference},
+                    status=429,
+                )
             try:
-                entrant = form.save(timezone.now())
+                entrant = form.save(now)
             except EntriesClosed:
                 return render(request, "raffle/closed.html", {"conference": conference})
             if entrant is not None:
+                record_network_entry(conference, network, now=now)
                 logger.info(
                     "entry created conference=%s entrant=%s", conference.pk, entrant.pk
                 )
