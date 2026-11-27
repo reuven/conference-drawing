@@ -23,6 +23,7 @@ from typing import NamedTuple
 import httpx
 from django.db import transaction
 from django.db.models import F, QuerySet
+from django.utils import timezone
 from pydantic import ValidationError
 
 from ..models import Conference, OutboxJob, Pick
@@ -168,7 +169,7 @@ def _record_failure(
     else:
         wait = BACKOFF_SECONDS[min(job.attempts, len(BACKOFF_SECONDS)) - 1]
         fields["next_attempt_at"] = now + datetime.timedelta(seconds=wait)
-    if not _still_leased(job, now).update(**fields):
+    if not _still_leased(job).update(**fields):
         return None
     logger.warning(
         "outbox job %s attempt %s failed: %s (%s)",
@@ -180,20 +181,24 @@ def _record_failure(
     return give_up
 
 
-def _still_leased(job: OutboxJob, now: datetime.datetime) -> QuerySet[OutboxJob]:
-    """Select the job only if it is exactly as this worker's claim left it."""
+def _still_leased(job: OutboxJob) -> QuerySet[OutboxJob]:
+    """Select the job only if it is exactly as this worker's claim left it.
+
+    `job` was read right after the claim, so its `next_attempt_at` is the lease
+    this worker was given; a re-claim by another worker changes it.
+    """
     return OutboxJob.objects.filter(
         pk=job.pk,
         status=OutboxJob.Status.PENDING,
         attempts=job.attempts,
-        next_attempt_at=now + LEASE,
+        next_attempt_at=job.next_attempt_at,
     )
 
 
 def process_due(
     client: DripClient,
     *,
-    now: datetime.datetime,
+    clock: Callable[[], datetime.datetime] = timezone.now,
     limit: int = 20,
     should_stop: Callable[[], bool] = lambda: False,
 ) -> ProcessResult:
@@ -205,13 +210,16 @@ def process_due(
     (a payload that no longer validates, a bug): those must not loop forever.
     Throttling, 5xx and network errors back off, and fail after `MAX_ATTEMPTS`.
     Only exception class names are recorded and logged.
+
+    A pass can outlast the lease when Drip is slow, so the time is read fresh
+    from `clock` at every claim and every outcome, never once per pass.
     """
     sent = retried = failed = 0
     error: Exception
     for _ in range(limit):
         if should_stop():
             break
-        ids = claim_due(now=now, limit=1)
+        ids = claim_due(now=clock(), limit=1)
         if not ids:
             break
         job = OutboxJob.objects.get(pk=ids[0])
@@ -224,12 +232,10 @@ def process_due(
         except Exception as exc:  # noqa: BLE001 - retire poison jobs, never loop
             permanent, error = True, exc
         else:
-            if _still_leased(job, now).update(
-                status=OutboxJob.Status.SENT, sent_at=now
-            ):
+            if _still_leased(job).update(status=OutboxJob.Status.SENT, sent_at=clock()):
                 sent += 1
             continue
-        outcome = _record_failure(job, error, permanent=permanent, now=now)
+        outcome = _record_failure(job, error, permanent=permanent, now=clock())
         if outcome is True:
             failed += 1
         elif outcome is False:

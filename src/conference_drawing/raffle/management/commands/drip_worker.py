@@ -9,7 +9,6 @@ from typing import Any
 import httpx
 from django.core.management.base import BaseCommand, CommandParser
 from django.db import close_old_connections
-from django.utils import timezone
 
 from ...drip import outbox
 from ...drip.client import DripClient
@@ -47,7 +46,6 @@ class Command(BaseCommand):
                         try:
                             result = outbox.process_due(
                                 DripClient(config, http),
-                                now=timezone.now(),
                                 should_stop=stop.is_set,
                             )
                         except Exception as exc:  # noqa: BLE001 - keep the worker up
