@@ -57,7 +57,10 @@ class Command(BaseCommand):
                         else:
                             if result.retry_after is not None:
                                 # Drip throttled us: wait as long as it asked.
-                                wait = min(result.retry_after, MAX_WAIT_SECONDS)
+                                wait = max(
+                                    INTERVAL_SECONDS,
+                                    min(result.retry_after, MAX_WAIT_SECONDS),
+                                )
                             # Quiet when idle: no 5 s heartbeat in the journal.
                             if result.sent or result.retried or result.failed:
                                 self.stdout.write(

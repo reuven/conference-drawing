@@ -35,8 +35,10 @@ logger = logging.getLogger(__name__)
 
 BACKOFF_SECONDS = (60, 300, 1800, 7200)
 MAX_ATTEMPTS = 8
-# httpx timeouts apply per phase (connect/write/read/pool), so one request can
-# block for about 4 x 10 s; jobs are claimed one at a time, so this covers it.
+# Floor for a throttled job's wait, so `Retry-After: 0` cannot hot-loop.
+MIN_THROTTLE_WAIT = 5.0
+# Each request is cut off after DEADLINE_SECONDS (30 s) and a job makes one
+# request (wrap-up queues at most 1000 subscribers per job), so this covers it.
 LEASE = datetime.timedelta(minutes=2)
 
 
@@ -190,14 +192,13 @@ def _record_throttled(
     Drip said "later", not "no", so the claim's attempt is given back and the
     job waits out `retry_after`. Conditional on still holding the lease.
     """
-    _still_leased(job).update(
+    wait = max(retry_after, MIN_THROTTLE_WAIT)
+    if _still_leased(job).update(
         attempts=job.attempts - 1,
-        next_attempt_at=now + datetime.timedelta(seconds=retry_after),
+        next_attempt_at=now + datetime.timedelta(seconds=wait),
         last_error_class="DripError",
-    )
-    logger.warning(
-        "outbox job %s throttled by Drip; waiting %.0f s", job.pk, retry_after
-    )
+    ):
+        logger.warning("outbox job %s throttled by Drip; waiting %.0f s", job.pk, wait)
 
 
 def _still_leased(job: OutboxJob) -> QuerySet[OutboxJob]:

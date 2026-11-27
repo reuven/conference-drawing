@@ -21,9 +21,11 @@ from django.test import Client
 from django.urls import reverse
 from pydantic import SecretStr
 
+from conference_drawing.raffle import wrapup
 from conference_drawing.raffle.drip import outbox
 from conference_drawing.raffle.drip.client import (
-    TIMEOUT_SECONDS,
+    BATCH_LIMIT,
+    DEADLINE_SECONDS,
     DripClient,
     build_http_client,
 )
@@ -767,7 +769,12 @@ def test_worker_loop_runs_again_after_the_wait(
 
 @pytest.mark.parametrize(
     ("retry_after", "expected_wait"),
-    [(120.0, 120.0), (99999.0, 3600.0), (None, drip_worker.INTERVAL_SECONDS)],
+    [
+        (120.0, 120.0),
+        (99999.0, 3600.0),
+        (0.0, drip_worker.INTERVAL_SECONDS),
+        (None, drip_worker.INTERVAL_SECONDS),
+    ],
 )
 def test_worker_sleeps_for_retry_after_before_the_next_pass(
     conference: Conference,
@@ -907,8 +914,44 @@ def test_stale_worker_cannot_overwrite_a_newer_success_result(
 
 
 def test_lease_outlasts_one_requests_worst_case() -> None:
-    # httpx's timeout applies per phase (connect, write, read, pool).
-    assert outbox.LEASE.total_seconds() > 4 * TIMEOUT_SECONDS
+    # Every request is cut off at DEADLINE_SECONDS, and a job makes one request.
+    assert outbox.LEASE.total_seconds() > DEADLINE_SECONDS
+    assert wrapup.BATCH_SIZE <= BATCH_LIMIT  # so one subscriber job = one request
+
+
+def test_default_client_has_the_overall_deadline() -> None:
+    settings = DripSettings(account_id="1", api_key=SecretStr("k"))
+    with build_http_client() as http:
+        assert DripClient(settings, http)._deadline == DEADLINE_SECONDS
+
+
+def test_worker_gives_its_client_the_default_deadline(
+    conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[float | None] = []
+    real = DripClient.__init__
+
+    def spy(self: DripClient, *args: Any, **kwargs: Any) -> None:
+        real(self, *args, **kwargs)
+        seen.append(self._deadline)
+
+    monkeypatch.setattr(DripClient, "__init__", spy)
+    call_command("drip_worker", "--once", stdout=StringIO())
+    assert seen == [DEADLINE_SECONDS]
+
+
+def test_throttle_floor_keeps_a_zero_retry_after_from_hot_looping(
+    conference: Conference, drip: DripClient, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.post(EVENTS).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "0"})
+    )
+    job = _job(conference)
+    outbox.process_due(drip, clock=_at(NOW))
+    job.refresh_from_db()
+    assert job.next_attempt_at == NOW + datetime.timedelta(
+        seconds=outbox.MIN_THROTTLE_WAIT
+    )
 
 
 def test_stop_request_mid_pass_leaves_unreached_jobs_untouched(
