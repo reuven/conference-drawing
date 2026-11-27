@@ -7,6 +7,11 @@ login slower or leakier than Django's own.
 
 from __future__ import annotations
 
+import functools
+import hashlib
+import hmac
+from collections.abc import Callable
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 from django.conf import settings
@@ -15,9 +20,12 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.backends import ModelBackend
 from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.views import LoginView
+from django.core.cache import cache
 from django.http import HttpRequest
+from django.http.response import HttpResponseBase
 from django.shortcuts import resolve_url
 from django.utils.translation import gettext_lazy as _
+from django_ratelimit.exceptions import Ratelimited
 
 if TYPE_CHECKING:  # the stubs' name for the user model instance
     from django.contrib.auth.models import _User
@@ -101,3 +109,77 @@ class AdminLoginForm(AdminAuthenticationForm):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.fields["username"].label = _("Username or email")
+
+
+# Failed sign-ins allowed per account name in one window, across both login pages.
+ACCOUNT_FAILURE_LIMIT = 10
+ACCOUNT_WINDOW_SECONDS = 15 * 60
+
+
+def _bucket(name: str) -> str:
+    return "acct:" + name.strip().lower()
+
+
+def account_key(request: HttpRequest) -> str:
+    """Return the account bucket name for a sign-in POST: ``acct:`` + the name.
+
+    The typed username or email is trimmed and lowercased, so ``Helper`` and
+    ``  helper `` are one account. An empty or missing field is ``acct:``.
+    """
+    return _bucket(str(request.POST.get("username", "")))
+
+
+def login_failure_key(name: str) -> str:
+    """Return the cache key for ``name``'s failed-sign-in counter.
+
+    Keyed with the secret and hashed, so the typed name (it may be an email
+    address) is never stored in the cache or reachable from a dump of it.
+    """
+    digest = hmac.new(
+        settings.SECRET_KEY.encode(), _bucket(name).encode(), hashlib.sha256
+    ).hexdigest()
+    return f"loginfail:{digest}"
+
+
+def _record_failure(name: str) -> None:
+    """Count one failed sign-in; the window runs 15 minutes from the latest one.
+
+    ``cache.incr`` rewrites the row with the backend's default timeout
+    (300 s), which would cut the window short, so the full window is restored
+    with ``touch`` (the same fix as the entry cap's counter).
+    """
+    key = login_failure_key(name)
+    cache.add(key, 0, ACCOUNT_WINDOW_SECONDS)
+    try:
+        cache.incr(key)
+        cache.touch(key, ACCOUNT_WINDOW_SECONDS)
+    except ValueError:  # expired between add and incr; start at this failure
+        cache.add(key, 1, ACCOUNT_WINDOW_SECONDS)
+
+
+def limit_failed_logins(
+    view: Callable[..., HttpResponseBase],
+) -> Callable[..., HttpResponseBase]:
+    """Wrap a login view with the per-account limit on failed sign-ins.
+
+    Why: the per-address limit does nothing against guessing spread over many
+    addresses. A POST for an account already at the limit is answered with the
+    same 429 as the address limit, before any authentication, so even the
+    right password is refused. Only a POST that does not sign in (any answer
+    but the redirect) counts, so successes never use up the budget. Wrap both
+    login views: they share the count.
+    """
+
+    @functools.wraps(view)
+    def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponseBase:
+        if request.method != "POST":
+            return view(request, *args, **kwargs)
+        name = str(request.POST.get("username", ""))
+        if int(cache.get(login_failure_key(name), 0)) >= ACCOUNT_FAILURE_LIMIT:
+            raise Ratelimited
+        response = view(request, *args, **kwargs)
+        if response.status_code != HTTPStatus.FOUND:
+            _record_failure(name)
+        return response
+
+    return wrapper

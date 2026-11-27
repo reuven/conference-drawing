@@ -6,7 +6,12 @@ from django.urls import path
 from django_ratelimit.decorators import ratelimit
 
 from conference_drawing import ops
-from conference_drawing.auth import AdminLoginForm, BoothLoginForm, BoothLoginView
+from conference_drawing.auth import (
+    AdminLoginForm,
+    BoothLoginForm,
+    BoothLoginView,
+    limit_failed_logins,
+)
 from conference_drawing.raffle.views import booth, display, export, flyer, public
 
 # Password guessing on the admin login would tie up the sync workers the booth
@@ -30,6 +35,8 @@ booth_login = ratelimit(
     )
 )
 
+# Both sign-in pages also share a per-account limit on failed attempts (15
+# minutes), which stops guessing spread across many addresses.
 urlpatterns = [
     path("", public.home, name="home"),
     path("robots.txt", ops.robots_txt, name="robots-txt"),
@@ -41,7 +48,7 @@ urlpatterns = [
     path("display/<str:token>/", display.display, name="display"),
     path("display/<str:token>/panel/", display.panel, name="display-panel"),
     path("booth/", booth.home, name="booth-home"),
-    path("booth/login/", booth_login, name="booth-login"),
+    path("booth/login/", limit_failed_logins(booth_login), name="booth-login"),
     path(
         "booth/logout/",
         auth_views.LogoutView.as_view(next_page="booth-login"),
@@ -67,7 +74,7 @@ urlpatterns = [
         name="booth-retry-failed",
     ),
     path("booth/<slug:slug>/", booth.conference_page, name="booth-conference"),
-    path("admin/login/", admin_login, name="admin-login"),
+    path("admin/login/", limit_failed_logins(admin_login), name="admin-login"),
     path("admin/", admin.site.urls),
 ]
 
