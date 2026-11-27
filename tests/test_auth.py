@@ -1,6 +1,7 @@
 """Admin login by username or email, with one hasher run on every miss."""
 
 from io import StringIO
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
@@ -204,3 +205,9 @@ def test_changepassword_refuses_a_short_password(
     monkeypatch.setattr("getpass.getpass", lambda prompt="": "short-pass")
     with pytest.raises(CommandError, match="Aborting password change"):
         call_command("changepassword", "boss", stderr=StringIO(), stdout=StringIO())
+
+
+def test_owner_password_script_runs_changepassword_which_validates() -> None:
+    """The owner-password path must stay a validated one (see changepassword)."""
+    script = Path(__file__).parent.parent / "deploy" / "remote" / "owner_password.sh"
+    assert "run_app changepassword" in script.read_text()
