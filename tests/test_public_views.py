@@ -316,6 +316,30 @@ def test_window_uses_the_conference_time_zone(
     assert "<form" in got.content.decode()
 
 
+def test_opening_edge_in_auckland(
+    client: Client, conference: Conference, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """13:00 UTC on May 9 is already 01:00 on May 10 in Auckland: open."""
+    Conference.objects.filter(pk=conference.pk).update(
+        time_zone="Pacific/Auckland",
+        starts_on=datetime.date(2027, 5, 10),
+        ends_on=datetime.date(2027, 5, 12),
+    )
+    monkeypatch.setattr(
+        timezone,
+        "now",
+        lambda: datetime.datetime(2027, 5, 9, 13, 0, tzinfo=datetime.UTC),
+    )
+    url = reverse("entry", args=[conference.slug])
+    assert "<form" in client.get(url).content.decode()
+    monkeypatch.setattr(
+        timezone,
+        "now",
+        lambda: datetime.datetime(2027, 5, 9, 11, 0, tzinfo=datetime.UTC),
+    )
+    assert "<form" not in client.get(url).content.decode()
+
+
 def test_wrapped_up_wins_over_not_open(client: Client, conference: Conference) -> None:
     far = _today_in(conference.time_zone) + datetime.timedelta(days=30)
     Conference.objects.filter(pk=conference.pk).update(

@@ -86,9 +86,13 @@ _limit_posts = ratelimit(key=client_ip, rate="300/m", method="POST", block=True)
 def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
     """Show the entry form, or process a submission.
 
-    Every accepted-looking submission -- new entry, repeat email or honeypot --
-    redirects to the same thanks page, so nothing here reveals whether an
-    address has already entered.
+    Entries are accepted only on the conference's dates (today in its time
+    zone); before them a "not open yet" page shows, after them the closed page.
+    Within the dates, every accepted-looking submission -- new entry, repeat
+    email or honeypot -- redirects to the same thanks page, so nothing here
+    reveals whether an address has already entered. The exception is a valid
+    post from a network that has used up its hourly cap: it gets a 429 page,
+    the same for everyone on that network, whether or not the address is new.
 
     The limiter's DatabaseCache increments are not atomic across gunicorn
     workers, so the limit is approximate. That looseness is accepted: it still
