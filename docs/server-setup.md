@@ -186,6 +186,10 @@ mailbox with any `+tag` removed, filled in for existing entrants) and the
 per-network entry limit on each conference. Both are add-only, so 0.3 still
 runs on the new database.
 
+Logos and covers uploaded before 0.4 keep their metadata and original
+filenames. 0.4 cleans uploads as they come in, so re-upload an older logo or
+cover to clean it.
+
 The units are also tighter (see
 [Hardening the services](#hardening-the-services)), and on a PostgreSQL the
 installer set up, PostgreSQL restarts once (see
