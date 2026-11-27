@@ -19,6 +19,7 @@ from django.views.decorators.http import require_GET, require_http_methods
 from django_ratelimit.decorators import ratelimit
 from django_ratelimit.exceptions import Ratelimited
 
+from ...keyed_hash import keyed_digest
 from ..after import resolve_after
 from ..entry_cap import network_entries_allowed, record_network_entry
 from ..forms import EntriesClosed, EntryForm
@@ -73,6 +74,16 @@ def client_ip(group: str, request: HttpRequest) -> str:
     return "unknown"
 
 
+def network_key(group: str, request: HttpRequest) -> str:
+    """Rate-limit key: a keyed hash of the client's network, never the address.
+
+    django-ratelimit stores its key in the cache (and so in snapshots); an
+    unkeyed hash of an IPv4 address is reversible by brute force, so use the
+    HMAC of `client_ip` instead. Same network, same key.
+    """
+    return keyed_digest(f"net:{client_ip(group, request)}")
+
+
 def _peer_is_proxy(remote: str) -> bool:
     """True for the unix socket (no peer address) or a listed trusted proxy."""
     if not remote:
@@ -93,7 +104,7 @@ def rate_limited(request: HttpRequest, exception: Ratelimited) -> HttpResponse:
 _limit_posts: Callable[
     [Callable[..., HttpResponseBase]], Callable[..., HttpResponseBase]
 ]
-_limit_posts = ratelimit(key=client_ip, rate="300/m", method="POST", block=True)
+_limit_posts = ratelimit(key=network_key, rate="300/m", method="POST", block=True)
 
 
 @require_http_methods(["GET", "HEAD", "POST"])
@@ -148,7 +159,7 @@ def entry(request: HttpRequest, slug: str) -> HttpResponseBase:
             return thanks_redirect
         if form.is_valid():
             now = timezone.now()
-            network = client_ip("entry", request)
+            network = network_key("entry", request)
             if not network_entries_allowed(conference, network, now=now):
                 return render(
                     request,

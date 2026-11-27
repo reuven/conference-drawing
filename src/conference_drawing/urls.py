@@ -19,14 +19,14 @@ from conference_drawing.raffle.views import booth, display, export, flyer, publi
 # tighter. Listed before admin.site.urls, so this path wins and "admin:login"
 # still reverses to the same URL.
 admin.site.login_form = AdminLoginForm
-admin_login = ratelimit(key=public.client_ip, rate="10/m", method="POST", block=True)(
+admin_login = ratelimit(key=public.network_key, rate="10/m", method="POST", block=True)(
     admin.site.login
 )
 
 # The booth's own sign-in, for helpers who are not staff. Its own limiter
 # counter (group), so guessing here never uses up the admin login's budget.
 booth_login = ratelimit(
-    key=public.client_ip, rate="10/m", method="POST", block=True, group="booth-login"
+    key=public.network_key, rate="10/m", method="POST", block=True, group="booth-login"
 )(
     BoothLoginView.as_view(
         template_name="raffle/booth/login.html",

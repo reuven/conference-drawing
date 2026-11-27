@@ -25,7 +25,7 @@ from conference_drawing.raffle.models import (
     Entrant,
     InstallSettings,
 )
-from conference_drawing.raffle.views.public import client_ip
+from conference_drawing.raffle.views.public import client_ip, network_key
 from tests.factories import make_drawing, make_prize_line, make_questions
 
 THANKS = "Thanks — you're in the drawing."
@@ -520,6 +520,31 @@ def test_client_ip_never_raises(xff: str, remote: str) -> None:
     result = _ip(HTTP_X_FORWARDED_FOR=xff, REMOTE_ADDR=remote)
     assert isinstance(result, str)
     assert result
+
+
+def _net(**meta: Any) -> str:
+    meta.setdefault("REMOTE_ADDR", "")
+    return network_key("group", RequestFactory().get("/", **meta))
+
+
+def test_network_key_never_contains_the_address() -> None:
+    key = _net(HTTP_X_FORWARDED_FOR="192.0.2.77")
+    assert "192.0.2.77" not in key
+    assert len(key) == 64
+
+
+def test_network_key_is_the_same_within_a_64_and_differs_across_networks() -> None:
+    a = _net(HTTP_X_FORWARDED_FOR="2001:db8:1:2:aaaa::1")
+    b = _net(HTTP_X_FORWARDED_FOR="2001:db8:1:2:bbbb::2")
+    c = _net(HTTP_X_FORWARDED_FOR="2001:db8:1:3::1")
+    assert a == b
+    assert c != a
+
+
+def test_network_key_depends_on_the_secret_key(settings: Settings) -> None:
+    before = _net(HTTP_X_FORWARDED_FOR="192.0.2.77")
+    settings.SECRET_KEY = "another-secret-key"  # noqa: S105
+    assert _net(HTTP_X_FORWARDED_FOR="192.0.2.77") != before
 
 
 # --- wrapped-up entry page and the site home page -----------------------------
