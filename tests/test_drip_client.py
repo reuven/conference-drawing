@@ -143,6 +143,7 @@ def test_429_parses_an_http_date_retry_after(
         ("999999", 3600),
         ("-5", 0),
         ("Mon, 01 Jan 2001 00:00:00 GMT", 0),
+        ("Fri, 01 Jan 2100 00:00:00 -0000", 3600),  # no zone: read as UTC
         ("soon", 60),
         ("", 60),
         ("nan", 60),
@@ -193,16 +194,22 @@ def test_total_deadline_is_thirty_seconds() -> None:
 def test_a_slow_response_is_cut_off_at_the_overall_deadline(
     drip_settings_fixture: DripSettings,
 ) -> None:
+    release = threading.Event()
+
     def slow(request: httpx.Request) -> httpx.Response:
-        time.sleep(2)
+        release.wait(5)
         return httpx.Response(204)
 
     http = httpx.Client(transport=httpx.MockTransport(slow))
     client = DripClient(drip_settings_fixture, http, deadline=0.1)
     started = time.monotonic()
-    with pytest.raises(httpx.TimeoutException) as caught:
-        client.record_event(EVENT)
-    assert time.monotonic() - started < 1
+    try:
+        with pytest.raises(httpx.TimeoutException) as caught:
+            client.record_event(EVENT)
+        assert time.monotonic() - started < 1
+    finally:
+        release.set()  # let the abandoned thread finish while output is captured
+        time.sleep(0.2)
     assert "a@example.com" not in str(caught.value)
 
 
