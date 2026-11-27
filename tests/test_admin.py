@@ -666,7 +666,11 @@ def test_admin_login_posts_are_rate_limited_per_ip(db: None) -> None:
     assert url == "/admin/login/"
     guess = {"username": "boss", "password": "wrong"}
     who: dict[str, Any] = {"REMOTE_ADDR": "203.0.113.9"}
-    statuses = [client.post(url, guess, **who).status_code for _ in range(10)]
+    # A different account each time, so only the per-IP limit can answer 429.
+    statuses = [
+        client.post(url, {**guess, "username": f"u{i}"}, **who).status_code
+        for i in range(10)
+    ]
     assert set(statuses) == {200}  # the form again, with an error
     blocked = client.post(url, guess, **who)
     assert blocked.status_code == 429
