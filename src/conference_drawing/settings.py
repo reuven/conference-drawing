@@ -56,6 +56,17 @@ LOGIN_REDIRECT_URL = "booth-home"
 # Extends ModelBackend; listing both would hash twice on every failed login.
 AUTHENTICATION_BACKENDS = ["conference_drawing.auth.EmailOrUsernameBackend"]
 
+# Django's four standard checks, with a 12-character minimum. They run where a
+# password is set through a validated path (admin forms, changepassword, init);
+# existing passwords keep working.
+_VALIDATORS = "django.contrib.auth.password_validation"
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": f"{_VALIDATORS}.UserAttributeSimilarityValidator"},
+    {"NAME": f"{_VALIDATORS}.MinimumLengthValidator", "OPTIONS": {"min_length": 12}},
+    {"NAME": f"{_VALIDATORS}.CommonPasswordValidator"},
+    {"NAME": f"{_VALIDATORS}.NumericPasswordValidator"},
+]
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
