@@ -350,6 +350,56 @@ def test_install_is_idempotent_for_drip_keys(server: Server) -> None:
     )
 
 
+def test_install_replaces_a_changed_drip_key_in_place(server: Server) -> None:
+    server.data.mkdir(parents=True)
+    env = server.data / ".env"
+    env.write_text(
+        "DJANGO_SECRET_KEY='keep'\nDRIP_API_KEY='old-key'\nDRIP_ACCOUNT_ID='42'\n"
+    )
+    result = server.install(stdin="DRIP_API_KEY=new-key\nDRIP_ACCOUNT_ID=42\n")
+    assert result.returncode == 0, result.stderr
+    assert env.read_text() == (
+        "DJANGO_SECRET_KEY='keep'\nDRIP_API_KEY='new-key'\nDRIP_ACCOUNT_ID='42'\n"
+    )
+    assert os_mode(env) == 0o600
+    assert "wrote DRIP_API_KEY" in result.stderr
+    assert "wrote DRIP_ACCOUNT_ID" not in result.stderr
+    assert "old-key" not in result.stderr + result.stdout
+    assert "new-key" not in result.stderr + result.stdout
+    assert [p.name for p in server.data.glob(".env*")] == [".env"]  # no temp left
+
+
+def test_install_leaves_an_unchanged_env_byte_for_byte(server: Server) -> None:
+    server.data.mkdir(parents=True)
+    env = server.data / ".env"
+    # No trailing newline, an odd line: a rewrite would normalize them.
+    env.write_bytes(b"DRIP_API_KEY='same'\nDJANGO_SECRET_KEY='k'   ")
+    before = env.stat()
+    result = server.install(stdin="DRIP_API_KEY=same\n")
+    assert result.returncode == 0, result.stderr
+    assert env.read_bytes() == b"DRIP_API_KEY='same'\nDJANGO_SECRET_KEY='k'   "
+    assert env.stat().st_ino == before.st_ino
+    assert "wrote" not in result.stderr
+
+
+def test_install_replaces_every_stale_copy_of_a_drip_key(server: Server) -> None:
+    server.data.mkdir(parents=True)
+    env = server.data / ".env"
+    env.write_text("DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='a'\nDRIP_API_KEY='b'\n")
+    assert server.install(stdin="DRIP_API_KEY=b\n").returncode == 0
+    assert env.read_text() == (
+        "DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='b'\nDRIP_API_KEY='b'\n"
+    )
+
+
+def test_install_replaces_a_value_that_needs_escaping(server: Server) -> None:
+    server.data.mkdir(parents=True)
+    env = server.data / ".env"
+    env.write_text("DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='old'\n")
+    assert server.install(stdin="DRIP_API_KEY=a\\b'c&d\n").returncode == 0
+    assert env.read_text() == "DJANGO_SECRET_KEY='k'\nDRIP_API_KEY='a\\\\b\\'c&d'\n"
+
+
 # --- PostgreSQL ------------------------------------------------------------------
 
 
