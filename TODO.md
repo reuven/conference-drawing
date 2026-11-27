@@ -100,6 +100,6 @@ Spec: `docs/superpowers/specs/2026-11-26-security-hardening-design.md`
 - [x] 5. Password rules and per-account login limit
 - [x] 6. No early starts for helpers (15 minutes; owner confirms)
 - [x] 7. App-side smaller fixes (debug key, X-Forwarded-For, CSV, images, logging, admin action)
-- [ ] 8. Drip fixes (lease timing, 429 backoff, deadline, first name)
+- [x] 8. Drip fixes (lease timing, 429 backoff, deadline, first name)
 - [ ] 9. Deploy fixes (snapshot age, key rotation, PostgreSQL log, systemd)
 - [ ] 10. Docs, privacy text, probe re-run, mutation testing, e2e, version 0.4.0
