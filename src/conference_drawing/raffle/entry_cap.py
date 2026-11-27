@@ -31,7 +31,10 @@ def network_entries_allowed(
 ) -> bool:
     """Say whether `key`'s network may create another entry this hour.
 
-    A cap of 0 means no limit, and the cache is not touched.
+    A cap of 0 means no limit, and the cache is not touched. The check and
+    the later `record_network_entry` are separate steps, so the cap may
+    overshoot by at most the number of concurrent requests; acceptable for a
+    fairness cap.
     """
     cap = conference.entries_per_network_per_hour
     if cap == 0:
@@ -45,7 +48,9 @@ def record_network_entry(
     """Count one created entry against `key`'s network for this hour.
 
     Call only after the entrant row exists, so invalid posts, repeats and
-    honeypot posts never count.
+    honeypot posts never count. The count is `cache.add` then `cache.incr`; the
+    cap may overshoot by at most the number of concurrent requests (see
+    `network_entries_allowed`); acceptable for a fairness cap.
     """
     if conference.entries_per_network_per_hour == 0:
         return
