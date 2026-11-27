@@ -846,7 +846,6 @@ ADDRESS_FAMILIES = {
 def test_services_are_sandboxed_beyond_the_basics(name: str) -> None:
     unit = _unit(name)
     expected = {
-        "ProtectProc": "invisible",
         "CapabilityBoundingSet": "",
         "SystemCallFilter": "@system-service",
         "RestrictSUIDSGID": "yes",
@@ -854,6 +853,13 @@ def test_services_are_sandboxed_beyond_the_basics(name: str) -> None:
     }
     for key, value in expected.items():
         assert unit[f"Service.{key}"] == [value], key
+    # The snapshot unit runs Debian's pg_dump wrapper (postgresql-common), which
+    # may read the postmaster's /proc entry. If that failed under "invisible",
+    # every hourly dump would fail while age rotation kept deleting old ones.
+    if name.endswith("snapshot.service"):
+        assert "Service.ProtectProc" not in unit
+    else:
+        assert unit["Service.ProtectProc"] == ["invisible"]
 
 
 def test_only_the_drip_worker_may_open_ip_sockets() -> None:

@@ -30,9 +30,10 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictNamespaces=yes
 LockPersonality=yes
-# No capabilities, no setuid files, a system-call allowlist, other users'
-# processes hidden. Reaches PostgreSQL by unix socket (CD_DB_HOST); no IP sockets.
-ProtectProc=invisible
+# No capabilities, no setuid files, a system-call allowlist. Reaches PostgreSQL
+# by unix socket (CD_DB_HOST); no IP sockets. No ProtectProc=invisible here:
+# pg_dump is Debian's postgresql-common wrapper, which may read the postmaster's
+# /proc entry, and a failing dump would leave the server with no snapshots.
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 RestrictSUIDSGID=yes
