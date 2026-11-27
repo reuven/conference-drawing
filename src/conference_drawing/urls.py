@@ -56,6 +56,11 @@ urlpatterns = [
     ),
     path("booth/drawing/<int:pk>/", booth.drawing_page, name="booth-drawing"),
     path("booth/drawing/<int:pk>/start/", booth.start, name="booth-start"),
+    path(
+        "booth/drawing/<int:pk>/start/confirm/",
+        booth.confirm_start,
+        name="booth-confirm-start",
+    ),
     path("booth/drawing/<int:pk>/close/", booth.close, name="booth-close"),
     path("booth/pick/<int:pk>/claim/", booth.claim, name="booth-claim"),
     path("booth/pick/<int:pk>/not-here/", booth.not_here, name="booth-not-here"),

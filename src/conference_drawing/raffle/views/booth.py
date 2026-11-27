@@ -36,6 +36,7 @@ from ..access import (
 from ..codes import render_prize_url
 from ..deletion import delete_entrants
 from ..draw import (
+    EARLY_START_WINDOW,
     DrawingError,
     close_drawing,
     mark_claimed,
@@ -175,6 +176,19 @@ def _htmx_login_required[**P](
 def _local_label(drawing: Drawing) -> str:
     local = to_local(drawing.scheduled_at, drawing.conference.time_zone)
     return local.strftime("%a %b %-d, %-I:%M %p")
+
+
+def _local_time(drawing: Drawing) -> str:
+    local = to_local(drawing.scheduled_at, drawing.conference.time_zone)
+    return local.strftime("%-I:%M %p")
+
+
+def _needs_confirmation(drawing: Drawing, now: datetime.datetime) -> bool:
+    """Say whether starting now is early enough to need the owner's second tap."""
+    return (
+        drawing.status == Drawing.Status.SCHEDULED
+        and now < drawing.scheduled_at - EARLY_START_WINDOW
+    )
 
 
 def _row(
@@ -416,7 +430,12 @@ def delete_entrants_page(request: HttpRequest, slug: str) -> HttpResponse:
 def drawing_page(request: HttpRequest, pk: int) -> HttpResponse:
     """Show one drawing: Start when scheduled, copies and buttons while open."""
     obj = drawing_or_404(request.user, pk)
-    context = {**_status_context(obj), "when": _local_label(obj), "lines": _build(obj)}
+    context = {
+        **_status_context(obj),
+        "when": _local_label(obj),
+        "start_time": _local_time(obj),
+        "lines": _build(obj),
+    }
     return render(request, "raffle/booth/drawing.html", context)
 
 
@@ -433,19 +452,52 @@ def _redirect(request: HttpRequest, drawing_id: int) -> HttpResponse:
 @require_POST
 @_refresh_on_404
 def start(request: HttpRequest, pk: int) -> HttpResponse:
-    """Run the drawing; refusals come back as a message on the drawing page."""
+    """Run the drawing; refusals come back as a message on the drawing page.
+
+    More than 15 minutes early, a helper is refused by `start_drawing`, and
+    the owner is sent to a confirmation screen; only the owner's post with
+    `confirm_early=1` starts it that early.
+    """
     obj = drawing_or_404(request.user, pk)
     now = timezone.now()
+    owner = is_owner(request.user)
+    confirmed = owner and request.POST.get("confirm_early") == "1"
+    if owner and not confirmed and _needs_confirmation(obj, now):
+        target = reverse("booth-confirm-start", args=[obj.pk])
+        if _is_htmx(request):
+            response = HttpResponse()
+            response["HX-Redirect"] = target
+            return response
+        return HttpResponseRedirect(target)
     try:
         start_drawing(
             obj,
             now=now,
             rng=_rng(),
             on_digital_pick=lambda pick: _enqueue(pick, now),
+            early_ok=confirmed,
         )
     except DrawingError as exc:
         messages.error(request, str(exc))
     return _redirect(request, obj.pk)
+
+
+@login_required
+@require_GET
+def confirm_start(request: HttpRequest, pk: int) -> HttpResponse:
+    """Ask the owner to confirm a start more than 15 minutes early.
+
+    Owner-only (a helper gets a 404). When the drawing has since started, or
+    the scheduled time is now close, there is nothing to confirm, so go back to
+    the drawing page, which shows the real state.
+    """
+    obj = drawing_or_404(request.user, pk)
+    if not is_owner(request.user):
+        raise Http404
+    if not _needs_confirmation(obj, timezone.now()):
+        return _back(obj.pk)
+    context = {"drawing": obj, "when": _local_label(obj)}
+    return render(request, "raffle/booth/confirm_early_start.html", context)
 
 
 @_htmx_login_required(drawing_route=True)

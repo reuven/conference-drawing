@@ -9,7 +9,7 @@
 {% if drawing.status == "scheduled" %}
 <form method="post" action="{% url 'booth-start' drawing.pk %}">
   {% csrf_token %}
-  <button type="submit">Start drawing</button>
+  <button type="submit">Start drawing ({{ start_time }})</button>
 </form>
 {% endif %}
 

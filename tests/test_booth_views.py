@@ -6,12 +6,14 @@ import secrets
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.contrib.auth.models import User
 from django.core.checks import run_checks
 from django.test import Client
 from django.urls import reverse
+from django.utils import timezone
 from pydantic import ValidationError
 
 from conference_drawing.raffle.draw import start_drawing
@@ -26,6 +28,7 @@ from conference_drawing.raffle.models import (
     PrizeLine,
 )
 from conference_drawing.raffle.views import booth
+from tests import factories
 
 HTMX_SHA256 = "d6fdc75f204e6bdefa99b69bf1e6d4ac69b8a364f77929f45c13476b4000f717"
 HX = {"HX-Request": "true"}
@@ -822,3 +825,128 @@ def test_helper_does_not_see_history_counts(
     html = page.content.decode()
     assert "undo" not in html.lower()
     assert "voided" not in html
+
+
+# --- early start ----------------------------------------------------------------
+
+
+def _scheduled_in(
+    drawing_factory: Callable[..., Drawing],
+    conference: Conference,
+    delta: datetime.timedelta,
+) -> Drawing:
+    """A drawing scheduled `delta` from the real clock, with a prize to draw."""
+    drawing = drawing_factory(
+        conference, scheduled_at=timezone.now() + delta + datetime.timedelta(seconds=5)
+    )
+    factories.make_prize_line(drawing)
+    factories.make_entrant(conference)
+    return drawing
+
+
+def _local(drawing: Drawing) -> str:
+    local = drawing.scheduled_at.astimezone(ZoneInfo(drawing.conference.time_zone))
+    return local.strftime("%-I:%M %p")
+
+
+def test_start_button_shows_scheduled_local_time(
+    owner: Client, drawing_factory: Callable[..., Drawing], conference: Conference
+) -> None:
+    drawing = drawing_factory(
+        conference,
+        scheduled_at=datetime.datetime(2027, 5, 11, 21, 0, tzinfo=datetime.UTC),
+    )
+    assert "Start drawing (2:00 PM)" in _page(owner, drawing)
+
+
+def test_helper_start_more_than_15_minutes_early_is_refused(
+    helper: Client, drawing_factory: Callable[..., Drawing], conference: Conference
+) -> None:
+    drawing = _scheduled_in(drawing_factory, conference, datetime.timedelta(minutes=16))
+    response = helper.post(reverse("booth-start", args=[drawing.pk]), follow=True)
+    assert f"This drawing can start at {_local(drawing)}." in response.content.decode()
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.SCHEDULED
+
+
+def test_helper_start_within_15_minutes_runs(
+    helper: Client, drawing_factory: Callable[..., Drawing], conference: Conference
+) -> None:
+    drawing = _scheduled_in(drawing_factory, conference, datetime.timedelta(minutes=14))
+    helper.post(reverse("booth-start", args=[drawing.pk]))
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.OPEN
+
+
+def test_helper_cannot_confirm_early(
+    helper: Client, drawing_factory: Callable[..., Drawing], conference: Conference
+) -> None:
+    drawing = _scheduled_in(drawing_factory, conference, datetime.timedelta(hours=2))
+    helper.post(reverse("booth-start", args=[drawing.pk]), {"confirm_early": "1"})
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.SCHEDULED
+    confirm = reverse("booth-confirm-start", args=[drawing.pk])
+    assert helper.get(confirm).status_code == 404
+
+
+def test_owner_early_start_goes_to_confirm_page_then_runs(
+    owner: Client, drawing_factory: Callable[..., Drawing], conference: Conference
+) -> None:
+    drawing = _scheduled_in(drawing_factory, conference, datetime.timedelta(hours=2))
+    start = reverse("booth-start", args=[drawing.pk])
+    confirm = reverse("booth-confirm-start", args=[drawing.pk])
+    response = owner.post(start)
+    assert (response.status_code, response["Location"]) == (302, confirm)
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.SCHEDULED
+    html = owner.get(confirm).content.decode()
+    assert _local(drawing) in html
+    assert f'action="{start}"' in html
+    assert 'name="confirm_early" value="1"' in html
+    assert "csrfmiddlewaretoken" in html
+    assert "style=" not in html
+    assert not re.search(r"<script(?![^>]*\bsrc=)", html)
+    owner.post(start, {"confirm_early": "1"})
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.OPEN
+
+
+def test_owner_early_start_over_htmx_redirects_to_confirm_page(
+    owner: Client, drawing_factory: Callable[..., Drawing], conference: Conference
+) -> None:
+    drawing = _scheduled_in(drawing_factory, conference, datetime.timedelta(hours=2))
+    response = owner.post(reverse("booth-start", args=[drawing.pk]), headers=HX)
+    assert response.status_code == 200
+    assert response["HX-Redirect"] == reverse("booth-confirm-start", args=[drawing.pk])
+
+
+def test_owner_within_window_starts_without_confirming(
+    owner: Client, drawing_factory: Callable[..., Drawing], conference: Conference
+) -> None:
+    drawing = _scheduled_in(drawing_factory, conference, datetime.timedelta(minutes=10))
+    owner.post(reverse("booth-start", args=[drawing.pk]))
+    drawing.refresh_from_db()
+    assert drawing.status == Drawing.Status.OPEN
+
+
+def test_stale_owner_confirm_says_already_started(
+    owner: Client, drawing_factory: Callable[..., Drawing], conference: Conference
+) -> None:
+    drawing = _scheduled_in(drawing_factory, conference, datetime.timedelta(hours=2))
+    start_drawing(drawing, now=timezone.now(), rng=random.Random(1), early_ok=True)
+    response = owner.post(
+        reverse("booth-start", args=[drawing.pk]), {"confirm_early": "1"}, follow=True
+    )
+    assert "This drawing has already started." in response.content.decode()
+
+
+def test_confirm_page_only_while_scheduled_and_early(
+    owner: Client, drawing_factory: Callable[..., Drawing], conference: Conference
+) -> None:
+    near = _scheduled_in(drawing_factory, conference, datetime.timedelta(minutes=5))
+    confirm = reverse("booth-confirm-start", args=[near.pk])
+    assert owner.get(confirm)["Location"] == reverse("booth-drawing", args=[near.pk])
+    far = _scheduled_in(drawing_factory, conference, datetime.timedelta(hours=2))
+    start_drawing(far, now=timezone.now(), rng=random.Random(1), early_ok=True)
+    confirm = reverse("booth-confirm-start", args=[far.pk])
+    assert owner.get(confirm)["Location"] == reverse("booth-drawing", args=[far.pk])
