@@ -12,10 +12,11 @@
 # PostgreSQL at all (no cluster under /etc/postgresql, no postgresql-<major>
 # package), a first run installs Ubuntu's, records that it did in
 # /srv/conference-drawing/.installed-postgresql, and gives it a
-# small-footprint conf.d drop-in. A PostgreSQL that was already there belongs
-# to someone else: no apt, no marker, no drop-in, no restart, only a warning
-# showing its listen_addresses. Either way it must be version 15 or later
-# (Django 6.1), and the run creates the role conference-drawing (LOGIN, no
+# small-footprint conf.d drop-in (which also sets log_min_error_statement =
+# panic). A PostgreSQL that was already there belongs to someone else: no apt,
+# no marker, no drop-in, no restart, only a warning showing its
+# listen_addresses and a one-line suggestion of that logging setting. Either
+# way it must be version 15 or later (Django 6.1), and the run creates the role conference-drawing (LOGIN, no
 # password: the app user's OS name maps to it by peer auth) and the database
 # conference_drawing it owns, idempotently; a conference_drawing database that
 # another role owns is refused, never taken over.
@@ -280,6 +281,7 @@ ensure_postgresql() {
 	fi
 	if [ "$pg_ours" -eq 0 ]; then
 		say "using the PostgreSQL already on this server (version ${majors//$'\n'/, }); its configuration is left alone"
+		say "suggestion: set log_min_error_statement = panic in your own PostgreSQL configuration, so a failed statement's values (entrant data) are not written to its log"
 		return 0
 	fi
 	dropin="$ROOT/etc/postgresql/$major/main/conf.d/$PG_DROPIN_NAME"
@@ -290,7 +292,9 @@ ensure_postgresql() {
 		"# Unix socket only, and small: this server's memory is shared." \
 		"listen_addresses = ''" \
 		"shared_buffers = 64MB" \
-		"max_connections = 20" >"$new"
+		"max_connections = 20" \
+		"# A failed statement's text can carry entrant data: never log it." \
+		"log_min_error_statement = panic" >"$new"
 	if ! cmp -s "$new" "$dropin"; then
 		install -m 0644 "$new" "$dropin"
 		systemctl restart postgresql

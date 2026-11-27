@@ -432,6 +432,7 @@ def test_fresh_install_installs_postgresql_and_records_that_it_did(
         "listen_addresses = ''",
         "shared_buffers = 64MB",
         "max_connections = 20",
+        "log_min_error_statement = panic",
     ):
         assert f"\n{setting}\n" in dropin, setting
     assert os_mode(server.root / PG_DROPIN) == 0o644
@@ -499,6 +500,11 @@ def test_install_never_claims_an_existing_postgresql(
     assert 'CREATE DATABASE :"db"' in _admin_sql(server)
     assert "warning" in result.stderr
     assert "listens on 'localhost, 10.0.0.5'" in result.stderr
+    # One line suggests the setting; we do not apply it.
+    (hint,) = [
+        ln for ln in result.stderr.splitlines() if "log_min_error_statement" in ln
+    ]
+    assert "panic" in hint
 
 
 def test_install_refuses_a_postgresql_older_than_15(server: Server) -> None:
