@@ -59,9 +59,10 @@ def _call_with_deadline(
 ) -> httpx.Response:
     """Run `send` in a helper thread and stop waiting after `deadline` seconds.
 
-    The abandoned thread is still bounded by the per-phase timeouts and its
-    result is discarded; delivery is at-least-once, so a request that Drip did
-    accept is simply retried.
+    The abandoned thread keeps running until httpx finishes with it (a server
+    that trickles bytes can keep it busy past the per-phase timeouts) and its
+    result is discarded. Drip may therefore still accept a request we gave up
+    on, and the job's retry sends it again: delivery is at-least-once.
     """
     pool = ThreadPoolExecutor(max_workers=1)
     try:
