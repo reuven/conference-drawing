@@ -226,8 +226,9 @@ fill in Install settings once and leave conferences blank.
 
 ## Drawing history
 
-Each drawing's events (started, picked, claimed, not here, undo, void, closed) are recorded, with ids and counts but no names. In the admin, open
-**Audit events** to read them; the list is read-only. The conference's booth
+Each drawing's events are recorded, with ids and counts but no names: started,
+picked, claimed, not here, undo, void, exhausted (no eligible person was left
+for a slot), and closed. In the admin, open **Audit events** to read them; the list is read-only. The conference's booth
 page shows undo and void counts, to you only. A slot never redraws someone who
 was already voided for it, so undoing "Not here" and marking it again draws a
 new person.
@@ -278,6 +279,7 @@ new person.
   are deleted after about 48 hours (they rotate by age, and by count), so
   deleted entrants can live on there for that long. The web server's access
   log, which records the address and time of each request, is kept 14 days,
-  also after deletion. The default privacy page says both. Backups on your laptop (`backups/`) never age out and are not
-  encrypted: delete entrants **before** taking one you mean to keep, and
-  delete old backups yourself.
+  also after deletion. The default privacy page says both.
+  Backups on your laptop (`backups/`) never age out and are not encrypted:
+  delete entrants **before** taking one you mean to keep, and delete old
+  backups yourself.
