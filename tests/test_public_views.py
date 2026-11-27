@@ -15,6 +15,7 @@ from django.utils import timezone
 from hypothesis import given
 from hypothesis import strategies as st
 from PIL import Image
+from pytest_django import Settings
 
 from conference_drawing.raffle.forms import EntryForm
 from conference_drawing.raffle.models import (
@@ -387,9 +388,12 @@ def test_rate_limit_uses_rightmost_forwarded_for(
 ) -> None:
     url = reverse("entry", args=[conference.slug])
     for i in range(300):
-        spoof: dict[str, Any] = {"HTTP_X_FORWARDED_FOR": f"10.0.0.{i}, 198.51.100.7"}
+        spoof: dict[str, Any] = {
+            "HTTP_X_FORWARDED_FOR": f"10.0.0.{i}, 198.51.100.7",
+            "REMOTE_ADDR": "",
+        }
         assert client.post(url, {}, **spoof).status_code == 200
-    spoof = {"HTTP_X_FORWARDED_FOR": "10.9.9.9, 198.51.100.7"}
+    spoof = {"HTTP_X_FORWARDED_FOR": "10.9.9.9, 198.51.100.7", "REMOTE_ADDR": ""}
     assert client.post(url, {}, **spoof).status_code == 429
 
 
@@ -440,6 +444,7 @@ def test_privacy_page_without_note(client: Client, db: None) -> None:
 
 
 def _ip(**meta: Any) -> str:
+    meta.setdefault("REMOTE_ADDR", "")  # the unix socket: no peer address
     return client_ip("group", RequestFactory().get("/", **meta))
 
 
@@ -450,6 +455,23 @@ def test_client_ip_takes_rightmost_forwarded_entry() -> None:
 def test_client_ip_falls_back_to_remote_addr() -> None:
     assert _ip(REMOTE_ADDR="192.0.2.9") == "192.0.2.9"
     assert _ip(HTTP_X_FORWARDED_FOR="", REMOTE_ADDR="192.0.2.9") == "192.0.2.9"
+
+
+def test_client_ip_ignores_forwarded_for_from_an_untrusted_peer() -> None:
+    assert (
+        _ip(HTTP_X_FORWARDED_FOR="198.51.100.7", REMOTE_ADDR="203.0.113.9")
+        == "203.0.113.9"
+    )
+
+
+def test_client_ip_honors_forwarded_for_from_a_trusted_peer(
+    settings: Settings,
+) -> None:
+    settings.TRUSTED_PROXIES = frozenset({"203.0.113.9", "2001:db8::1"})
+    xff = {"HTTP_X_FORWARDED_FOR": "10.1.1.1, 198.51.100.7"}
+    assert _ip(REMOTE_ADDR="203.0.113.9", **xff) == "198.51.100.7"
+    assert _ip(REMOTE_ADDR="2001:0db8:0:0:0:0:0:1", **xff) == "198.51.100.7"
+    assert _ip(REMOTE_ADDR="203.0.113.10", **xff) == "203.0.113.10"
 
 
 def test_client_ip_masks_ipv6_to_64() -> None:

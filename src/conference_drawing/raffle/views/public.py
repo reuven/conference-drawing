@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable
 from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.http import (
     HttpRequest,
     HttpResponse,
@@ -47,25 +48,39 @@ def _canonical_ip(raw: str) -> str | None:
 def client_ip(group: str, request: HttpRequest) -> str:
     """Rate-limit key: the real client address as seen by our reverse proxy.
 
-    The app listens only on a unix socket behind Caddy, which appends the
-    connecting peer to X-Forwarded-For. So the rightmost entry is the one we
-    can trust; anything to its left was supplied by the client and could be
-    forged to get a fresh bucket per request. Unparseable values fall back to
-    REMOTE_ADDR, and a request with nothing usable shares the "unknown" bucket.
+    The app listens on a unix socket behind Caddy, which appends the connecting
+    peer to X-Forwarded-For, so the rightmost entry is the one we can trust;
+    anything to its left was supplied by the client. The header is honored only
+    when the request has no peer address (the unix socket) or its peer is in
+    ``settings.TRUSTED_PROXIES``; from anyone else the header is forged input
+    and REMOTE_ADDR is the key. Unparseable values fall back to REMOTE_ADDR,
+    and a request with nothing usable shares the "unknown" bucket.
 
-    Trust assumption: exactly one trusted proxy (Caddy) sits in front, with no
-    ``trusted_proxies`` setting, so it drops any client-sent X-Forwarded-For
-    and sends the peer address alone (deploy/caddy/conference-drawing.caddy.tmpl).
+    Trust assumption: exactly one trusted proxy (Caddy) sits in front, and it
+    drops any client-sent X-Forwarded-For (deploy/caddy/conference-drawing.caddy.tmpl).
     If a CDN or second proxy is ever added in front of Caddy, the rightmost
     entry becomes that proxy's address and this must take the entry before it.
     """
-    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    candidates = [forwarded.rsplit(",", 1)[-1], request.META.get("REMOTE_ADDR", "")]
+    remote = request.META.get("REMOTE_ADDR", "")
+    candidates = [remote]
+    if _peer_is_proxy(remote):
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+        candidates.insert(0, forwarded.rsplit(",", 1)[-1])
     for candidate in candidates:
         key = _canonical_ip(candidate)
         if key is not None:
             return key
     return "unknown"
+
+
+def _peer_is_proxy(remote: str) -> bool:
+    """True for the unix socket (no peer address) or a listed trusted proxy."""
+    if not remote:
+        return True
+    try:
+        return str(ipaddress.ip_address(remote.strip())) in settings.TRUSTED_PROXIES
+    except ValueError:
+        return False
 
 
 def rate_limited(request: HttpRequest, exception: Ratelimited) -> HttpResponse:
